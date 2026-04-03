@@ -62,9 +62,11 @@ const XTAL_FREQ_HZ: u32 = 12_000_000u32;
 /// The function configures the rp2040 and rp235x peripherals, then toggles a GPIO pin in
 /// an infinite loop. If there is an LED connected to that pin, it will blink.
 
+use onewire::ds18b20;
 
 /// Our code
 mod cloud_chamber_hal;
+mod drivers;
 
 
 
