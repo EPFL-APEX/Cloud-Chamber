@@ -1,5 +1,6 @@
 pub trait TemperatureSensor {
     type Error;
+    fn start_measurement(&mut self) -> Result<u16, Self::Error>;
     fn read_celsius(&mut self) -> Result<f32, Self::Error>;
 }
 
