@@ -39,3 +39,18 @@
 - prix (le 12.04.2026) : 16.09CHF
 - qte : 1
 
+---
+
+- nom : "Module de capteur intégré de température et d'humidité de haute précision, transmetteur de sortie BMP180 BME280 BMP280 I2C"
+- modèle : BMP180, 1m
+- lien : https://de.aliexpress.com/item/1005010167531315.html?spm=a2g0o.productlist.main.10.7a7034fcIrYCkH&algo_pvid=5dc21f2c-f5ef-4bff-bf24-e52ab98d4ef2&algo_exp_id=5dc21f2c-f5ef-4bff-bf24-e52ab98d4ef2-9&pdp_ext_f=%7B%22order%22%3A%22333%22%2C%22eval%22%3A%221%22%2C%22fromPage%22%3A%22search%22%7D&pdp_npi=6%40dis%21CHF%215.69%215.41%21%21%217.04%216.69%21%4021038df617760706400631793ef009%2112000051386029838%21sea%21CH%21910209850%21X%211%210%21n_tag%3A-29919%3Bd%3Ac5b4c224%3Bm03_new_user%3A-29895&curPageLogUid=7qQ21vBcjoi2&utparam-url=scene%3Asearch%7Cquery_from%3A%7Cx_object_id%3A1005010167531315%7C_p_origin_prod%3A
+- prix (le 13.04.2026) : 5.93CHF
+- qte : 2
+
+---
+
+- nom : "Sonde de température à filetage étanche pour Ardu37, capteur de température, acier inoxydable GT, 1 mètre, 2 mètres, 3 mètres, 5 mètres, 10 mètres, DS18B20, 1 pièce, 10 pièces"
+- modèle : 1 meter 10 pieces
+- lien : https://de.aliexpress.com/item/1005008024174225.html?spm=a2g0o.productlist.main.1.69e51a0eJX7iMm&algo_pvid=bf2fb3c5-a407-4ad6-bd72-9e9568645619&algo_exp_id=bf2fb3c5-a407-4ad6-bd72-9e9568645619-0&pdp_ext_f=%7B%22order%22%3A%2212302%22%2C%22spu_best_type%22%3A%22price%22%2C%22eval%22%3A%221%22%2C%22fromPage%22%3A%22search%22%7D&pdp_npi=6%40dis%21CHF%218.38%218.15%21%21%2170.88%2168.91%21%40211b6a7a17760707847005789e216d%2112000043295123679%21sea%21CH%21910209850%21X%211%210%21n_tag%3A-29919%3Bd%3Ac5b4c224%3Bm03_new_user%3A-29895&curPageLogUid=5ZoX2crvZIML&utparam-url=scene%3Asearch%7Cquery_from%3A%7Cx_object_id%3A1005008024174225%7C_p_origin_prod%3A
+- prix (le 13.04.2026) : 8.15CHF
+- qte : 1
