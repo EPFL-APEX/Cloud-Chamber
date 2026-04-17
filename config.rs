@@ -37,7 +37,7 @@ pub const HP_PRESSURE_MAX: f32 = 12.0; // bar gauge
 // Seuils de sécurité (réaction immédiate sur Core 0)
 // ============================================================
 /// Pression HP maximale avant coupure compresseur (bar gauge)
-pub const SAFETY_HP_MAX: f32 = 14.0;
+pub const SAFETY_HP_MAX: f32 = 14.1;
 /// Température maximale sortie compresseur avant alarme (°C)
 pub const SAFETY_TEMP_COMPRESSOR_MAX: f32 = 120.0;
 /// Pression BP minimale avant alarme (bar absolu)
