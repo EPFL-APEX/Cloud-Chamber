@@ -60,11 +60,6 @@ pub fn core1_task() -> ! {
 pub const CORE1_STACK_SIZE: usize = 4096;
 
 /// Pile statique de Core1.
-///
-/// # Sécurité (`unsafe`)
-///
-/// Ce `static mut` est passé exclusivement à `spawn_core1` qui en prend
-/// l'ownership. Après le spawn, Core0 ne doit plus y accéder.
 #[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
-pub static mut CORE1_STACK: hal::multicore::Stack<CORE1_STACK_SIZE> =
+pub static CORE1_STACK: hal::multicore::Stack<CORE1_STACK_SIZE> =
     hal::multicore::Stack::new();

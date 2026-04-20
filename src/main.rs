@@ -53,6 +53,9 @@ use rp2040_hal as hal;
 #[cfg(all(rp2350, any(target_arch = "arm", target_arch = "riscv32")))]
 use rp235x_hal as hal;
 
+#[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
+use embedded_hal::digital::OutputPin;
+
 /// Bootloader en ROM (RP2040 uniquement).
 #[unsafe(link_section = ".boot2")]
 #[used]
@@ -92,7 +95,7 @@ fn main() -> ! {
     #[cfg(rp2350)]
     let timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
 
-    let sio = hal::Sio::new(pac.SIO);
+    let mut sio = hal::Sio::new(pac.SIO);
     let pins = hal::gpio::Pins::new(
         pac.IO_BANK0,
         pac.PADS_BANK0,
@@ -100,13 +103,10 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    // SAFETY: CORE1_STACK n'est accédé que par spawn_core1 (une seule fois).
     let mut mc = hal::multicore::Multicore::new(&mut pac.PSM, &mut pac.PPB, &mut sio.fifo);
     let cores = mc.cores();
     let core1 = &mut cores[1];
-    let _ = core1.spawn(unsafe { &mut core1::CORE1_STACK }, move || {
-        core1::core1_task()
-    });
+    let _ = core1.spawn(core1::CORE1_STACK.take().unwrap(), move || core1::core1_task());
 
     info!("Core1 lancé — boucle de sécurité active");
 
