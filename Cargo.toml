@@ -5,6 +5,9 @@ name = "Cloud-Chamber"
 version = "0.1.0"
 license = "MIT or Apache-2.0"
 
+[lib]
+name = "cloud_chamber"
+
 [build-dependencies]
 regex = "1.11.0"
 
@@ -15,6 +18,22 @@ embedded-hal = "1.0.0"
 defmt = "1"
 defmt-rtt = "1"
 onewire = { version = "0.4.0", features = ["defmt", "defmt-debug2format"]}
+# Partage de données inter-cœurs sans allocation heap
+critical-section = "1.1"
+# Bibliothèque de rendu graphique embarqué (no_std, trait DrawTarget)
+embedded-graphics = "0.8"
+
+[dev-dependencies]
+# Simulation de l'afficheur ILI9341 sur desktop pour tester l'UI sans matériel.
+# default-features = false → pas besoin de SDL2 pour les tests unitaires.
+# Pour lancer l'exemple avec fenêtre SDL2 : activer la feature "with-sdl"
+embedded-graphics-simulator = { version = "0.8", default-features = false }
+
+# Fournit une implémentation de critical_section basée sur std::sync::Mutex
+# pour les builds sur desktop (cargo test, cargo run --example).
+# Sur les cibles embarquées, cette entrée est ignorée (cfg non satisfait).
+[target.'cfg(not(any(target_arch = "arm", target_arch = "riscv32")))'.dev-dependencies]
+critical-section = { version = "1.1", features = ["std"] }
 
 [target.'cfg( target_arch = "arm" )'.dependencies]
 panic-probe = { version = "1", features = ["print-defmt"] }

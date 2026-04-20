@@ -1,85 +1,81 @@
-//! SPDX-License-Identifier: MIT OR Apache-2.0
+//! Point d'entrée du programme — Core0 : communication, affichage, logging.
 //!
-//! Copyright (c) 2021–2024 The rp-rs Developers
-//! Copyright (c) 2021 rp-rs organization
-//! Copyright (c) 2025 Raspberry Pi Ltd.
+//! # Architecture deux cœurs
 //!
-//! # GPIO 'Blinky' Example
+//! ```text
+//! Core0 (ce fichier)           Core1 (core1.rs)
+//! ──────────────────           ───────────────
+//! init des périphériques  →    spawn_core1(core1_task)
+//! boucle UI / logging          boucle de sécurité (100 Hz)
+//!      ↕ SHARED (critique)          ↕ SHARED (critique)
+//! ```
 //!
-//! This application demonstrates how to control a GPIO pin on the rp2040 and rp235x.
+//! # `#![no_std]` et `#![no_main]`
 //!
-//! It may need to be adapted to your particular board layout and/or pin assignment.
+//! - `#![no_std]` : n'utilise pas la bibliothèque standard Rust (`std`).
+//!   Sur un microcontrôleur sans OS, `std` n'est pas disponible.
+//!   On utilise `core` (sous-ensemble de `std` sans heap ni OS).
+//!
+//! - `#![no_main]` : le point d'entrée n'est pas `fn main()` standard.
+//!   Le macro `#[entry]` du HAL définit la vraie fonction de démarrage.
+//!
+//! Ces deux attributs sont désactivés en mode test (`cargo test`)
+//! via `cfg_attr`, ce qui permet de tester le code sur desktop.
 
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
-use defmt::*;
+pub mod cloud_chamber_hal;
+pub mod core1;
+pub mod drivers;
+pub mod security_loop;
+pub mod shared;
+pub mod ui;
+
+#[cfg(target_arch = "arm")]
+use defmt::info;
+
+#[cfg(target_arch = "arm")]
 use defmt_rtt as _;
-use embedded_hal::delay::DelayNs;
-use embedded_hal::digital::OutputPin;
-#[cfg(target_arch = "riscv32")]
-use panic_halt as _;
+
 #[cfg(target_arch = "arm")]
 use panic_probe as _;
 
-// Alias for our HAL crate
-use hal::entry;
+#[cfg(target_arch = "riscv32")]
+use panic_halt as _;
 
-#[cfg(rp2350)]
-use rp235x_hal as hal;
-
-#[cfg(rp2040)]
+// Alias `hal` selon la cible compilée.
+// On ajoute la garde `target_arch` pour éviter des résolutions sur desktop
+// (build.rs émet `rp2350` même quand .pico-rs est absent).
+#[cfg(all(rp2040, target_arch = "arm"))]
 use rp2040_hal as hal;
 
-// use bsp::entry;
-// use bsp::hal;
-// use rp_pico as bsp;
+#[cfg(all(rp2350, any(target_arch = "arm", target_arch = "riscv32")))]
+use rp235x_hal as hal;
 
-/// The linker will place this boot block at the start of our program image. We
-/// need this to help the ROM bootloader get our code up and running.
-/// Note: This boot block is not necessary when using a rp-hal based BSP
-/// as the BSPs already perform this step.
+/// Bootloader en ROM (RP2040 uniquement).
 #[unsafe(link_section = ".boot2")]
 #[used]
-#[cfg(rp2040)]
+#[cfg(all(rp2040, target_arch = "arm"))]
 pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
-/// Tell the Boot ROM about our application
+/// Signature de l'image (RP2350 uniquement).
 #[unsafe(link_section = ".start_block")]
 #[used]
-#[cfg(rp2350)]
+#[cfg(all(rp2350, any(target_arch = "arm", target_arch = "riscv32")))]
 pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
 
-/// External high-speed crystal on the Raspberry Pi Pico 2 board is 12 MHz.
-/// Adjust if your board has a different frequency
-const XTAL_FREQ_HZ: u32 = 12_000_000u32;
+/// Fréquence du cristal externe (12 MHz sur Pico / Pico 2).
+const XTAL_FREQ_HZ: u32 = 12_000_000;
 
-/// Entry point to our bare-metal application.
-///
-/// The `#[hal::entry]` macro ensures the Cortex-M start-up code calls this function
-/// as soon as all global variables and the spinlock are initialised.
-///
-/// The function configures the rp2040 and rp235x peripherals, then toggles a GPIO pin in
-/// an infinite loop. If there is an LED connected to that pin, it will blink.
-
-use onewire::ds18b20;
-
-/// Our code
-mod cloud_chamber_hal;
-mod drivers;
-
-
-
-#[entry]
+#[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
+#[hal::entry]
 fn main() -> ! {
-    info!("Program start");
-    // Grab our singleton objects
-    let mut pac = hal::pac::Peripherals::take().unwrap();
+    info!("Cloud Chamber démarrage…");
 
-    // Set up the watchdog driver - needed by the clock setup code
+    let mut pac = hal::pac::Peripherals::take().unwrap();
     let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
 
-    // Configure the clocks
     let clocks = hal::clocks::init_clocks_and_plls(
         XTAL_FREQ_HZ,
         pac.XOSC,
@@ -92,15 +88,11 @@ fn main() -> ! {
     .unwrap();
 
     #[cfg(rp2040)]
-    let mut timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
-
+    let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
     #[cfg(rp2350)]
-    let mut timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
+    let timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
 
-    // The single-cycle I/O block controls our GPIO pins
     let sio = hal::Sio::new(pac.SIO);
-
-    // Set the pins to their default state
     let pins = hal::gpio::Pins::new(
         pac.IO_BANK0,
         pac.PADS_BANK0,
@@ -108,27 +100,52 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    // Configure GPIO25 as an output
-    let mut led_pin = pins.gpio25.into_push_pull_output();
+    // SAFETY: CORE1_STACK n'est accédé que par spawn_core1 (une seule fois).
+    let mut mc = hal::multicore::Multicore::new(&mut pac.PSM, &mut pac.PPB, &mut sio.fifo);
+    let cores = mc.cores();
+    let core1 = &mut cores[1];
+    let _ = core1.spawn(unsafe { &mut core1::CORE1_STACK }, move || {
+        core1::core1_task()
+    });
+
+    info!("Core1 lancé — boucle de sécurité active");
+
+    let mut led = pins.gpio25.into_push_pull_output();
+    let _ = timer;
+
     loop {
-        info!("on!");
-        led_pin.set_high().unwrap();
-        timer.delay_ms(200);
-        info!("off!");
-        led_pin.set_low().unwrap();
-        timer.delay_ms(200);
+        let (snapshot, state, new_data) = critical_section::with(|cs| {
+            let mut shared = shared::data::SHARED.borrow(cs).borrow_mut();
+            let snap = shared.snapshot;
+            let st = shared.system_state;
+            let nd = shared.new_data;
+            shared.new_data = false;
+            (snap, st, nd)
+        });
+
+        if new_data {
+            info!(
+                "État: {:?} | T0={:?}°C | Chambre: {:?}",
+                state as u8,
+                snapshot.temps[0] as i32,
+                snapshot.is_closed
+            );
+        }
+
+        led.set_high().ok();
+        cortex_m::asm::delay(6_000_000); // ~500 ms à 12 MHz
+        led.set_low().ok();
+        cortex_m::asm::delay(6_000_000);
     }
 }
 
-/// Program metadata for `picotool info`
+#[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
 #[unsafe(link_section = ".bi_entries")]
 #[used]
 pub static PICOTOOL_ENTRIES: [hal::binary_info::EntryAddr; 5] = [
     hal::binary_info::rp_cargo_bin_name!(),
     hal::binary_info::rp_cargo_version!(),
-    hal::binary_info::rp_program_description!(c"Blinky Example"),
+    hal::binary_info::rp_program_description!(c"Cloud Chamber Controller"),
     hal::binary_info::rp_cargo_homepage_url!(),
     hal::binary_info::rp_program_build_attribute!(),
 ];
-
-// End of file
