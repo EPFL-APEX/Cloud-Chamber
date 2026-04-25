@@ -22,3 +22,6 @@ pub mod display;
 
 /// Driver encodeur rotatif : lecture des impulsions et du bouton.
 pub mod encoder;
+
+/// Driver capteur de fermeture : détection d'un contact sec via GPIO.
+pub mod closure;
