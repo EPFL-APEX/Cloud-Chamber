@@ -12,11 +12,8 @@
 /// Résistance pull-up 4.7kΩ obligatoire entre DATA et 3.3V.
 const DATA_PIN: u8 = 22;
 
-/// Délai entre deux lectures (en millisecondes).
+/// Délai entre deux lectures (en millisecondes), en plus du temps de conversion.
 const LOOP_PERIOD_MS: u32 = 1_000;
-
-/// Délai de conversion DS18B20 en résolution 12 bits (en millisecondes).
-const CONVERSION_DELAY_MS: u32 = 750;
 
 // ─── Dépendances ──────────────────────────────────────────────────────────────
 
@@ -39,9 +36,17 @@ pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 #[used]
 pub static IMAGE_DEF: rp235x_hal::block::ImageDef = rp235x_hal::block::ImageDef::secure_exe();
 
+use embedded_hal::delay::DelayNs;
 use hal::pac;
+use onewire::{DeviceSearch, OneWire, DS18B20};
 
 // ─── Point d'entrée ──────────────────────────────────────────────────────────
+//
+// Câblage :
+//   GPIO22 ──┬── 4.7kΩ ── 3.3V   (pull-up externe obligatoire)
+//            └── DATA du DS18B20
+//   GND    ── GND du DS18B20
+//   3.3V   ── VDD du DS18B20  (ou laisser VDD=GND en mode parasite, parasite_mode=true)
 
 #[hal::entry]
 fn main() -> ! {
@@ -50,7 +55,7 @@ fn main() -> ! {
     let mut pac = pac::Peripherals::take().unwrap();
     let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
 
-    let _clocks = hal::clocks::init_clocks_and_plls(
+    let clocks = hal::clocks::init_clocks_and_plls(
         12_000_000,
         pac.XOSC,
         pac.CLOCKS,
@@ -61,6 +66,12 @@ fn main() -> ! {
     )
     .unwrap();
 
+    // Le timer sert de source de délai pour le protocole 1-Wire.
+    #[cfg(rp2040)]
+    let mut timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
+    #[cfg(rp2350)]
+    let mut timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
+
     let sio = hal::Sio::new(pac.SIO);
     let pins = hal::gpio::Pins::new(
         pac.IO_BANK0,
@@ -69,66 +80,52 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    // Broche 1-Wire configurée en sortie open-drain + pull-up interne.
-    // Le protocole 1-Wire exige que la ligne soit tirée HIGH au repos.
-    let one_wire_pin = pins.gpio22.into_pull_up_input();
+    // La broche doit implémenter InputPin + OutputPin simultanément.
+    // Sur RP2040/2350, une broche en sortie est toujours lisible en entrée.
+    let one_wire_pin = pins.gpio22.into_push_pull_output();
+    // parasite_mode = false : le DS18B20 est alimenté par VDD (pas parasite)
+    let mut ow = OneWire::new(one_wire_pin, false);
 
-    // Initialisation du bus 1-Wire.
-    // `onewire::OneWire` accepte n'importe quelle broche implémentant
-    // `embedded_hal::digital::InputPin + OutputPin`.
-    let mut ow = onewire::OneWire::new(one_wire_pin);
+    info!("Test DS18B20 — recherche sur GPIO{}...", DATA_PIN);
 
-    info!("Test DS18B20 — DATA_PIN=GPIO{}", DATA_PIN);
-
-    loop {
-        // 1. Lancer une conversion de température
-        match ow.reset() {
-            Ok(true) => {
-                // Au moins un périphérique présent sur le bus
-                ow.write_byte(onewire::commands::SKIP_ROM).ok();
-                ow.write_byte(onewire::ds18b20::CONVERT_TEMP).ok();
-            }
-            Ok(false) => {
-                error!("Aucun périphérique sur le bus 1-Wire !");
-                delay_ms(LOOP_PERIOD_MS);
-                continue;
-            }
-            Err(_) => {
-                error!("Erreur reset bus 1-Wire");
-                delay_ms(LOOP_PERIOD_MS);
-                continue;
-            }
-        }
-
-        // 2. Attendre la fin de la conversion (résolution 12 bits = 750 ms)
-        delay_ms(CONVERSION_DELAY_MS);
-
-        // 3. Lire le scratchpad
-        match ow.reset() {
-            Ok(true) => {
-                ow.write_byte(onewire::commands::SKIP_ROM).ok();
-                ow.write_byte(onewire::ds18b20::READ_SCRATCHPAD).ok();
-
-                let mut buf = [0u8; 9];
-                for b in &mut buf {
-                    *b = ow.read_byte().unwrap_or(0);
+    // ── Recherche du premier DS18B20 sur le bus ───────────────────────────────
+    let sensor = loop {
+        let mut search = DeviceSearch::new_for_family(onewire::ds18b20::FAMILY_CODE);
+        match ow.search_next(&mut search, &mut timer) {
+            Ok(Some(device)) => {
+                info!("DS18B20 trouvé : {}", device);
+                match DS18B20::new(device) {
+                    Ok(s) => break s,
+                    Err(_) => error!("Family code inattendu"),
                 }
-
-                // Décodage température (2 octets LSB, résolution 1/16 °C)
-                let raw = i16::from_le_bytes([buf[0], buf[1]]);
-                let celsius = raw as f32 / 16.0;
-                info!("Température : {=f32:.2} °C (brut={})", celsius, raw);
             }
-            Ok(false) => error!("Périphérique disparu après conversion"),
+            Ok(None) => error!("Aucun DS18B20 sur le bus — vérifier câblage et pull-up 4.7kΩ"),
+            Err(_) => error!("Erreur bus 1-Wire"),
+        }
+        timer.delay_ms(2_000);
+    };
+
+    // ── Boucle de mesure ──────────────────────────────────────────────────────
+    loop {
+        // 1. Déclencher la conversion et récupérer la résolution choisie
+        match sensor.measure_temperature(&mut ow, &mut timer) {
+            Ok(resolution) => {
+                // 2. Attendre la fin de la conversion (94–750 ms selon résolution)
+                timer.delay_ms(resolution.time_ms() as u32);
+
+                // 3. Lire la température convertie
+                match sensor.read_temperature(&mut ow, &mut timer) {
+                    Ok(raw) => {
+                        // raw est un i16 encodé sur 4 bits fractionnaires (1/16 °C)
+                        let celsius = raw as i16 as f32 / 16.0;
+                        info!("Température : {=f32:.2} °C", celsius);
+            }
             Err(_) => error!("Erreur lecture scratchpad"),
         }
+            }
+            Err(_) => error!("Erreur démarrage conversion"),
+        }
 
-        delay_ms(LOOP_PERIOD_MS);
+        timer.delay_ms(LOOP_PERIOD_MS);
     }
-}
-
-#[inline(always)]
-fn delay_ms(ms: u32) {
-    // 125 000 cycles ≈ 1 ms à 125 MHz
-    cortex_m::asm::delay(ms * 125_000);
 }
