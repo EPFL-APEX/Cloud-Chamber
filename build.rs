@@ -51,9 +51,23 @@ fn main() {
         println!("cargo:rerun-if-changed=rp2350.x");
     }
 
-    let re = Regex::new(r"target = .*").unwrap();
-    let config_toml = include_str!(".cargo/config.toml");
-    let result = re.replace(config_toml, format!("target = \"{}\"", target));
+    let chip = if contents == "rp2040" { "RP2040" } else { "RP2350" };
+
+    // Read at runtime so manual edits to config.toml survive across builds.
+    // include_str! bakes the content at build.rs compile time and silently
+    // overwrites manual changes on every cargo build.
+    println!("cargo:rerun-if-changed=.cargo/config.toml");
+    let config_toml = read_to_string(".cargo/config.toml")
+        .expect("failed to read .cargo/config.toml");
+
+    let re_target = Regex::new(r"target = .*").unwrap();
+    let result = re_target.replace(&config_toml, format!("target = \"{}\"", target));
+
+    // Replace the chip in every probe-rs runner line.
+    // Works on first run (placeholder ${CHIP}) and subsequent runs (real name).
+    let re_chip = Regex::new(r"probe-rs run --chip \S+").unwrap();
+    let result = re_chip.replace_all(&result, format!("probe-rs run --chip {}", chip));
+
     let mut f = File::create(".cargo/config.toml").unwrap();
     f.write_all(result.as_bytes()).unwrap();
 
