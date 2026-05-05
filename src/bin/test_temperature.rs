@@ -13,7 +13,7 @@
 const DATA_PIN: u8 = 22;
 
 /// Délai entre deux lectures (en millisecondes), en plus du temps de conversion.
-const LOOP_PERIOD_MS: u32 = 1_000;
+const LOOP_PERIOD_MS: u32 = 1_000; 
 
 // ─── Dépendances ──────────────────────────────────────────────────────────────
 
@@ -37,6 +37,7 @@ pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 pub static IMAGE_DEF: rp235x_hal::block::ImageDef = rp235x_hal::block::ImageDef::secure_exe();
 
 use embedded_hal::delay::DelayNs;
+use hal::gpio::InOutPin;
 use hal::pac;
 use onewire::{DeviceSearch, OneWire, DS18B20};
 
@@ -80,9 +81,9 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    // La broche doit implémenter InputPin + OutputPin simultanément.
-    // Sur RP2040/2350, une broche en sortie est toujours lisible en entrée.
-    let one_wire_pin = pins.gpio22.into_push_pull_output();
+    // InOutPin wraps an output pin and satisfies InputPin + OutputPin simultaneously.
+    // Le buffer d'entrée du RP2040 reste actif même en mode sortie.
+    let one_wire_pin = InOutPin::new(pins.gpio22.into_push_pull_output());
     // parasite_mode = false : le DS18B20 est alimenté par VDD (pas parasite)
     let mut ow = OneWire::new(one_wire_pin, false);
 
@@ -118,7 +119,7 @@ fn main() -> ! {
                     Ok(raw) => {
                         // raw est un i16 encodé sur 4 bits fractionnaires (1/16 °C)
                         let celsius = raw as i16 as f32 / 16.0;
-                        info!("Température : {=f32:.2} °C", celsius);
+                        info!("Température : {=f32} °C", celsius);
             }
             Err(_) => error!("Erreur lecture scratchpad"),
         }

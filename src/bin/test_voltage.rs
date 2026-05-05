@@ -74,7 +74,7 @@ fn main() -> ! {
     let mut adc_pin = hal::adc::AdcPin::new(pins.gpio26.into_floating_input()).unwrap();
 
     info!(
-        "Test tension — VOLTAGE_SCALE={=f32:.6}, nominale={=f32:.1} V",
+        "Test tension — VOLTAGE_SCALE={=f32}, nominale={=f32} V",
         VOLTAGE_SCALE,
         NOMINAL_VOLTAGE
     );
@@ -85,7 +85,7 @@ fn main() -> ! {
         let error_v = voltage - NOMINAL_VOLTAGE;
 
         info!(
-            "ADC={} | Tension={=f32:.3} V | Écart nominale={=f32:+.3} V",
+            "ADC={=u16} | Tension={=f32} V | Écart nominale={=f32} V",
             raw, voltage, error_v
         );
 

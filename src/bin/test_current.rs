@@ -77,7 +77,7 @@ fn main() -> ! {
     let mut adc_pin = hal::adc::AdcPin::new(pins.gpio27.into_floating_input()).unwrap();
 
     info!(
-        "Test courant — CURRENT_SCALE={=f32:.6}, nominal={=f32:.1} A, seuil={=f32:.1} A",
+        "Test courant — CURRENT_SCALE={=f32}, nominal={=f32} A, seuil={=f32} A",
         CURRENT_SCALE,
         NOMINAL_CURRENT,
         OVERCURRENT_THRESHOLD
@@ -88,9 +88,9 @@ fn main() -> ! {
         let amperes = raw as f32 * CURRENT_SCALE;
 
         if amperes > OVERCURRENT_THRESHOLD {
-            warn!("SURCOURANT ! {=f32:.3} A > {=f32:.1} A", amperes, OVERCURRENT_THRESHOLD);
+            warn!("SURCOURANT ! {=f32} A > {=f32} A", amperes, OVERCURRENT_THRESHOLD);
         } else {
-            info!("ADC={} | Courant={=f32:.3} A", raw, amperes);
+            info!("ADC={=u16} | Courant={=f32} A", raw, amperes);
         }
 
         cortex_m::asm::delay(LOOP_PERIOD_MS * 125_000);
