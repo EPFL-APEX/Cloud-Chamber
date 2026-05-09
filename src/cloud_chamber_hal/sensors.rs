@@ -29,6 +29,12 @@ pub trait CurrentSensor {
     fn read_amperes(&mut self) -> Result<f32, Self::Error>;
 }
 
+/// Capteur de pression retournant des pascal
+pub trait PressureSensor {
+    type Error;
+    fn read_pascal(&mut self) -> Result<f32, Self::Error>;
+}
+
 /// Capteur de fermeture (contact sec) retournant un booléen.
 pub trait ClosureSensor {
     type Error;
