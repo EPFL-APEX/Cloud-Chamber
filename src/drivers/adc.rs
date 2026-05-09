@@ -15,7 +15,7 @@
 use crate::cloud_chamber_hal::sensors::{CurrentSensor, VoltageSensor};
 
 const ADC_VREF: f32 = 3.3;   // fixe, lié au matériel RP2040/2350
-const ADC_MAX:  u16 = 4095;  // 2^12 - 1
+const ADC_MAX:  f32 = 4095.;  // 2^12 - 1
 
 // ── Alias HAL (même pattern que main.rs) ────────────────────────────────────
 #[cfg(all(rp2040, target_arch = "arm"))]
@@ -92,7 +92,7 @@ impl<Channel: AdcChannel> VoltageSensor for AdcVoltageSensor<Channel> {
 
     fn read_voltage(&mut self) -> Result<f32, Self::Error> {
         let raw = self.channel.read_raw();
-        Ok((raw / ADC_MAX) as f32 * ADC_VREF * self.gain)
+        Ok(raw as f32 / ADC_MAX * ADC_VREF * self.gain)
     }
 }
 
@@ -114,7 +114,7 @@ impl<Channel: AdcChannel> CurrentSensor for AdcCurrentSensor<Channel> {
 
     fn read_amperes(&mut self) -> Result<f32, Self::Error> {
         let raw = self.channel.read_raw();
-        Ok((raw / ADC_MAX) as f32 * ADC_VREF * self.gain)
+        Ok(raw as f32 / ADC_MAX * ADC_VREF * self.gain)
     }
 }
 
@@ -162,6 +162,6 @@ mod tests {
         let mut sensor = AdcVoltageSensor::new(MockChannel, 11.);
         let v = sensor.read_voltage().unwrap();
         // 2048/4095 * 3.3 * 11 ≈ 18.17 V
-        assert!(v > 10.0 && v < 25.0);
+        assert!(v > 17.0 && v < 19.0);
     }
 }
