@@ -1,191 +1,146 @@
-/// Driver DS18B20 pour bus 1-Wire sur RP2040.
+/// Driver DS18B20 via crate `onewire` (protocole 1-Wire).
 ///
-/// Gère la découverte automatique des capteurs et la lecture
-/// sélective (critiques vs non-critiques) pour le flow controller.
+/// Code bloquant, Rust stable, pas d'Embassy.
 ///
-/// # Utilisation
+/// # Broche open-drain
 ///
-/// ```rust
-/// let mut bus = Ds18b20Bus::new(pin);
-/// bus.discover_sensors();
-/// let readings = bus.read_all().await;
-/// let critical_only = bus.read_critical().await;
-/// ```
+/// Le protocole 1-Wire utilise le trait `OpenDrainOutput` de la crate `onewire`.
+/// Tout type implémentant `InputPin + OutputPin` (même type d'erreur) satisfait
+/// automatiquement ce trait via l'implémentation blanket du crate.
+///
+/// # Pattern delay
+///
+/// Le délai est passé explicitement à chaque méthode (pas stocké dans la struct).
+/// Cela permet au binaire d'utiliser le même timer pour autre chose (ex. USB polling)
+/// pendant la conversion de 800ms.
 
-use embassy_rp::gpio::{Flex, Pull};
-use embassy_time::{Duration, Timer};
-use defmt;
+use onewire::{DeviceSearch, OneWire, OpenDrainOutput, DS18B20};
+use embedded_hal::delay::DelayNs;
+use heapless::Vec;
 
-use one_wire_bus::OneWire;
-use ds18b20::{Ds18b20, Resolution};
-
+use super::TemperatureSensor;
+use crate::config::CRITICAL_TEMP_INDICES;
 use crate::data::TemperatureReading;
-use crate::config::{CRITICAL_TEMP_INDICES, NON_CRITICAL_TEMP_INDICES};
 
-/// Nombre maximum de capteurs supportés sur le bus
-const MAX_SENSORS: usize = 5;
+/// Code de famille du DS18B20 (fixe selon la datasheet)
+const DS18B20_FAMILY: u8 = 0x28;
 
-/// Gère un bus 1-Wire avec plusieurs DS18B20.
-pub struct Ds18b20Bus<'a> {
-    /// Bus 1-Wire (utilise un GPIO flexible pour le open-drain)
-    one_wire: OneWire<Flex<'a>>,
-    /// Adresses ROM des capteurs découverts
-    addresses: [Option<u64>; MAX_SENSORS],
-    /// Nombre de capteurs détectés
-    count: usize,
+pub const MAX_SENSORS: usize = 5;
+
+// ════════════════════════════════════════════════════════════════════════════
+// Erreur
+// ════════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug)]
+pub enum Ds18b20Error {
+    Bus,
+    NoSensor,
 }
 
-impl<'a> Ds18b20Bus<'a> {
-    /// Crée un nouveau bus 1-Wire sur le GPIO donné.
-    pub fn new(pin: Flex<'a>) -> Self {
-        let one_wire = OneWire::new(pin).expect("Failed to init 1-Wire bus");
-        Self {
-            one_wire,
-            addresses: [None; MAX_SENSORS],
-            count: 0,
-        }
+// ════════════════════════════════════════════════════════════════════════════
+// Bus multi-capteurs
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Gère un bus 1-Wire avec plusieurs DS18B20.
+pub struct Ds18b20Bus<P: OpenDrainOutput> {
+    ow:      OneWire<P>,
+    sensors: Vec<DS18B20, MAX_SENSORS>,
+}
+
+impl<P: OpenDrainOutput> Ds18b20Bus<P> {
+    pub fn new(pin: P) -> Self {
+        Self { ow: OneWire::new(pin, false), sensors: Vec::new() }
     }
 
-    /// Découvre tous les DS18B20 sur le bus.
-    /// Doit être appelé une fois au démarrage.
-    /// Retourne le nombre de capteurs trouvés.
-    pub fn discover_sensors(&mut self) -> usize {
-        self.count = 0;
-        let mut search_state = None;
-
+    /// Recherche tous les DS18B20 sur le bus. Appeler une fois au démarrage.
+    pub fn discover<D: DelayNs>(&mut self, delay: &mut D) -> usize {
+        self.sensors.clear();
+        let mut search = DeviceSearch::new_for_family(DS18B20_FAMILY);
         loop {
-            match self.one_wire.device_search(search_state.as_ref(), false, &mut embassy_time::Delay) {
-                Ok(Some((address, state))) => {
-                    // Vérifier que c'est bien un DS18B20 (family code 0x28)
-                    if address.family_code() == ds18b20::FAMILY_CODE {
-                        if self.count < MAX_SENSORS {
-                            self.addresses[self.count] = Some(address.0);
-                            defmt::info!(
-                                "DS18B20 #{} found: ROM = {:#018X}",
-                                self.count,
-                                address.0
-                            );
-                            self.count += 1;
-                        }
+            match self.ow.search_next(&mut search, delay) {
+                Ok(Some(device)) => {
+                    if let Ok(sensor) = DS18B20::new(device) {
+                        let _ = self.sensors.push(sensor);
                     }
-                    search_state = Some(state);
                 }
-                Ok(None) => break, // Plus de capteurs
-                Err(_) => {
-                    defmt::error!("1-Wire search error");
-                    break;
-                }
+                Ok(None) | Err(_) => break,
             }
         }
-
-        defmt::info!("Discovered {} DS18B20 sensor(s)", self.count);
-        self.count
+        self.sensors.len()
     }
 
-    /// Lit la température d'un capteur spécifique par son index.
-    /// Retourne `None` en cas d'erreur de communication.
-    pub async fn read_sensor(&mut self, index: usize) -> Option<f32> {
-        if index >= self.count {
-            return None;
-        }
-
-        let address = match self.addresses[index] {
-            Some(addr) => one_wire_bus::Address(addr),
-            None => return None,
-        };
-
-        let sensor = Ds18b20::new::<embassy_rp::i2c::Error>(address).ok()?;
-
-        // Lancer la conversion (12-bit = 750ms max)
-        sensor
-            .start_temp_measurement(&mut self.one_wire, &mut embassy_time::Delay)
-            .ok()?;
-
-        // Attendre la fin de conversion
-        // En 12-bit, max 750ms. On attend 800ms par sécurité.
-        Timer::after(Duration::from_millis(800)).await;
-
-        // Lire le résultat
-        let data = sensor
-            .read_data(&mut self.one_wire, &mut embassy_time::Delay)
-            .ok()?;
-
-        Some(data.temperature)
+    /// Envoie la commande Convert T au capteur `index` (sans attendre).
+    /// Appeler `read_celsius(index, delay)` après ~800ms.
+    pub fn start_conversion<D: DelayNs>(
+        &mut self, index: usize, delay: &mut D,
+    ) -> Result<(), Ds18b20Error> {
+        // Destructuration pour éviter les conflits d'emprunt entre `sensors` et `ow`
+        let Ds18b20Bus { sensors, ow, .. } = self;
+        let sensor = sensors.get(index).ok_or(Ds18b20Error::NoSensor)?;
+        sensor.measure_temperature(ow, delay)
+            .map(|_| ())   // measure_temperature renvoie MeasureResolution, pas ()
+            .map_err(|_| Ds18b20Error::Bus)
     }
 
-    /// Lit uniquement les capteurs critiques (définis dans config.rs).
-    /// Retourne un tableau de TemperatureReading.
-    pub async fn read_critical(&mut self) -> [TemperatureReading; MAX_SENSORS] {
+    /// Lit le scratchpad du capteur `index`. À appeler après le délai de conversion.
+    pub fn read_celsius<D: DelayNs>(
+        &mut self, index: usize, delay: &mut D,
+    ) -> Result<f32, Ds18b20Error> {
+        // Destructuration pour éviter les conflits d'emprunt entre `sensors` et `ow`
+        let Ds18b20Bus { sensors, ow, .. } = self;
+        let sensor = sensors.get(index).ok_or(Ds18b20Error::NoSensor)?;
+        let raw = sensor.read_temperature(ow, delay)
+            .map_err(|_| Ds18b20Error::Bus)?;
+        // raw est u16 ; cast en i16 pour obtenir les températures négatives
+        Ok(raw as i16 as f32 / 16.0)
+    }
+
+    pub fn sensor_count(&self) -> usize { self.sensors.len() }
+
+    /// Lecture complète de tous les capteurs (bloquant, pour le firmware principal).
+    pub fn read_all<D: DelayNs>(&mut self, delay: &mut D) -> [TemperatureReading; MAX_SENSORS] {
         let mut readings = [TemperatureReading::default(); MAX_SENSORS];
-
-        for &idx in CRITICAL_TEMP_INDICES.iter() {
-            if let Some(temp) = self.read_sensor(idx).await {
-                readings[idx] = TemperatureReading {
-                    value: temp,
-                    valid: true,
-                    critical: true,
-                };
-            } else {
-                readings[idx] = TemperatureReading {
-                    value: f32::NAN,
-                    valid: false,
-                    critical: true,
-                };
-            }
-        }
-
-        readings
-    }
-
-    /// Lit uniquement les capteurs non-critiques.
-    pub async fn read_non_critical(&mut self) -> [TemperatureReading; MAX_SENSORS] {
-        let mut readings = [TemperatureReading::default(); MAX_SENSORS];
-
-        for &idx in NON_CRITICAL_TEMP_INDICES.iter() {
-            if let Some(temp) = self.read_sensor(idx).await {
-                readings[idx] = TemperatureReading {
-                    value: temp,
-                    valid: true,
-                    critical: false,
-                };
-            } else {
-                readings[idx] = TemperatureReading {
-                    value: f32::NAN,
-                    valid: false,
-                    critical: false,
-                };
-            }
-        }
-
-        readings
-    }
-
-    /// Lit tous les capteurs (critiques + non-critiques).
-    pub async fn read_all(&mut self) -> [TemperatureReading; MAX_SENSORS] {
-        let mut readings = [TemperatureReading::default(); MAX_SENSORS];
-
-        for idx in 0..self.count {
+        for idx in 0..self.sensors.len() {
             let is_critical = CRITICAL_TEMP_INDICES.contains(&idx);
-            if let Some(temp) = self.read_sensor(idx).await {
-                readings[idx] = TemperatureReading {
-                    value: temp,
-                    valid: true,
-                    critical: is_critical,
-                };
-            } else {
-                readings[idx] = TemperatureReading {
-                    value: f32::NAN,
-                    valid: false,
-                    critical: is_critical,
+            if self.start_conversion(idx, delay).is_ok() {
+                delay.delay_ms(800);
+                readings[idx] = match self.read_celsius(idx, delay) {
+                    Ok(t)  => TemperatureReading { value: t,        valid: true,  critical: is_critical },
+                    Err(_) => TemperatureReading { value: f32::NAN, valid: false, critical: is_critical },
                 };
             }
         }
-
         readings
     }
+}
 
-    /// Nombre de capteurs découverts.
-    pub fn sensor_count(&self) -> usize {
-        self.count
+// ════════════════════════════════════════════════════════════════════════════
+// Wrapper single-capteur implémentant TemperatureSensor
+// (pour le firmware principal où on peut bloquer librement)
+// ════════════════════════════════════════════════════════════════════════════
+
+pub struct Ds18b20Sensor<P: OpenDrainOutput, D> {
+    bus:   Ds18b20Bus<P>,
+    delay: D,
+    index: usize,
+}
+
+impl<P: OpenDrainOutput, D: DelayNs> Ds18b20Sensor<P, D> {
+    pub fn new(bus: Ds18b20Bus<P>, delay: D, index: usize) -> Self {
+        Self { bus, delay, index }
+    }
+}
+
+impl<P: OpenDrainOutput, D: DelayNs> TemperatureSensor for Ds18b20Sensor<P, D> {
+    type Error = Ds18b20Error;
+
+    /// Envoie Convert T — ne bloque PAS pendant la conversion.
+    /// L'appelant doit attendre ~800ms avant read_celsius().
+    fn start_measurement(&mut self) -> Result<(), Self::Error> {
+        self.bus.start_conversion(self.index, &mut self.delay)
+    }
+
+    fn read_celsius(&mut self) -> Result<f32, Self::Error> {
+        self.bus.read_celsius(self.index, &mut self.delay)
     }
 }

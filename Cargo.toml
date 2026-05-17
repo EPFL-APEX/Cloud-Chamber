@@ -1,44 +1,39 @@
-# Cargo.toml corrigé pour Embassy + RP2040 (Pico W)
-
 [package]
 name = "cloud-chamber-firmware"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
+
+[lib]
+name = "cloud_chamber_firmware"
 
 [dependencies]
-# Embassy framework
-embassy-executor  = { version = "0.7", features = ["arch-cortex-m", "executor-thread", "task-arena-size-32768", "nightly"] }
-embassy-time      = { version = "0.4", features = ["defmt"] }
-embassy-rp = { version = "0.4", features = ["time-driver", "defmt", "unstable-pac", "rp2040"] }
-embassy-net       = { version = "0.6", features = ["tcp", "dhcpv4", "medium-ethernet", "defmt"] }
-embassy-sync      = { version = "0.6", features = ["defmt"] }
-embedded-io-async = "0.6"
-# WiFi driver pour Pico W (CYW43)
-cyw43     = { version = "0.4", features = ["defmt"] }
-cyw43-pio = { version = "0.4", features = ["defmt"] }
+# HAL RP2040 — Rust stable, pas d'Embassy
+rp2040-hal    = { version = "0.10", features = ["rt", "critical-section-impl"] }
+rp2040-boot2  = "0.3"
 
-# Embedded HAL traits
-embedded-hal       = "1.0"
-embedded-hal-async = "1.0"
+# 1-Wire / DS18B20 (même crate que le projet partenaire)
+onewire = "0.4"
 
-# 1-Wire / DS18B20
-one-wire-bus = "0.1"
-ds18b20      = "0.1"
+# USB CDC série sans Embassy
+usb-device  = "0.3"
+usbd-serial = "0.2"
+
+# Traits HAL embarqués (bloquants)
+embedded-hal = "1.0"
 
 # Cortex-M runtime
-cortex-m    = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m    = { version = "0.7" }
 cortex-m-rt = "0.7"
 
-# Utilitaires
-static_cell      = "2"
-portable-atomic  = { version = "1", features = ["critical-section"] }
-defmt            = "0.3"
-defmt-rtt        = "0.4"
-panic-probe      = { version = "0.3", features = ["print-defmt"] }
-heapless         = "0.8"
+# Synchronisation no_std (remplace embassy_sync)
+critical-section = "1.1"
 
-# Sérialisation JSON (no-std)
-serde = { version = "1", default-features = false, features = ["derive"] }
+# Utilitaires
+heapless   = "0.8"
+defmt      = "0.3"
+defmt-rtt  = "0.4"
+panic-halt = "0.2"
 
 [profile.release]
 debug     = 2
