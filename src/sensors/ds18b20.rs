@@ -97,13 +97,17 @@ impl<P: OpenDrainOutput> Ds18b20Bus<P> {
 
     pub fn sensor_count(&self) -> usize { self.sensors.len() }
 
-    /// Lecture complète de tous les capteurs (bloquant, pour le firmware principal).
+    /// Lecture complète de tous les capteurs (bloquant 800 ms par capteur).
+    ///
+    /// A utiliser uniquement dans le firmware principal ou les taches
+    /// qui peuvent bloquer librement. Pour un usage avec USB polling
+    /// simultane, utiliser `start_conversion` + `wait_ms_usb` + `read_celsius`.
     pub fn read_all<D: DelayNs>(&mut self, delay: &mut D) -> [TemperatureReading; MAX_SENSORS] {
         let mut readings = [TemperatureReading::default(); MAX_SENSORS];
         for idx in 0..self.sensors.len() {
             let is_critical = CRITICAL_TEMP_INDICES.contains(&idx);
             if self.start_conversion(idx, delay).is_ok() {
-                delay.delay_ms(800);
+                delay.delay_ms(800); // attente conversion 12 bits (750 ms max)
                 readings[idx] = match self.read_celsius(idx, delay) {
                     Ok(t)  => TemperatureReading { value: t,        valid: true,  critical: is_critical },
                     Err(_) => TemperatureReading { value: f32::NAN, valid: false, critical: is_critical },
