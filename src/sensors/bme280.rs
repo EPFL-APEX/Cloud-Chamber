@@ -145,7 +145,11 @@ impl<I: I2cTrait> Bme280Driver<I> {
         });
 
         self.reg_write(REG_CTRL_HUM,  0x01)?; // humidité x1
-        self.reg_write(REG_CTRL_MEAS, 0x27)?; // temp x1, pression x1, mode normal
+        // 0x24 = osrs_t=001 (x1), osrs_p=001 (x1), mode=00 (sleep)
+        // On démarre en sleep : chaque appel à start_measurement() passe en forced
+        // (0x25), fait une mesure, puis le capteur retourne automatiquement en sleep.
+        // Évite les mesures continues en tâche de fond entre deux appels à measure().
+        self.reg_write(REG_CTRL_MEAS, 0x24)?;
         Ok(())
     }
 

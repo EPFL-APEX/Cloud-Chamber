@@ -1,4 +1,7 @@
 #![no_std]
+// Pendant le développement, beaucoup de symboles de la lib ne sont pas encore
+// utilisés dans les binaires de test. On supprime ces warnings temporairement.
+#![allow(dead_code)]
 
 /// Configuration centrale (broches, adresses, seuils, timings).
 pub mod config;

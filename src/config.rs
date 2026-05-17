@@ -41,7 +41,6 @@ pub const TARGET_CHAMBER_TEMP: f32       = -40.0;
 pub const CRITICAL_READ_INTERVAL_MS:     u64 = 500;
 pub const NON_CRITICAL_READ_INTERVAL_MS: u64 = 2000;
 pub const DATA_PUBLISH_INTERVAL_MS:      u64 = 1000;
-pub const HTTP_PORT:                     u16 = 80;
 
 // ============================================================
 // Labels des capteurs de température
