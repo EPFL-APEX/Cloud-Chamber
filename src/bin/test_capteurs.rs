@@ -46,12 +46,41 @@ pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 // pendant la conversion DS18B20 (pendant laquelle on polle USB).
 // ════════════════════════════════════════════════════════════════════════════
 
+// ════════════════════════════════════════════════════════════════════════════
+// Délai matériel (Timer hardware RP2040) — utilisé pour le 1-Wire DS18B20
+//
+// hal::Timer::get_counter() → compteur 64 bits à 1 MHz (1 tick = 1 µs).
+// Beaucoup plus précis que cortex_m::asm::delay dont la durée dépend
+// du pipeline (Cortex-M0+ : N×4 cycles, pas N×3 comme supposé avant).
+// ════════════════════════════════════════════════════════════════════════════
+
+struct TimerDelay<'a> {
+    timer: &'a hal::Timer,
+}
+
+impl<'a> TimerDelay<'a> {
+    fn new(timer: &'a hal::Timer) -> Self { Self { timer } }
+}
+
+impl<'a> DelayNs for TimerDelay<'a> {
+    fn delay_ns(&mut self, ns: u32) {
+        // Arrondi au µs supérieur (le timer est à 1 µs de résolution)
+        let us = ((ns as u64) + 999) / 1000;
+        if us == 0 { return; }
+        let end = self.timer.get_counter().ticks() + us;
+        while self.timer.get_counter().ticks() < end {
+            cortex_m::asm::nop();
+        }
+    }
+}
+
+// CortexDelay conservé uniquement pour le BME280 (délai ~15ms peu critique)
 struct CortexDelay;
 
 impl DelayNs for CortexDelay {
     fn delay_ns(&mut self, ns: u32) {
-        // RP2040 @ 125 MHz : 1 cycle ≈ 8 ns, asm::delay(N) ≈ N×3 cycles ≈ N×24 ns
-        cortex_m::asm::delay(ns / 24 + 1);
+        // RP2040 @ 125 MHz : 1 cycle ≈ 8 ns, asm::delay(N) ≈ N×4 cycles ≈ N×32 ns
+        cortex_m::asm::delay(ns / 32 + 1);
     }
 }
 
@@ -66,11 +95,14 @@ impl DelayNs for CortexDelay {
 
 const OW_PIN: u8 = 15;
 
+// Le _owner est un pin OUTPUT — into_push_pull_output() configure correctement
+// OEOVER=NORMAL dans IO_BANK0, OD=0 dans le pad, et SIO_OE=1.
+// On repasse ensuite en haute-Z via SIO_OE_CLR, ce qui donne un open-drain.
 struct OpenDrainPin {
     mask: u32,
     _owner: hal::gpio::Pin<
         hal::gpio::bank0::Gpio15,
-        hal::gpio::FunctionSio<hal::gpio::SioInput>,
+        hal::gpio::FunctionSio<hal::gpio::SioOutput>,
         hal::gpio::PullNone,
     >,
 }
@@ -83,23 +115,19 @@ impl OpenDrainPin {
             hal::gpio::PullNone,
         >,
     ) -> Self {
+        // Reconfiguration HAL en sortie push-pull.
+        // Cela garantit que tous les registres nécessaires sont corrects :
+        //   IO_BANK0 GPIO15_CTRL : OEOVER=NORMAL (0b00) → SIO contrôle réellement OE
+        //   PADS_BANK0 GPIO15    : OD=0 (driver de sortie actif), IE=1 (lecture active)
+        //   SIO                  : FUNCSEL=5, OUT+OE gérés par SIO
+        let out_pin = pin.into_push_pull_output();
         let mask = 1u32 << OW_PIN;
         unsafe {
-            // ── Fix pad register ────────────────────────────────────────────
-            // PADS_BANK0_GPIO15 = 0x4001_C000 + 0x04 + 15×4 = 0x4001_C040
-            // bit7 = OD (output disable) — DOIT être 0 pour que gpio_oe_set() drive la broche
-            // bit6 = IE (input enable)   — DOIT être 1 pour lire l'état de la ligne
-            // into_floating_input() peut laisser OD=1 dans certaines versions de rp2040-hal,
-            // ce qui bloquerait totalement notre open-drain même avec SIO_OE=1.
-            let pad = 0x4001_C040 as *mut u32;
-            let val = core::ptr::read_volatile(pad);
-            core::ptr::write_volatile(pad, (val & !0x80) | 0x40); // OD=0, IE=1
-
             let sio = &*pac::SIO::ptr();
-            sio.gpio_out_clr().write(|w| w.bits(mask)); // OUT=0 (driver bas quand OE=1)
+            sio.gpio_out_clr().write(|w| w.bits(mask)); // OUT=0 (tire bas quand OE=1)
             sio.gpio_oe_clr().write(|w| w.bits(mask));  // OE=0  (haute-Z initialement)
         }
-        Self { mask, _owner: pin }
+        Self { mask, _owner: out_pin }
     }
 }
 
@@ -123,6 +151,94 @@ impl InputPin for OpenDrainPin {
     fn is_low(&mut self) -> Result<bool, Infallible> {
         Ok(unsafe { (*pac::SIO::ptr()).gpio_in().read().bits() } & self.mask == 0)
     }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Utilitaires 1-Wire bruts — diagnostic, sans passer par le crate onewire
+// Toutes les durées sont en µs, mesurées via le timer hardware (1 tick = 1 µs).
+// ════════════════════════════════════════════════════════════════════════════
+
+const OW_MASK: u32 = 1u32 << 15;
+
+/// Attend `us` µs en polant le timer hardware.
+#[inline(always)]
+fn ow_wait(timer: &hal::Timer, us: u64) {
+    let end = timer.get_counter().ticks() + us;
+    while timer.get_counter().ticks() < end { cortex_m::asm::nop(); }
+}
+
+/// Reset 1-Wire → true si une impulsion de présence est détectée.
+fn ow_reset_raw(timer: &hal::Timer) -> bool {
+    unsafe {
+        let sio = &*pac::SIO::ptr();
+        // Relâcher d'abord (haute-Z)
+        sio.gpio_oe_clr().write(|w| w.bits(OW_MASK));
+        ow_wait(timer, 5);
+        // Reset pulse : 480 µs bas
+        sio.gpio_oe_set().write(|w| w.bits(OW_MASK));
+        ow_wait(timer, 480);
+        // Relâcher, attendre 70 µs
+        sio.gpio_oe_clr().write(|w| w.bits(OW_MASK));
+        ow_wait(timer, 70);
+        // Échantillonner (présence = ligne basse)
+        let presence = (sio.gpio_in().read().bits() >> 15) & 1 == 0;
+        // Attendre la fin de la fenêtre de présence
+        ow_wait(timer, 410);
+        presence
+    }
+}
+
+/// Écriture d'un octet sur le bus 1-Wire (bit 0 en premier).
+fn ow_write_byte_raw(timer: &hal::Timer, byte: u8) {
+    unsafe {
+        let sio = &*pac::SIO::ptr();
+        for i in 0..8u32 {
+            let bit = (byte >> i) & 1;
+            // Début du slot : impulsion basse
+            sio.gpio_oe_set().write(|w| w.bits(OW_MASK));
+            if bit == 1 {
+                // Write '1' : bas 6 µs, haut 64 µs
+                ow_wait(timer, 6);
+                sio.gpio_oe_clr().write(|w| w.bits(OW_MASK));
+                ow_wait(timer, 64);
+            } else {
+                // Write '0' : bas 60 µs, haut 10 µs
+                ow_wait(timer, 60);
+                sio.gpio_oe_clr().write(|w| w.bits(OW_MASK));
+                ow_wait(timer, 10);
+            }
+        }
+    }
+}
+
+/// Lecture d'un octet depuis le bus 1-Wire (bit 0 en premier).
+///
+/// Spec DS18B20 : le slave tient la ligne basse pendant MAX 15µs depuis le
+/// début du slot pour un bit '0'. Le master doit échantillonner AVANT 15µs.
+///
+/// Timing : bas 2µs → relâche → attend 8µs → échantillonne à ~10µs (< 15µs)
+///          → attend 50µs → total slot ≈ 60µs.
+fn ow_read_byte_raw(timer: &hal::Timer) -> u8 {
+    let mut byte = 0u8;
+    unsafe {
+        let sio = &*pac::SIO::ptr();
+        for i in 0..8u32 {
+            // Début du slot : impulsion basse 2 µs (déclenchement du slot DS18B20)
+            sio.gpio_oe_set().write(|w| w.bits(OW_MASK));
+            ow_wait(timer, 2);
+            // Relâcher immédiatement pour que le DS18B20 puisse répondre
+            sio.gpio_oe_clr().write(|w| w.bits(OW_MASK));
+            // Attendre 8 µs → échantillonnage à ~10µs depuis début slot
+            // DS18B20 tient la ligne basse jusqu'à 15µs → on est dans la fenêtre
+            ow_wait(timer, 8);
+            // Échantillonner : 0=ligne basse (bit '0'), 1=ligne haute (bit '1')
+            let bit = (sio.gpio_in().read().bits() >> 15) & 1;
+            byte |= (bit as u8) << i;
+            // Attendre la fin du slot (total ≈ 60µs depuis le début)
+            ow_wait(timer, 50);
+        }
+    }
+    byte
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -216,97 +332,91 @@ fn main() -> ! {
     // On poll USB pendant 5 secondes pour laisser le temps d'ouvrir le port.
     wait_ms_usb(&timer, 5_000, &mut usb_dev, &mut serial);
 
-    // ── Diagnostic GPIO15 open-drain ─────────────────────────────────────────
-    // Teste si la broche peut réellement driver bas (vérifie OD pad + SIO_OE).
-    // Si force_bas = false → le pad OD bloque la sortie (ou court-circuit)
-    // Si relache_haut = false → pull-up absent ou trop faible
-    {
-        // Forcer bas via OE=1 (OUT déjà à 0 depuis OpenDrainPin::new)
-        unsafe { (*pac::SIO::ptr()).gpio_oe_set().write(|w| w.bits(1u32 << 15)) };
-        wait_ms_usb(&timer, 200, &mut usb_dev, &mut serial);
-        let driven_low = unsafe {
-            ((*pac::SIO::ptr()).gpio_in().read().bits() >> 15) & 1 == 0
-        };
-        // Relâcher → pull-up doit remonter la ligne
-        unsafe { (*pac::SIO::ptr()).gpio_oe_clr().write(|w| w.bits(1u32 << 15)) };
-        wait_ms_usb(&timer, 200, &mut usb_dev, &mut serial);
-        let released_high = unsafe {
-            ((*pac::SIO::ptr()).gpio_in().read().bits() >> 15) & 1 == 1
-        };
-
-        let mut msg: String<128> = String::new();
-        let _ = write!(msg,
-            "GPIO15 diag: force_bas={} (ok=true)  relache_haut={} (ok=true)\r\n",
-            driven_low, released_high);
-        usb_write(&mut serial, msg.as_bytes());
-        if !driven_low {
-            usb_write(&mut serial, b"  ERREUR: GP15 ne drive pas bas - OD pad bloque ou court-circuit\r\n");
-        }
-        if !released_high {
-            usb_write(&mut serial, b"  ERREUR: GP15 reste bas apres relachement - pull-up 4.7k absent?\r\n");
-        }
-        usb_write(&mut serial, b"\r\n");
-    }
-
     // ── Découverte DS18B20 ────────────────────────────────────────────────────
-    let count = ds_bus.discover(&mut CortexDelay);
+    let count = ds_bus.discover(&mut TimerDelay::new(&timer));
 
-    // ── En-tête ───────────────────────────────────────────────────────────────
-    usb_write(&mut serial, b"==============================\r\n");
-    usb_write(&mut serial, b"  DS18B20 + BME280  (RP2040)\r\n");
-    usb_write(&mut serial, b"  DS18B20: GP15 | BME280: GP4/GP5\r\n");
-    usb_write(&mut serial, b"==============================\r\n\r\n");
-
-    {
-        let mut msg: String<64> = String::new();
-        let _ = write!(msg, "DS18B20 detectes: {}\r\n\r\n", count);
-        usb_write(&mut serial, msg.as_bytes());
+    if count > 0 {
+        usb_write(&mut serial, b"DS18B20 OK  (GP15)\r\n");
+    } else {
+        usb_write(&mut serial, b"DS18B20 non detecte -- verifier GP15 et pull-up 4.7k\r\n");
     }
-
-    // Répète le compte 3 fois (espacées d'1 s) pour ne pas le rater.
-    for _ in 0..3 {
-        wait_ms_usb(&timer, 1_000, &mut usb_dev, &mut serial);
-        let mut msg: String<64> = String::new();
-        let _ = write!(msg, "  >>> DS18B20 detectes: {} <<<\r\n", count);
-        usb_write(&mut serial, msg.as_bytes());
-    }
-    usb_write(&mut serial, b"\r\n");
 
     // ── Init BME280 (retry jusqu'au succès) ───────────────────────────────────
     loop {
         match bme.init() {
-            Ok(()) => { usb_write(&mut serial, b"BME280 OK\r\n\r\n"); break; }
+            Ok(()) => { usb_write(&mut serial, b"BME280 OK   (I2C GP4/GP5)\r\n\r\n"); break; }
             Err(_) => {
-                usb_write(&mut serial, b"BME280 non detecte...\r\n");
+                usb_write(&mut serial, b"BME280 non detecte (I2C GP4/GP5) -- nouvel essai...\r\n");
                 wait_ms_usb(&timer, 2_000, &mut usb_dev, &mut serial);
             }
         }
     }
 
+    // ── DS18B20 → résolution 9-bit (93.75 ms max) ────────────────────────────
+    // Config 0x1F = bits 5-6 = 00 → 9-bit (±0.5 °C, 93.75 ms max)
+    if count > 0 && ow_reset_raw(&timer) {
+        ow_write_byte_raw(&timer, 0xCC); // SKIP ROM
+        ow_write_byte_raw(&timer, 0x4E); // WRITE SCRATCHPAD
+        ow_write_byte_raw(&timer, 0x55); // TH register
+        ow_write_byte_raw(&timer, 0x05); // TL register
+        ow_write_byte_raw(&timer, 0x1F); // Config → 9-bit
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     // Boucle de mesure
     // ════════════════════════════════════════════════════════════════════════
-    let mut n: u32 = 0;
     loop {
-        n += 1;
         usb_dev.poll(&mut [&mut serial]);
 
-        // Rappel périodique du nombre de capteurs détectés (toutes les 20 mesures)
-        if n % 20 == 1 {
-            let mut msg: String<64> = String::new();
-            let _ = write!(msg, "--- DS18B20 detectes: {} ---\r\n", count);
-            usb_write(&mut serial, msg.as_bytes());
-        }
+        // ── DS18B20 : mesure via fonctions 1-Wire brutes (SKIP ROM) ─────────────
+        // Le driver générique (Ds18b20Bus) présente un problème de compatibilité
+        // avec ce clone spécifique. Les fonctions brutes ci-dessous (ow_*_raw),
+        // qui accèdent directement aux registres SIO, fonctionnent correctement.
+        let conv_started = if count > 0 {
+            ow_reset_raw(&timer) && {
+                ow_write_byte_raw(&timer, 0xCC); // SKIP ROM
+                ow_write_byte_raw(&timer, 0x44); // CONVERT T
+                true
+            }
+        } else { false };
 
-        // DS18B20 : envoie Convert T et revient immédiatement
-        let ds_started = count > 0
-            && ds_bus.start_conversion(0, &mut CortexDelay).is_ok();
+        // Attendre la fin de conversion : 100 ms suffisent pour 9-bit (max 93.75 ms).
+        // Ce clone ne signale pas la fin via read-slots → pas de polling, attente fixe.
+        wait_ms_usb(&timer, 100, &mut usb_dev, &mut serial);
 
-        // Attendre 800ms en polant USB (pas de blocage dur)
-        wait_ms_usb(&timer, 800, &mut usb_dev, &mut serial);
-
-        let ds_result = if ds_started {
-            ds_bus.read_celsius(0, &mut CortexDelay).ok()
+        // Lecture scratchpad avec un retry sur CRC fail (glitch occasionnel sur le bus)
+        let ds_result: Option<f32> = if conv_started {
+            let mut result = None;
+            'retry: for _attempt in 0..2u8 {
+                if !ow_reset_raw(&timer) { break 'retry; }
+                ow_write_byte_raw(&timer, 0xCC); // SKIP ROM
+                ow_write_byte_raw(&timer, 0xBE); // READ SCRATCHPAD
+                let mut sp = [0u8; 9];
+                for b in sp.iter_mut() { *b = ow_read_byte_raw(&timer); }
+                // CRC-8 Dallas/Maxim (polynôme 0x8C) — valide si résultat = 0
+                let crc = {
+                    let mut c: u8 = 0;
+                    for &b in sp.iter() {
+                        let mut byte = b;
+                        for _ in 0..8 {
+                            let mix = (c ^ byte) & 1;
+                            c >>= 1;
+                            if mix != 0 { c ^= 0x8C; }
+                            byte >>= 1;
+                        }
+                    }
+                    c
+                };
+                if crc == 0 {
+                    let raw_t = (sp[0] as u16) | ((sp[1] as u16) << 8);
+                    result = Some(raw_t as i16 as f32 / 16.0);
+                    break 'retry;
+                }
+                // Petite attente avant le retry (5 ms)
+                let t_retry = timer.get_counter().ticks() + 5_000;
+                while timer.get_counter().ticks() < t_retry {}
+            }
+            result
         } else {
             None
         };
@@ -316,7 +426,6 @@ fn main() -> ! {
 
         // Formatage
         let mut msg: String<128> = String::new();
-        let _ = write!(msg, "[{}] ", n);
 
         match ds_result {
             Some(t) => {

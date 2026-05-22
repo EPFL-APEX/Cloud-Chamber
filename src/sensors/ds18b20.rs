@@ -1,113 +1,304 @@
-/// Driver DS18B20 via crate `onewire` (protocole 1-Wire).
+/// Driver DS18B20 via protocole 1-Wire implémenté directement (sans crate externe).
 ///
-/// Code bloquant, Rust stable, pas d'Embassy.
+/// Timing calibré pour RP2040 @ 125 MHz avec TimerDelay :
+///   Slot lecture  : bas 2µs → relâche → attend 8µs → sample à ~10µs (< 15µs max)
+///   Slot écriture 1 : bas 6µs, haut 64µs
+///   Slot écriture 0 : bas 60µs, haut 10µs
+///   Reset : bas 480µs → relâche → attend 70µs → sample → attend 410µs
 ///
-/// # Broche open-drain
-///
-/// Le protocole 1-Wire utilise le trait `OpenDrainOutput` de la crate `onewire`.
-/// Tout type implémentant `InputPin + OutputPin` (même type d'erreur) satisfait
-/// automatiquement ce trait via l'implémentation blanket du crate.
-///
-/// # Pattern delay
-///
-/// Le délai est passé explicitement à chaque méthode (pas stocké dans la struct).
-/// Cela permet au binaire d'utiliser le même timer pour autre chose (ex. USB polling)
-/// pendant la conversion de 800ms.
+/// Compatibilité clones : si SEARCH ROM échoue (clone sans ROM search),
+/// repli automatique sur SKIP ROM pour bus mono-capteur.
 
-use onewire::{DeviceSearch, OneWire, OpenDrainOutput, DS18B20};
 use embedded_hal::delay::DelayNs;
+use embedded_hal::digital::{InputPin, OutputPin};
 use heapless::Vec;
 
 use super::TemperatureSensor;
 use crate::config::CRITICAL_TEMP_INDICES;
 use crate::data::TemperatureReading;
 
-/// Code de famille du DS18B20 (fixe selon la datasheet)
-const DS18B20_FAMILY: u8 = 0x28;
+const DS18B20_FAMILY:   u8 = 0x28;
+const CMD_SEARCH_ROM:   u8 = 0xF0;
+const CMD_MATCH_ROM:    u8 = 0x55;
+const CMD_SKIP_ROM:     u8 = 0xCC;
+const CMD_CONVERT_T:    u8 = 0x44;
+const CMD_READ_SCRATCH: u8 = 0xBE;
 
 pub const MAX_SENSORS: usize = 5;
+
+type RomCode = [u8; 8];
+
+/// Code sentinel indiquant le mode SKIP ROM (clone sans ROM search).
+/// Serial bytes tous à 0 → jamais un vrai ROM code (CRC invalide).
+const SKIP_ROM_SENTINEL: RomCode = [DS18B20_FAMILY, 0, 0, 0, 0, 0, 0, 0];
 
 // ════════════════════════════════════════════════════════════════════════════
 // Erreur
 // ════════════════════════════════════════════════════════════════════════════
 
 #[derive(Debug)]
-pub enum Ds18b20Error {
-    Bus,
-    NoSensor,
+pub enum Ds18b20Error { Bus, NoSensor, CrcError }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Primitives 1-Wire
+// ════════════════════════════════════════════════════════════════════════════
+
+fn ow_reset<P, D>(pin: &mut P, delay: &mut D) -> bool
+where P: InputPin + OutputPin, D: DelayNs,
+{
+    pin.set_high().ok();
+    delay.delay_us(5);
+    pin.set_low().ok();
+    delay.delay_us(480);
+    pin.set_high().ok();
+    delay.delay_us(70);
+    let presence = pin.is_low().unwrap_or(false);
+    delay.delay_us(410);
+    presence
+}
+
+fn ow_write_bit<P, D>(pin: &mut P, delay: &mut D, bit: bool)
+where P: OutputPin, D: DelayNs,
+{
+    pin.set_low().ok();
+    if bit {
+        delay.delay_us(6);
+        pin.set_high().ok();
+        delay.delay_us(64);
+    } else {
+        delay.delay_us(60);
+        pin.set_high().ok();
+        delay.delay_us(10);
+    }
+}
+
+/// Reset prolongé (800µs) pour forcer les clones à sortir d'un état bloqué
+/// (ex. après une séquence SEARCH ROM incomplète).
+fn ow_reset_long<P, D>(pin: &mut P, delay: &mut D)
+where P: InputPin + OutputPin, D: DelayNs,
+{
+    pin.set_high().ok();
+    delay.delay_us(5);
+    pin.set_low().ok();
+    delay.delay_us(800); // 800µs au lieu de 480µs → force la sortie de tout état interne
+    pin.set_high().ok();
+    delay.delay_us(500); // Attente de récupération allongée
+}
+
+/// Sample à ~10µs depuis le début du slot.
+/// Le DS18B20 tient la ligne basse MAX 15µs pour un bit '0' → on est dans la fenêtre.
+fn ow_read_bit<P, D>(pin: &mut P, delay: &mut D) -> bool
+where P: InputPin + OutputPin, D: DelayNs,
+{
+    pin.set_low().ok();
+    delay.delay_us(2);
+    pin.set_high().ok();
+    delay.delay_us(8);
+    let bit = pin.is_high().unwrap_or(true);
+    delay.delay_us(50);
+    bit
+}
+
+fn ow_write_byte<P, D>(pin: &mut P, delay: &mut D, byte: u8)
+where P: OutputPin, D: DelayNs,
+{
+    for i in 0..8 { ow_write_bit(pin, delay, (byte >> i) & 1 != 0); }
+}
+
+fn ow_read_byte<P, D>(pin: &mut P, delay: &mut D) -> u8
+where P: InputPin + OutputPin, D: DelayNs,
+{
+    let mut byte = 0u8;
+    for i in 0..8 { if ow_read_bit(pin, delay) { byte |= 1 << i; } }
+    byte
+}
+
+/// CRC-8 Dallas/Maxim (polynôme inversé 0x8C).
+/// Sur N octets dont le dernier est le CRC → résultat 0 si valide.
+fn crc8(data: &[u8]) -> u8 {
+    let mut crc: u8 = 0;
+    for &b in data {
+        let mut byte = b;
+        for _ in 0..8 {
+            let mix = (crc ^ byte) & 1;
+            crc >>= 1;
+            if mix != 0 { crc ^= 0x8C; }
+            byte >>= 1;
+        }
+    }
+    crc
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ROM Search — Dallas Application Note 187
+// ════════════════════════════════════════════════════════════════════════════
+
+fn search_step<P, D>(
+    pin:               &mut P,
+    delay:             &mut D,
+    rom:               &mut RomCode,
+    last_discrepancy:  &mut u8,
+    last_device_flag:  &mut bool,
+) -> bool
+where P: InputPin + OutputPin, D: DelayNs,
+{
+    if *last_device_flag { return false; }
+    if !ow_reset(pin, delay) {
+        *last_discrepancy = 0;
+        *last_device_flag = false;
+        return false;
+    }
+
+    ow_write_byte(pin, delay, CMD_SEARCH_ROM);
+
+    let mut last_zero:       u8    = 0;
+    let mut rom_byte_number: usize = 0;
+    let mut rom_byte_mask:   u8    = 1;
+    let mut id_bit_number:   u8    = 1;
+    let mut ok = true;
+
+    while id_bit_number <= 64 {
+        let id_bit  = ow_read_bit(pin, delay);
+        let cmp_bit = ow_read_bit(pin, delay);
+
+        if id_bit && cmp_bit { ok = false; break; }
+
+        let dir = if !id_bit && !cmp_bit {
+            let d = if id_bit_number < *last_discrepancy {
+                rom[rom_byte_number] & rom_byte_mask != 0
+            } else {
+                id_bit_number == *last_discrepancy
+            };
+            if !d { last_zero = id_bit_number; }
+            d
+        } else {
+            id_bit
+        };
+
+        if dir { rom[rom_byte_number] |=  rom_byte_mask; }
+        else   { rom[rom_byte_number] &= !rom_byte_mask; }
+
+        ow_write_bit(pin, delay, dir);
+
+        id_bit_number  += 1;
+        rom_byte_mask   = rom_byte_mask.wrapping_shl(1);
+        if rom_byte_mask == 0 { rom_byte_mask = 1; rom_byte_number += 1; }
+    }
+
+    if !ok || id_bit_number != 65 || crc8(rom) != 0 {
+        *last_discrepancy = 0;
+        *last_device_flag = false;
+        return false;
+    }
+
+    *last_discrepancy = last_zero;
+    if last_zero == 0 { *last_device_flag = true; }
+    true
 }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Bus multi-capteurs
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Gère un bus 1-Wire avec plusieurs DS18B20.
-pub struct Ds18b20Bus<P: OpenDrainOutput> {
-    ow:      OneWire<P>,
-    sensors: Vec<DS18B20, MAX_SENSORS>,
+pub struct Ds18b20Bus<P> {
+    pin:     P,
+    sensors: Vec<RomCode, MAX_SENSORS>,
 }
 
-impl<P: OpenDrainOutput> Ds18b20Bus<P> {
+impl<P: InputPin + OutputPin> Ds18b20Bus<P> {
     pub fn new(pin: P) -> Self {
-        Self { ow: OneWire::new(pin, false), sensors: Vec::new() }
+        Self { pin, sensors: Vec::new() }
     }
 
-    /// Recherche tous les DS18B20 sur le bus. Appeler une fois au démarrage.
+    /// Recherche tous les DS18B20 sur le bus.
+    ///
+    /// Essaie d'abord SEARCH ROM (DS18B20 authentique).
+    /// Si aucun trouvé mais présence détectée → mode SKIP ROM (clone/contrefaçon)
+    /// qui enregistre un capteur virtuel et utilise SKIP ROM pour toutes les opérations.
     pub fn discover<D: DelayNs>(&mut self, delay: &mut D) -> usize {
         self.sensors.clear();
-        let mut search = DeviceSearch::new_for_family(DS18B20_FAMILY);
-        loop {
-            match self.ow.search_next(&mut search, delay) {
-                Ok(Some(device)) => {
-                    if let Ok(sensor) = DS18B20::new(device) {
-                        let _ = self.sensors.push(sensor);
-                    }
+
+        // ── Tentative 1 : SEARCH ROM ──────────────────────────────────────────
+        {
+            let mut last_discrepancy: u8   = 0;
+            let mut last_device_flag: bool = false;
+            let mut rom = [0u8; 8];
+
+            loop {
+                if !search_step(
+                    &mut self.pin, delay,
+                    &mut rom,
+                    &mut last_discrepancy,
+                    &mut last_device_flag,
+                ) { break; }
+                if rom[0] == DS18B20_FAMILY {
+                    let _ = self.sensors.push(rom);
                 }
-                Ok(None) | Err(_) => break,
+                if self.sensors.is_full() { break; }
             }
         }
+
+        // ── Repli : SKIP ROM si SEARCH ROM a échoué ────────────────────────────
+        // Certains clones DS18B20 entrent dans un état bloqué après avoir reçu
+        // la commande SEARCH ROM (0xF0) — ils continuent à ne répondre qu'à la
+        // présence mais ignorent les commandes suivantes.
+        // Remède : reset prolongé 800µs pour forcer la réinitialisation interne,
+        // puis reset standard pour vérifier la présence dans un état propre.
+        if self.sensors.is_empty() {
+            ow_reset_long(&mut self.pin, delay); // force-reset du clone bloqué
+            if ow_reset(&mut self.pin, delay) {  // reset standard → présence propre
+                let _ = self.sensors.push(SKIP_ROM_SENTINEL);
+            }
+        }
+
         self.sensors.len()
     }
 
-    /// Envoie la commande Convert T au capteur `index` (sans attendre).
-    /// Appeler `read_celsius(index, delay)` après ~800ms.
+    /// Envoie Convert T au capteur `index` (sans attente de conversion).
     pub fn start_conversion<D: DelayNs>(
         &mut self, index: usize, delay: &mut D,
     ) -> Result<(), Ds18b20Error> {
-        // Destructuration pour éviter les conflits d'emprunt entre `sensors` et `ow`
-        let Ds18b20Bus { sensors, ow, .. } = self;
-        let sensor = sensors.get(index).ok_or(Ds18b20Error::NoSensor)?;
-        sensor.measure_temperature(ow, delay)
-            .map(|_| ())   // measure_temperature renvoie MeasureResolution, pas ()
-            .map_err(|_| Ds18b20Error::Bus)
+        let rom = *self.sensors.get(index).ok_or(Ds18b20Error::NoSensor)?;
+        if !ow_reset(&mut self.pin, delay) { return Err(Ds18b20Error::Bus); }
+        self.send_address(&rom, delay);
+        ow_write_byte(&mut self.pin, delay, CMD_CONVERT_T);
+        Ok(())
     }
 
-    /// Lit le scratchpad du capteur `index`. À appeler après le délai de conversion.
+    /// Lit la température en °C du capteur `index`.
     pub fn read_celsius<D: DelayNs>(
         &mut self, index: usize, delay: &mut D,
     ) -> Result<f32, Ds18b20Error> {
-        // Destructuration pour éviter les conflits d'emprunt entre `sensors` et `ow`
-        let Ds18b20Bus { sensors, ow, .. } = self;
-        let sensor = sensors.get(index).ok_or(Ds18b20Error::NoSensor)?;
-        let raw = sensor.read_temperature(ow, delay)
-            .map_err(|_| Ds18b20Error::Bus)?;
-        // raw est u16 ; cast en i16 pour obtenir les températures négatives
+        let rom = *self.sensors.get(index).ok_or(Ds18b20Error::NoSensor)?;
+        if !ow_reset(&mut self.pin, delay) { return Err(Ds18b20Error::Bus); }
+        self.send_address(&rom, delay);
+        ow_write_byte(&mut self.pin, delay, CMD_READ_SCRATCH);
+        let mut sp = [0u8; 9];
+        for b in sp.iter_mut() { *b = ow_read_byte(&mut self.pin, delay); }
+        if crc8(&sp) != 0 { return Err(Ds18b20Error::CrcError); }
+        let raw = (sp[0] as u16) | ((sp[1] as u16) << 8);
         Ok(raw as i16 as f32 / 16.0)
+    }
+
+    /// Adressage : SKIP ROM pour les clones (sentinel), MATCH ROM + ROM pour les vrais.
+    fn send_address<D: DelayNs>(&mut self, rom: &RomCode, delay: &mut D) {
+        if rom == &SKIP_ROM_SENTINEL {
+            ow_write_byte(&mut self.pin, delay, CMD_SKIP_ROM);
+        } else {
+            ow_write_byte(&mut self.pin, delay, CMD_MATCH_ROM);
+            for &b in rom { ow_write_byte(&mut self.pin, delay, b); }
+        }
     }
 
     pub fn sensor_count(&self) -> usize { self.sensors.len() }
 
-    /// Lecture complète de tous les capteurs (bloquant 800 ms par capteur).
-    ///
-    /// A utiliser uniquement dans le firmware principal ou les taches
-    /// qui peuvent bloquer librement. Pour un usage avec USB polling
-    /// simultane, utiliser `start_conversion` + `wait_ms_usb` + `read_celsius`.
+    /// Lecture bloquante de tous les capteurs (800ms par capteur).
     pub fn read_all<D: DelayNs>(&mut self, delay: &mut D) -> [TemperatureReading; MAX_SENSORS] {
         let mut readings = [TemperatureReading::default(); MAX_SENSORS];
         for idx in 0..self.sensors.len() {
             let is_critical = CRITICAL_TEMP_INDICES.contains(&idx);
             if self.start_conversion(idx, delay).is_ok() {
-                delay.delay_ms(800); // attente conversion 12 bits (750 ms max)
+                delay.delay_ms(800);
                 readings[idx] = match self.read_celsius(idx, delay) {
                     Ok(t)  => TemperatureReading { value: t,        valid: true,  critical: is_critical },
                     Err(_) => TemperatureReading { value: f32::NAN, valid: false, critical: is_critical },
@@ -120,30 +311,25 @@ impl<P: OpenDrainOutput> Ds18b20Bus<P> {
 
 // ════════════════════════════════════════════════════════════════════════════
 // Wrapper single-capteur implémentant TemperatureSensor
-// (pour le firmware principal où on peut bloquer librement)
 // ════════════════════════════════════════════════════════════════════════════
 
-pub struct Ds18b20Sensor<P: OpenDrainOutput, D> {
+pub struct Ds18b20Sensor<P, D> {
     bus:   Ds18b20Bus<P>,
     delay: D,
     index: usize,
 }
 
-impl<P: OpenDrainOutput, D: DelayNs> Ds18b20Sensor<P, D> {
+impl<P: InputPin + OutputPin, D: DelayNs> Ds18b20Sensor<P, D> {
     pub fn new(bus: Ds18b20Bus<P>, delay: D, index: usize) -> Self {
         Self { bus, delay, index }
     }
 }
 
-impl<P: OpenDrainOutput, D: DelayNs> TemperatureSensor for Ds18b20Sensor<P, D> {
+impl<P: InputPin + OutputPin, D: DelayNs> TemperatureSensor for Ds18b20Sensor<P, D> {
     type Error = Ds18b20Error;
-
-    /// Envoie Convert T — ne bloque PAS pendant la conversion.
-    /// L'appelant doit attendre ~800ms avant read_celsius().
     fn start_measurement(&mut self) -> Result<(), Self::Error> {
         self.bus.start_conversion(self.index, &mut self.delay)
     }
-
     fn read_celsius(&mut self) -> Result<f32, Self::Error> {
         self.bus.read_celsius(self.index, &mut self.delay)
     }
