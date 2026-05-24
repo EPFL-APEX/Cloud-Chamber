@@ -26,6 +26,7 @@
 #![cfg_attr(not(test), no_main)]
 
 pub mod cloud_chamber_hal;
+pub mod config;
 pub mod core1;
 pub mod drivers;
 pub mod security_loop;

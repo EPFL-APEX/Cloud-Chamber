@@ -25,3 +25,12 @@ pub mod encoder;
 
 /// Driver capteur de fermeture : détection d'un contact sec via GPIO.
 pub mod closure;
+
+/// Driver DS18B20 : capteur de température 1-Wire (authentique ou clone SKIP ROM).
+pub mod ds18b20;
+
+/// Driver BME280 : capteur de température, humidité et pression atmosphérique via I²C.
+pub mod bme280;
+
+/// Driver ABP2 : capteur de pression Honeywell via I²C.
+pub mod abp2;

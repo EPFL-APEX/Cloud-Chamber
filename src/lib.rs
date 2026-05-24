@@ -12,6 +12,7 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod cloud_chamber_hal;
+pub mod config;
 pub mod drivers;
 pub mod security_loop;
 pub mod shared;

@@ -108,12 +108,12 @@ pub fn init_adc(adc: hal::adc::Adc) {
 /// );
 /// ```
 #[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
-pub struct AdcPin<P: hal::adc::AdcChannel> {
+pub struct AdcPin<P: hal::adc::AdcChannel + hal::gpio::AnyPin> {
     pin: hal::adc::AdcPin<P>,
 }
 
 #[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
-impl<P: hal::adc::AdcChannel> AdcPin<P> {
+impl<P: hal::adc::AdcChannel + hal::gpio::AnyPin> AdcPin<P> {
     /// Convertit une broche GPIO en entrée ADC.
     ///
     /// `pin` doit être une broche compatible ADC (GP26–GP29 sur RP2040/RP2350).
@@ -125,7 +125,7 @@ impl<P: hal::adc::AdcChannel> AdcPin<P> {
 }
 
 #[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
-impl<P: hal::adc::AdcChannel> AdcChannel for AdcPin<P> {
+impl<P: hal::adc::AdcChannel + hal::gpio::AnyPin> AdcChannel for AdcPin<P> {
     fn read_raw(&mut self) -> u16 {
         critical_section::with(|cs| {
             ADC.borrow_ref_mut(cs)

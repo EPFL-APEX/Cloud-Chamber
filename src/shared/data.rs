@@ -22,6 +22,25 @@
 use core::cell::RefCell;
 use critical_section::Mutex;
 
+// ─── Structures capteurs externes ────────────────────────────────────────────
+
+/// Lecture d'un capteur de température DS18B20 ou BME280.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TemperatureReading {
+    pub value:    f32,
+    pub valid:    bool,
+    /// `true` pour les capteurs dont le dépassement doit déclencher une alarme.
+    pub critical: bool,
+}
+
+/// Lecture d'un capteur de pression ABP2.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PressureReading {
+    pub pressure:    f32,
+    pub temperature: f32,
+    pub valid:       bool,
+}
+
 // ─── Constantes de configuration ─────────────────────────────────────────────
 
 /// Nombre de capteurs de température dans le système.
