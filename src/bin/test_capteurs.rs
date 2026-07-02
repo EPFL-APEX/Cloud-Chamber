@@ -25,7 +25,11 @@ use usb_device::{class_prelude::*, prelude::*};
 use usbd_serial::SerialPort;
 use heapless::String;
 
+/// Mettre à true et brancher le BME280 sur GP4/GP5 pour activer les mesures I²C.
+const WITH_BME280: bool = false;
+
 use cloud_chamber_firmware::sensors::ds18b20::Ds18b20Bus;
+#[allow(unused_imports)]
 use cloud_chamber_firmware::sensors::bme280::Bme280Driver;
 
 use panic_halt as _;
@@ -313,20 +317,26 @@ fn main() -> ! {
         .device_class(0x02)
         .build();
 
-    // ── I²C GP4/GP5 à 100 kHz ────────────────────────────────────────────────
-    use rp2040_hal::fugit::RateExtU32;
-    let i2c = hal::I2C::new_controller(
-        pac.I2C0,
-        pins.gpio4.into_function::<hal::gpio::FunctionI2C>(),
-        pins.gpio5.into_function::<hal::gpio::FunctionI2C>(),
-        100u32.kHz(),
-        &mut pac.RESETS,
-        clocks.system_clock.freq(),
-    );
-
     // ── Drivers capteurs ──────────────────────────────────────────────────────
     let mut ds_bus = Ds18b20Bus::new(OpenDrainPin::new(pins.gpio15.into_floating_input()));
-    let mut bme    = Bme280Driver::new(i2c);
+
+    // I²C et BME280 : initialisés seulement si WITH_BME280 = true
+    // (sans le BME280 branché, bme.init() bloque le bus I²C indéfiniment)
+    #[allow(unused_variables)]
+    let (mut bme_opt, bme_ok_init) = if WITH_BME280 {
+        use rp2040_hal::fugit::RateExtU32;
+        let i2c = hal::I2C::new_controller(
+            pac.I2C0,
+            pins.gpio4.into_function::<hal::gpio::FunctionI2C>(),
+            pins.gpio5.into_function::<hal::gpio::FunctionI2C>(),
+            100u32.kHz(),
+            &mut pac.RESETS,
+            clocks.system_clock.freq(),
+        );
+        (Some(Bme280Driver::new(i2c)), false)
+    } else {
+        (None, false)
+    };
 
     // ── Enumération USB + délai ouverture moniteur (5 s) ─────────────────────
     // On poll USB pendant 5 secondes pour laisser le temps d'ouvrir le port.
@@ -341,16 +351,31 @@ fn main() -> ! {
         usb_write(&mut serial, b"DS18B20 non detecte -- verifier GP15 et pull-up 4.7k\r\n");
     }
 
-    // ── Init BME280 (retry jusqu'au succès) ───────────────────────────────────
-    loop {
-        match bme.init() {
-            Ok(()) => { usb_write(&mut serial, b"BME280 OK   (I2C GP4/GP5)\r\n\r\n"); break; }
-            Err(_) => {
-                usb_write(&mut serial, b"BME280 non detecte (I2C GP4/GP5) -- nouvel essai...\r\n");
-                wait_ms_usb(&timer, 2_000, &mut usb_dev, &mut serial);
+    // ── Init BME280 (optionnel — contrôlé par WITH_BME280) ───────────────────
+    let bme_ok = if WITH_BME280 {
+        let mut ok = false;
+        if let Some(ref mut bme) = bme_opt {
+            for _ in 0..3u8 {
+                match bme.init() {
+                    Ok(()) => {
+                        usb_write(&mut serial, b"BME280 OK   (I2C GP4/GP5)\r\n");
+                        ok = true;
+                        break;
+                    }
+                    Err(_) => {
+                        usb_write(&mut serial, b"BME280 non detecte -- nouvel essai...\r\n");
+                        wait_ms_usb(&timer, 1_000, &mut usb_dev, &mut serial);
+                    }
+                }
             }
+            if !ok { usb_write(&mut serial, b"BME280 absent\r\n"); }
         }
-    }
+        ok
+    } else {
+        usb_write(&mut serial, b"BME280 desactive (WITH_BME280 = false)\r\n");
+        false
+    };
+    usb_write(&mut serial, b"\r\n");
 
     // ── DS18B20 → résolution 9-bit (93.75 ms max) ────────────────────────────
     // Config 0x1F = bits 5-6 = 00 → 9-bit (±0.5 °C, 93.75 ms max)
@@ -372,6 +397,7 @@ fn main() -> ! {
         // Le driver générique (Ds18b20Bus) présente un problème de compatibilité
         // avec ce clone spécifique. Les fonctions brutes ci-dessous (ow_*_raw),
         // qui accèdent directement aux registres SIO, fonctionnent correctement.
+        let t_ds_start = timer.get_counter().ticks();
         let conv_started = if count > 0 {
             ow_reset_raw(&timer) && {
                 ow_write_byte_raw(&timer, 0xCC); // SKIP ROM
@@ -421,11 +447,19 @@ fn main() -> ! {
             None
         };
 
-        // BME280 : mesure bloquante ~15ms
-        let bme_result = bme.measure(&mut CortexDelay).ok();
+        let ds_ms = (timer.get_counter().ticks() - t_ds_start) / 1_000;
+
+        // BME280 : mesure bloquante ~15ms (skippé si WITH_BME280 = false)
+        let t_bme_start = timer.get_counter().ticks();
+        let bme_result = if bme_ok {
+            bme_opt.as_mut().and_then(|b| b.measure(&mut CortexDelay).ok())
+        } else {
+            None
+        };
+        let bme_ms = if bme_ok { (timer.get_counter().ticks() - t_bme_start) / 1_000 } else { 0 };
 
         // Formatage
-        let mut msg: String<128> = String::new();
+        let mut msg: String<160> = String::new();
 
         match ds_result {
             Some(t) => {
@@ -453,7 +487,7 @@ fn main() -> ! {
             None => { let _ = write!(msg, "BME280: --"); }
         }
 
-        let _ = write!(msg, "\r\n");
+        let _ = write!(msg, "  |  DS: {}ms  BME: {}ms\r\n", ds_ms, bme_ms);
         usb_write(&mut serial, msg.as_bytes());
 
         // Pause 200ms

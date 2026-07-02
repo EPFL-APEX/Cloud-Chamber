@@ -11,3 +11,6 @@ pub mod data;
 
 /// Drivers capteurs + traits (DS18B20, BME280, ABP2).
 pub mod sensors;
+
+/// Logique de contrôle : TargetState, ControlOutput, PID, planificateur de mesures.
+pub mod control;

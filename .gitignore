@@ -111,3 +111,6 @@ $RECYCLE.BIN/
 *.lnk
 
 # End of https://www.toptal.com/developers/gitignore/api/rust,visualstudiocode,macos,windows,linux
+
+# Fichiers UF2 generes localement (artefacts de build)
+*.uf2
