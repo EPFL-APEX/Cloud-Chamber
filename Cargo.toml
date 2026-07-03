@@ -22,6 +22,7 @@ critical-section = "1.1"
 heapless = "0.9"
 # Bibliothèque de rendu graphique embarqué (no_std, trait DrawTarget)
 embedded-graphics = "0.8"
+embedded-graphics-simulator = { version = "0.8", default-features = false }
 ili9341 = "0.6"
 
 [dev-dependencies]
@@ -53,3 +54,6 @@ rp235x-hal = { version = "0.4", features = ["rt", "critical-section-impl"] }
 
 [target."thumbv8m.main-none-eabihf".dependencies]
 rp235x-hal = { version = "0.4", features = ["rt", "critical-section-impl"] }
+
+[target."x86_64-pc-windows-msvc".dependcies]
+embedded-graphics-simulator = { version = "0.8", default-features = false }

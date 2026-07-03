@@ -104,3 +104,4 @@ DEFMT_LOG = "debug"
 [alias]
 # Run unit tests on the host (the default target is the embedded chip which has no std).
 test-host = "test --target x86_64-pc-windows-msvc --lib"
+test-ui = "build --bin test_ui --target x86_64-pc-windows-msvc"

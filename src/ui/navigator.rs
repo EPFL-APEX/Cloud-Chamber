@@ -37,7 +37,7 @@ pub struct Navigator<const DEPTH: usize> {
 
 impl<const DEPTH: usize> Navigator<DEPTH> {
     pub fn new(initial: Screen) -> Self {
-        let mut stack = [Screen::Status; DEPTH];
+        let mut stack = [Screen::Idle; DEPTH];
         stack[0] = initial;
         Self { stack, top: 0 }
     }
@@ -86,48 +86,48 @@ mod tests {
 
     #[test]
     fn initial_screen_is_correct() {
-        let nav: Navigator<8> = Navigator::new(Screen::Status);
-        assert_eq!(nav.current(), Screen::Status);
+        let nav: Navigator<8> = Navigator::new(Screen::Idle);
+        assert_eq!(nav.current(), Screen::Idle);
     }
 
     #[test]
     fn push_changes_current_screen() {
-        let mut nav: Navigator<8> = Navigator::new(Screen::Status);
+        let mut nav: Navigator<8> = Navigator::new(Screen::Idle);
         nav.push(Screen::MainMenu);
         assert_eq!(nav.current(), Screen::MainMenu);
     }
 
     #[test]
     fn pop_returns_to_previous() {
-        let mut nav: Navigator<8> = Navigator::new(Screen::Status);
+        let mut nav: Navigator<8> = Navigator::new(Screen::Idle);
         nav.push(Screen::MainMenu);
         nav.pop();
-        assert_eq!(nav.current(), Screen::Status);
+        assert_eq!(nav.current(), Screen::Idle);
     }
 
     #[test]
     fn pop_at_root_stays_at_root() {
-        let mut nav: Navigator<8> = Navigator::new(Screen::Status);
+        let mut nav: Navigator<8> = Navigator::new(Screen::Idle);
         nav.pop();
-        assert_eq!(nav.current(), Screen::Status);
+        assert_eq!(nav.current(), Screen::Idle);
     }
 
     #[test]
     fn is_at_root_initial() {
-        let nav: Navigator<8> = Navigator::new(Screen::Status);
+        let nav: Navigator<8> = Navigator::new(Screen::Idle);
         assert!(nav.is_at_root());
     }
 
     #[test]
     fn is_at_root_after_push() {
-        let mut nav: Navigator<8> = Navigator::new(Screen::Status);
+        let mut nav: Navigator<8> = Navigator::new(Screen::Idle);
         nav.push(Screen::MainMenu);
         assert!(!nav.is_at_root());
     }
 
     #[test]
     fn push_beyond_depth_is_ignored() {
-        let mut nav: Navigator<2> = Navigator::new(Screen::Status);
+        let mut nav: Navigator<2> = Navigator::new(Screen::Idle);
         nav.push(Screen::MainMenu);
         nav.push(Screen::Settings); // profondeur 2 = max, ignoré
         assert_eq!(nav.current(), Screen::MainMenu);

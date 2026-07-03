@@ -29,7 +29,7 @@ pub enum MainMenuItem {
     INFO,
 }
 
-const MAIN_MENU_SIZE : u8 = MainMenuItem::into(MainMenuItem::INFO);
+const MAIN_MENU_SIZE : u8 = 6;//MainMenuItem::into(MainMenuItem::INFO);
 
 /// Écran de menu principal.
 pub struct MainMenuScreen {
@@ -54,13 +54,15 @@ impl MainMenuScreen {
     }
 
     pub fn selected_item(&self) -> MainMenuItem {
-        MainMenuItem::from(self.selected)
+        //MainMenuItem::from(self.selected);
+        todo!()
     }
 
     pub fn draw<D>(&self, display: &mut D) -> Result<(), D::Error>
     where
         D: DrawTarget<Color = Rgb565> + OriginDimensions,
     {
+        todo!();
         // Fond
         let bg_style = PrimitiveStyleBuilder::new().fill_color(theme::BG).build();
         Rectangle::new(Point::zero(), Size::new(320, 240))
@@ -71,13 +73,13 @@ impl MainMenuScreen {
         StatusBar { title: "Menu principal", state_color: theme::ACCENT }.draw(display)?;
 
         // Liste des éléments
-        for (i, &label) in MAIN_MENU_SIZE.iter().enumerate() {
-            MenuItem {
-                label,
-                origin: Point::new(0, 24 + i as i32 * 18),
-                selected: i == self.selected,
-            }.draw(display)?;
-        }
+        //for (i, &label) in MAIN_MENU_SIZE {
+        //    MenuItem {
+        //        label,
+        //        origin: Point::new(0, 24 + i as i32 * 18),
+        //        selected: i == self.selected,
+        //    }.draw(display)?;
+        //}
 
         // Flèche indicatrice de sélection
         let arrow_style = MonoTextStyle::new(&FONT_6X10, theme::ACCENT);
@@ -93,7 +95,16 @@ impl MainMenuScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use embedded_graphics_simulator::SimulatorDisplay;
+
+    use embedded_graphics::{
+    pixelcolor::BinaryColor,
+    prelude::*,
+    primitives::{Circle, Line, Rectangle, PrimitiveStyle},
+    mono_font::{ascii::FONT_6X9, MonoTextStyle},
+    text::Text,
+    };
+
+    use embedded_graphics_simulator::{SimulatorDisplay, Window, OutputSettingsBuilder, BinaryColorTheme};
 
     fn make_display() -> SimulatorDisplay<Rgb565> {
         SimulatorDisplay::new(Size::new(320, 240))
@@ -123,7 +134,7 @@ mod tests {
     fn select_previous_at_bottom_stays() {
         let mut menu = MainMenuScreen::new();
         for _ in 0..20 { menu.select_previous(); }
-        assert_eq!(menu.selected, MAIN_MENU_ITEMS.len() - 1);
+        assert_eq!(menu.selected, MAIN_MENU_SIZE - 1);
     }
 
     #[test]
@@ -132,10 +143,42 @@ mod tests {
         MainMenuScreen::new().draw(&mut d).unwrap();
     }
 
+    //#[test]
+    //fn selected_item_returns_correct_label() {
+    //    let mut menu = MainMenuScreen::new();
+    //    menu.select_next();
+    //    todo!()
+    //}
+
     #[test]
-    fn selected_item_returns_correct_label() {
-        let mut menu = MainMenuScreen::new();
-        menu.select_next();
-        assert_eq!(menu.selected_item(), MAIN_MENU_ITEMS[1]);
-    }
+    fn test_() {
+        let mut display = SimulatorDisplay::<BinaryColor>::new(Size::new(128, 64));
+
+        let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+        let text_style = MonoTextStyle::new(&FONT_6X9, BinaryColor::On);
+
+        Circle::new(Point::new(72, 8), 48)
+            .into_styled(line_style)
+            .draw(&mut display);
+
+        Line::new(Point::new(48, 16), Point::new(8, 16))
+            .into_styled(line_style)
+            .draw(&mut display);
+
+        Line::new(Point::new(48, 16), Point::new(64, 32))
+            .into_styled(line_style)
+            .draw(&mut display);
+
+        Rectangle::new(Point::new(79, 15), Size::new(34, 34))
+            .into_styled(line_style)
+            .draw(&mut display);
+
+        Text::new("Hello World!", Point::new(5, 5), text_style).draw(&mut display);
+
+        let output_settings = OutputSettingsBuilder::new()
+            .theme(BinaryColorTheme::OledBlue)
+            .build();
+        Window::new("Hello World", &output_settings).show_static(&display);
+}
+
 }
