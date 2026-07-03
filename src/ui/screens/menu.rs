@@ -17,20 +17,23 @@ use embedded_graphics::{
     Drawable,
 };
 
-use crate::ui::{theme, widgets::{MenuItem, StatusBar}};
+use crate::ui::{navigator::Screen::MainMenu, theme, widgets::{MenuItem, StatusBar}};
 
 /// Entrées du menu principal.
-pub const MAIN_MENU_ITEMS: &[&str] = &[
-    "Statut",
-    "Temperatures",
-    "Tensions",
-    "Parametres",
-    "A propos",
-];
+pub enum MainMenuItem {
+    CONTROL,
+    STATS,
+    SETTINGS,
+    COOLDOWN,
+    DATA,
+    INFO,
+}
+
+const MAIN_MENU_SIZE : u8 = MainMenuItem::into(MainMenuItem::INFO);
 
 /// Écran de menu principal.
 pub struct MainMenuScreen {
-    pub selected: usize,
+    pub selected: u8,
 }
 
 impl MainMenuScreen {
@@ -38,20 +41,20 @@ impl MainMenuScreen {
         Self { selected: 0 }
     }
 
-    pub fn select_up(&mut self) {
+    pub fn select_next(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
         }
     }
 
-    pub fn select_down(&mut self) {
-        if self.selected + 1 < MAIN_MENU_ITEMS.len() {
+    pub fn select_previous(&mut self) {
+        if self.selected + 1 < MAIN_MENU_SIZE {
             self.selected += 1;
         }
     }
 
-    pub fn selected_item(&self) -> &'static str {
-        MAIN_MENU_ITEMS[self.selected]
+    pub fn selected_item(&self) -> MainMenuItem {
+        MainMenuItem::from(self.selected)
     }
 
     pub fn draw<D>(&self, display: &mut D) -> Result<(), D::Error>
@@ -68,7 +71,7 @@ impl MainMenuScreen {
         StatusBar { title: "Menu principal", state_color: theme::ACCENT }.draw(display)?;
 
         // Liste des éléments
-        for (i, &label) in MAIN_MENU_ITEMS.iter().enumerate() {
+        for (i, &label) in MAIN_MENU_SIZE.iter().enumerate() {
             MenuItem {
                 label,
                 origin: Point::new(0, 24 + i as i32 * 18),
@@ -103,23 +106,23 @@ mod tests {
     }
 
     #[test]
-    fn select_down_increments() {
+    fn select_previous_increments() {
         let mut menu = MainMenuScreen::new();
-        menu.select_down();
+        menu.select_previous();
         assert_eq!(menu.selected, 1);
     }
 
     #[test]
-    fn select_up_at_top_stays() {
+    fn select_next_at_top_stays() {
         let mut menu = MainMenuScreen::new();
-        menu.select_up();
+        menu.select_next();
         assert_eq!(menu.selected, 0);
     }
 
     #[test]
-    fn select_down_at_bottom_stays() {
+    fn select_previous_at_bottom_stays() {
         let mut menu = MainMenuScreen::new();
-        for _ in 0..20 { menu.select_down(); }
+        for _ in 0..20 { menu.select_previous(); }
         assert_eq!(menu.selected, MAIN_MENU_ITEMS.len() - 1);
     }
 
@@ -132,7 +135,7 @@ mod tests {
     #[test]
     fn selected_item_returns_correct_label() {
         let mut menu = MainMenuScreen::new();
-        menu.select_down();
+        menu.select_next();
         assert_eq!(menu.selected_item(), MAIN_MENU_ITEMS[1]);
     }
 }

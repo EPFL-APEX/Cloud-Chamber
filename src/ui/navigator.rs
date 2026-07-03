@@ -14,20 +14,17 @@
 /// Écrans disponibles dans l'interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
-    Status,
+    Idle,
     MainMenu,
-    TemperatureDetail,
-    VoltageDetail,
     Settings,
 }
 
 /// Événement de navigation produit par l'encodeur ou d'autres entrées.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
-    Up,
-    Down,
+    Next,
+    Previous,
     Select,
-    Back,
 }
 
 /// Pile de navigation à profondeur fixe.
