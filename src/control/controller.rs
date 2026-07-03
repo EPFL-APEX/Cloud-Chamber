@@ -93,7 +93,9 @@ impl Controller {
         };
 
         // ── 4. Haut voltage ──────────────────────────────────────────────────
-        let high_voltage = target.high_voltage_enabled && self.chamber_ready(state, target);
+        // chamber_ready() sera réactivé quand la chambre sera opérationnelle.
+        // Pour l'instant, HV suit directement la commande opérateur.
+        let high_voltage = target.high_voltage_enabled;
 
         ControlOutput {
             // L'interlock externe (autre cœur, IHM) peut bloquer le compresseur

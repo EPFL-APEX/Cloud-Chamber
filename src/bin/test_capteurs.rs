@@ -26,7 +26,7 @@ use usbd_serial::SerialPort;
 use heapless::String;
 
 /// Mettre à true et brancher le BME280 sur GP4/GP5 pour activer les mesures I²C.
-const WITH_BME280: bool = false;
+const WITH_BME280: bool = true;
 
 use cloud_chamber_firmware::sensors::ds18b20::Ds18b20Bus;
 #[allow(unused_imports)]
@@ -325,6 +325,39 @@ fn main() -> ! {
     #[allow(unused_variables)]
     let (mut bme_opt, bme_ok_init) = if WITH_BME280 {
         use rp2040_hal::fugit::RateExtU32;
+
+        // Réinitialisation bus I²C : 9 impulsions SCL + condition STOP.
+        // Libère un esclave (BME280) coincé en milieu de transaction après un
+        // reset du Pico sans power-cycle du capteur.
+        unsafe {
+            let sio = &*pac::SIO::ptr();
+            const SDA: u32 = 1 << 4;   // GP4
+            const SCL: u32 = 1 << 5;   // GP5
+
+            // SDA et SCL en sortie haute (via SIO — pins encore en mode SIO par défaut)
+            sio.gpio_out_set().write(|w| w.bits(SDA | SCL));
+            sio.gpio_oe_set().write(|w|  w.bits(SDA | SCL));
+            ow_wait(&timer, 10);
+
+            // 9 impulsions d'horloge — déverrouille tout esclave coincé
+            for _ in 0..9u8 {
+                sio.gpio_out_clr().write(|w| w.bits(SCL));
+                ow_wait(&timer, 5);
+                sio.gpio_out_set().write(|w| w.bits(SCL));
+                ow_wait(&timer, 5);
+            }
+
+            // Condition STOP : SDA bas → haut pendant que SCL est haut
+            sio.gpio_out_clr().write(|w| w.bits(SDA));
+            ow_wait(&timer, 5);
+            sio.gpio_out_set().write(|w| w.bits(SDA));
+            ow_wait(&timer, 10);
+
+            // Relâcher les deux broches (haute impédance) avant de les passer à I²C
+            sio.gpio_oe_clr().write(|w| w.bits(SDA | SCL));
+            ow_wait(&timer, 100);
+        }
+
         let i2c = hal::I2C::new_controller(
             pac.I2C0,
             pins.gpio4.into_function::<hal::gpio::FunctionI2C>(),
@@ -410,10 +443,12 @@ fn main() -> ! {
         // Ce clone ne signale pas la fin via read-slots → pas de polling, attente fixe.
         wait_ms_usb(&timer, 100, &mut usb_dev, &mut serial);
 
-        // Lecture scratchpad avec un retry sur CRC fail (glitch occasionnel sur le bus)
+        // Lecture scratchpad — 4 tentatives avec 15 ms entre chaque.
+        // Le clone DS18B20 peut produire des CRC invalides en rafale quand le bus
+        // est légèrement bruité (alimentation partagée avec l'I2C du BME280).
         let ds_result: Option<f32> = if conv_started {
             let mut result = None;
-            'retry: for _attempt in 0..2u8 {
+            'retry: for _attempt in 0..4u8 {
                 if !ow_reset_raw(&timer) { break 'retry; }
                 ow_write_byte_raw(&timer, 0xCC); // SKIP ROM
                 ow_write_byte_raw(&timer, 0xBE); // READ SCRATCHPAD
@@ -438,9 +473,8 @@ fn main() -> ! {
                     result = Some(raw_t as i16 as f32 / 16.0);
                     break 'retry;
                 }
-                // Petite attente avant le retry (5 ms)
-                let t_retry = timer.get_counter().ticks() + 5_000;
-                while timer.get_counter().ticks() < t_retry {}
+                // Attente avant le retry — USB polling actif pour ne pas perdre la connexion
+                wait_ms_usb(&timer, 15, &mut usb_dev, &mut serial);
             }
             result
         } else {
@@ -449,7 +483,7 @@ fn main() -> ! {
 
         let ds_ms = (timer.get_counter().ticks() - t_ds_start) / 1_000;
 
-        // BME280 : mesure bloquante ~15ms (skippé si WITH_BME280 = false)
+        // BME280 : lu à chaque cycle (~15 ms, négligeable)
         let t_bme_start = timer.get_counter().ticks();
         let bme_result = if bme_ok {
             bme_opt.as_mut().and_then(|b| b.measure(&mut CortexDelay).ok())
@@ -459,7 +493,7 @@ fn main() -> ! {
         let bme_ms = if bme_ok { (timer.get_counter().ticks() - t_bme_start) / 1_000 } else { 0 };
 
         // Formatage
-        let mut msg: String<160> = String::new();
+        let mut msg: String<192> = String::new();
 
         match ds_result {
             Some(t) => {
@@ -479,7 +513,7 @@ fn main() -> ! {
                 let tneg  = t < 0.0;
                 let tabs  = if tneg { -t } else { t };
                 let tsign = if tneg { "-" } else { "" };
-                let _ = write!(msg, "BME280: {}{}.{:02} C  Pres: {}.{:01} hPa  Humi: {}.{} %",
+                let _ = write!(msg, "BME280: {}{}.{:02} C  {}.{:01} hPa  {}.{} %",
                     tsign, tabs as i32, ((tabs % 1.0) * 100.0) as u32,
                     p as u32, ((p % 1.0) * 10.0) as u32,
                     h as i32, ((h % 1.0) * 10.0) as u32);

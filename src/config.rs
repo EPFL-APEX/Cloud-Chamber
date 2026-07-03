@@ -12,6 +12,10 @@ pub const PIN_I2C_SDA: u8 = 4;
 pub const PIN_I2C_SCL: u8 = 5;
 /// GPIO de sortie pour le relais de sécurité compresseur
 pub const PIN_COMPRESSOR_RELAY: u8 = 16;
+/// GPIO de sortie pour l'activation du haut voltage
+pub const PIN_HV_ENABLE: u8 = 17;
+/// GPIO de sortie pour le chauffage isopropanol (PWM à venir, digital pour l'instant)
+pub const PIN_ISO_HEATER: u8 = 18;
 
 // ============================================================
 // Adresses I²C des capteurs de pression ABP2
@@ -43,6 +47,16 @@ pub const NON_CRITICAL_READ_INTERVAL_MS: u64 = 2000;
 pub const DATA_PUBLISH_INTERVAL_MS:      u64 = 1000;
 /// Délai avant de retenter la lecture d'un capteur après un échec.
 pub const SENSOR_FAILURE_RETRY_MS:       u64 = 1_000;
+
+// ============================================================
+// Seuils de variation BME280 (même logique que FAST_CHANGE_THRESHOLD_C des DS18B20)
+// ============================================================
+/// Seuil de variation thermique ambiante (°C).
+pub const BME280_FAST_TEMP_C:       f32 = 1.0;
+/// Seuil de variation de pression atmosphérique (hPa) — plus bas car variations faibles.
+pub const BME280_FAST_PRESSURE_HPA: f32 = 0.3;
+/// Seuil de variation d'humidité (%).
+pub const BME280_FAST_HUMIDITY_PCT: f32 = 1.0;
 
 // ============================================================
 // Labels des capteurs de température

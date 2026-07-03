@@ -14,3 +14,6 @@ pub mod sensors;
 
 /// Logique de contrôle : TargetState, ControlOutput, PID, planificateur de mesures.
 pub mod control;
+
+/// Affichage TFT ILI9341 (KMRTM28028-SPI).
+pub mod display;
