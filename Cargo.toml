@@ -24,6 +24,8 @@ heapless = "0.9"
 embedded-graphics = "0.8"
 embedded-graphics-simulator = { version = "0.8", default-features = false }
 ili9341 = "0.6"
+tinybmp = "0.7.0"
+num_enum = { version = "0.7", default-features = false }
 
 [dev-dependencies]
 # Simulation de l'afficheur ILI9341 sur desktop pour tester l'UI sans matériel.

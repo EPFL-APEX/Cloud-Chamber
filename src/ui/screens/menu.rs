@@ -2,24 +2,23 @@
 //!
 //! # Navigation
 //!
-//! - `select_up()` / `select_down()` : déplacent la sélection dans la liste
+//! - `select_next()` / `select_previous()` : déplacent la sélection dans la liste
 //! - `selected_item()` : retourne l'élément actuellement sélectionné
 //!
 //! La liste est statique (`MAIN_MENU_ITEMS`) — pas d'allocation heap.
 
 use embedded_graphics::{
-    draw_target::DrawTarget,
-    geometry::{OriginDimensions, Point, Size},
-    mono_font::{ascii::FONT_6X10, MonoTextStyle},
-    pixelcolor::Rgb565,
-    primitives::{Primitive, PrimitiveStyleBuilder, Rectangle},
-    text::Text,
-    Drawable,
+    Drawable, draw_target::DrawTarget, geometry::{OriginDimensions, Point, Size}, image::{Image, ImageDrawable, ImageDrawableExt}, pixelcolor::{Rgb565, Rgb888}, primitives::{Primitive, PrimitiveStyleBuilder, Rectangle},
 };
+
+use tinybmp::Bmp;
+use num_enum::{TryFromPrimitive, IntoPrimitive};
 
 use crate::ui::{navigator::Screen::MainMenu, theme, widgets::{MenuItem, StatusBar}};
 
 /// Entrées du menu principal.
+#[repr(u8)]
+#[derive(TryFromPrimitive, IntoPrimitive)]
 pub enum MainMenuItem {
     CONTROL,
     STATS,
@@ -29,7 +28,7 @@ pub enum MainMenuItem {
     INFO,
 }
 
-const MAIN_MENU_SIZE : u8 = 6;//MainMenuItem::into(MainMenuItem::INFO);
+const MAIN_MENU_SIZE : u8 = 6; // core::mem::variant_count::<MainMenuItem>() as u8;
 
 /// Écran de menu principal.
 pub struct MainMenuScreen {
@@ -42,49 +41,51 @@ impl MainMenuScreen {
     }
 
     pub fn select_next(&mut self) {
-        if self.selected > 0 {
-            self.selected -= 1;
-        }
-    }
-
-    pub fn select_previous(&mut self) {
         if self.selected + 1 < MAIN_MENU_SIZE {
             self.selected += 1;
         }
     }
 
+    pub fn select_previous(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
     pub fn selected_item(&self) -> MainMenuItem {
-        //MainMenuItem::from(self.selected);
-        todo!()
+        MainMenuItem::try_from(self.selected).unwrap()
     }
 
     pub fn draw<D>(&self, display: &mut D) -> Result<(), D::Error>
     where
         D: DrawTarget<Color = Rgb565> + OriginDimensions,
     {
-        todo!();
-        // Fond
-        let bg_style = PrimitiveStyleBuilder::new().fill_color(theme::BG).build();
-        Rectangle::new(Point::zero(), Size::new(320, 240))
-            .into_styled(bg_style)
-            .draw(display)?;
 
-        // En-tête
-        StatusBar { title: "Menu principal", state_color: theme::ACCENT }.draw(display)?;
+        // BACKGROUND
+        const BACKGROUND_COLOR:Rgb565 = Rgb565::new(0, 4, 3);
+        display.clear(BACKGROUND_COLOR);
+        
+        let highlightcolor: Rgb565 = Rgb888::new(10, 116, 192).into();
 
-        // Liste des éléments
-        //for (i, &label) in MAIN_MENU_SIZE {
-        //    MenuItem {
-        //        label,
-        //        origin: Point::new(0, 24 + i as i32 * 18),
-        //        selected: i == self.selected,
-        //    }.draw(display)?;
-        //}
+        // STRUCTURE UI
+        
 
-        // Flèche indicatrice de sélection
-        let arrow_style = MonoTextStyle::new(&FONT_6X10, theme::ACCENT);
-        let arrow_y = 24 + self.selected as i32 * 18 + 12;
-        Text::new(">", Point::new(300, arrow_y), arrow_style).draw(display)?;
+
+        // ICONS
+        let icons_data = include_bytes!("../images/menu_icons.bmp");
+        let icons = Bmp::<Rgb565>::from_slice(icons_data).unwrap();
+        const ICON_SIZE:u32 = 64;
+
+        for i in 0..2 {
+            for j in 0..3 {
+                let drawing_icon_id = i * 3 + j;
+                let selected_y_shift = if drawing_icon_id == self.selected {ICON_SIZE} else {0};
+                let top_left = Point::new(drawing_icon_id as i32 * 64 , selected_y_shift as i32);
+                let icon = icons.sub_image(&Rectangle { top_left, size: Size { width: ICON_SIZE, height: ICON_SIZE } });
+
+                Image::new(&icon, Point::new(20 + j as i32 * 70, 50 + i as i32 * 70)).draw(display);
+            }
+        }
 
         Ok(())
     }

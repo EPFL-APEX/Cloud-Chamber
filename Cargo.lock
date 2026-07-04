@@ -16,12 +16,14 @@ dependencies = [
  "embedded-hal 1.0.0",
  "heapless 0.9.3",
  "ili9341",
+ "num_enum",
  "panic-halt",
  "panic-probe",
  "regex",
  "rp2040-boot2",
  "rp2040-hal",
  "rp235x-hal",
+ "tinybmp",
  "usb-device",
  "usbd-serial",
 ]
@@ -1311,6 +1313,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "tinybmp"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acb540c3e6f049f914d9c3eaf86ca415e264cf42d2b25bb5c24241af1a1e3aea"
+dependencies = [
+ "embedded-graphics",
 ]
 
 [[package]]

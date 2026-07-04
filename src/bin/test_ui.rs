@@ -1,40 +1,29 @@
 use embedded_graphics::{
-    pixelcolor::BinaryColor,
-    prelude::*,
-    primitives::{Circle, Line, Rectangle, PrimitiveStyle},
-    mono_font::{ascii::FONT_6X9, MonoTextStyle},
-    text::Text,
+    pixelcolor::{BinaryColor, Rgb565},
+    geometry::Size,
 };
-use embedded_graphics_simulator::{BinaryColorTheme, SimulatorDisplay, Window, OutputSettingsBuilder};
+use embedded_graphics_simulator::{BinaryColorTheme, SimulatorDisplay, OutputSettingsBuilder};
+
+use ::cloud_chamber::ui::screens;
 
 fn main() -> Result<(), core::convert::Infallible> {
-    let mut display = SimulatorDisplay::<BinaryColor>::new(Size::new(128, 64));
+    let mut display = SimulatorDisplay::<Rgb565>::new(Size::new(320, 240));
 
-    let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
-    let text_style = MonoTextStyle::new(&FONT_6X9, BinaryColor::On);
+    let main_menu_screen = screens::menu::MainMenuScreen::new();
 
-    Circle::new(Point::new(72, 8), 48)
-        .into_styled(line_style)
-        .draw(&mut display)?;
+    main_menu_screen.draw(&mut display)?;
 
-    Line::new(Point::new(48, 16), Point::new(8, 16))
-        .into_styled(line_style)
-        .draw(&mut display)?;
-
-    Line::new(Point::new(48, 16), Point::new(64, 32))
-        .into_styled(line_style)
-        .draw(&mut display)?;
-
-    Rectangle::new(Point::new(79, 15), Size::new(34, 34))
-        .into_styled(line_style)
-        .draw(&mut display)?;
-
-    Text::new("Hello World!", Point::new(5, 5), text_style).draw(&mut display)?;
-
+    /// SAVE SCREENSHOT
     let output_settings = OutputSettingsBuilder::new()
-        .theme(BinaryColorTheme::OledBlue)
         .build();
-    Window::new("Hello World", &output_settings).show_static(&display);
+
+    let path = std::env::args_os()
+        .nth(1)
+        .unwrap_or_else(|| "screenshot.png".into());
+    display
+        .to_rgb_output_image(&output_settings)
+        .save_png(&path)
+        .expect("failed to save screenshot");
 
     Ok(())
 }
