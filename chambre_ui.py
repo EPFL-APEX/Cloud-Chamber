@@ -17,7 +17,7 @@ Dépendances :
     pip install pyserial matplotlib
 """
 
-import sys, os, re, csv, queue, threading, collections, math
+import sys, os, re, csv, queue, threading, collections, math, time
 from datetime import datetime
 
 import tkinter as tk
@@ -27,6 +27,7 @@ matplotlib.use("TkAgg")
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.gridspec import GridSpec
+from matplotlib.ticker import FuncFormatter
 import serial
 import serial.tools.list_ports
 
@@ -55,14 +56,26 @@ C_DARK_SUB = "#7b80a0"   # texte secondaire
 C_DARK_LBL = "#454a65"   # étiquettes section
 
 # ── Capteurs DS18B20 — noms et couleurs ──────────────────────────────────────
+# Tous sur le bus 1-Wire unique GP15 ; l'index dsN = ordre de découverte
+# SEARCH ROM au boot (cf. lignes "INFO dsN <ROM>" dans le journal).
 DS_LABELS = [
-    "Sortie compresseur",   # ds0 — GP11
-    "Sortie condenseur",    # ds1 — GP12
-    "Entrée évaporateur",   # ds2 — GP13
-    "Sortie évaporateur",   # ds3 — GP14
-    "Base chambre",         # ds4 — GP15 (capteur de contrôle)
+    "Sortie compresseur",   # ds0
+    "Sortie condenseur",    # ds1
+    "Entrée évaporateur",   # ds2
+    "Sortie évaporateur",   # ds3
+    "Base chambre",         # ds4 (capteur de contrôle)
 ]
 DS_COLORS = ["#eda100", "#4a3aa7", "#1baf7a", "#e87ba4", C_DS]
+
+# ── Thermodynamique IPA (équation d'Antoine) ─────────────────────────────────
+def _p_sat_ipa(t_c: float) -> float:
+    """Pression de vapeur saturante de l'isopropanol (mmHg, T en °C).
+    Antoine : A=8.11778, B=1580.92, C=219.617 — valide ~15..100 °C, extrapolé en dessous."""
+    return 10.0 ** (8.11778 - 1580.92 / (219.617 + t_c))
+
+def _sursaturation(t_chaud: float, t_froid: float) -> float:
+    """S = P_sat(T_chaud) / P_sat(T_froid).  S > 1 → vapeur sursaturée."""
+    return _p_sat_ipa(t_chaud) / _p_sat_ipa(t_froid)
 
 # ── Parsing de la ligne STATE ─────────────────────────────────────────────────
 RE_STATE = re.compile(r"^STATE\s+(.+)$")
@@ -106,35 +119,51 @@ class SerialThread(threading.Thread):
         self._stop.set()
 
     def run(self):
-        try:
-            with serial.Serial(self.port, self.baud, timeout=1) as ser:
-                while not self._stop.is_set():
-                    # Envoyer les commandes en attente
-                    try:
-                        while True:
-                            cmd = self.cmd_q.get_nowait()
-                            ser.write((cmd + "\n").encode())
-                    except queue.Empty:
-                        pass
+        # Boucle de (re)connexion : si le port tombe (Pico débranché/reflashé),
+        # on le signale à l'UI et on retente toutes les 2 s.
+        first = True
+        while not self._stop.is_set():
+            try:
+                with serial.Serial(self.port, self.baud, timeout=1) as ser:
+                    self.data_q.put(("info", datetime.now(),
+                                     f"Port {self.port} ouvert" if first
+                                     else f"Port {self.port} reconnecté"))
+                    first = False
+                    self._pump(ser)
+            except (serial.SerialException, OSError) as e:
+                self.data_q.put(("error", datetime.now(), str(e)))
+                if self._stop.wait(2.0):
+                    break
 
-                    raw = ser.readline()
-                    if not raw:
-                        continue
-                    line = raw.decode("utf-8", errors="replace").strip()
-                    ts   = datetime.now()
+    def _pump(self, ser: serial.Serial):
+        while not self._stop.is_set():
+            # Envoyer les commandes en attente
+            try:
+                while True:
+                    cmd = self.cmd_q.get_nowait()
+                    ser.write((cmd + "\n").encode())
+            except queue.Empty:
+                pass
 
-                    state = parse_state(line)
-                    if state is not None:
-                        self.data_q.put(("state", ts, state))
-                    elif line:
-                        self.data_q.put(("msg", ts, line))
+            raw = ser.readline()
+            if not raw:
+                continue
+            line = raw.decode("utf-8", errors="replace").strip()
+            ts   = datetime.now()
 
-        except Exception as e:
-            self.data_q.put(("error", datetime.now(), str(e)))
+            state = parse_state(line)
+            if state is not None:
+                self.data_q.put(("state", ts, state))
+            elif line:
+                self.data_q.put(("msg", ts, line))
 
 
 # ── Application ───────────────────────────────────────────────────────────────
-WINDOW = 300
+# Historique des courbes : 1 point max tous les PLOT_DT_S (le flux STATE arrive
+# à 5 Hz mais les capteurs se rafraîchissent à ~1 Hz, inutile de tout tracer).
+# 1200 points × 0.5 s = 10 minutes visibles.
+WINDOW    = 1200
+PLOT_DT_S = 0.5
 
 class App:
     def __init__(self, root: tk.Tk, port: str, baud: int = 115200):
@@ -156,6 +185,10 @@ class App:
         self.t0: datetime | None = None
 
         self.last: dict = {}          # dernier STATE reçu
+        self._last_plot_t:  float = 0.0          # dernier redraw graphiques
+        self._last_plot_pt: float = 0.0          # dernier point ajouté aux courbes
+        self._last_state_t: float | None = None  # dernier STATE reçu (monotonic)
+        self._serial_err:   str | None   = None  # dernière erreur série active
 
         # État des boutons (cohérent avec le firmware au démarrage)
         self.comp_allowed = True
@@ -243,6 +276,86 @@ class App:
         self.v_bmt = self._tile(row, "BME280 T",     C_BME_T)
         self.v_prs = self._tile(row, "Pression",     C_PRESSURE)
         self.v_hum = self._tile(row, "Humidité",     C_HUMIDITY)
+        self._build_ds_live(parent)
+
+    def _build_ds_live(self, parent):
+        """Bande DS18B20 temps réel — tous les capteurs, valeur instantanée."""
+        header = tk.Frame(parent, bg=C_SURFACE, padx=14)
+        header.pack(fill="x")
+        tk.Label(header, text="TEMPÉRATURES DS18B20  —  INSTANTANÉ",
+                 bg=C_SURFACE, fg=C_MUTED,
+                 font=("Segoe UI", 7, "bold")).pack(side="left")
+        self.lbl_live_age = tk.Label(header, text="", bg=C_SURFACE,
+                                     fg=C_MUTED, font=("Segoe UI", 7))
+        self.lbl_live_age.pack(side="left", padx=8)
+
+        row = tk.Frame(parent, bg=C_SURFACE, padx=10, pady=4)
+        row.pack(fill="x")
+
+        self.v_ds_live = []
+        for i, (label, color) in enumerate(zip(DS_LABELS, DS_COLORS)):
+            border = tk.Frame(row, bg=color, padx=1, pady=1)
+            border.pack(side="left", fill="both", expand=True, padx=4)
+
+            body = tk.Frame(border, bg="#ffffff", padx=12, pady=8)
+            body.pack(fill="both", expand=True)
+
+            top = tk.Frame(body, bg="#ffffff")
+            top.pack(fill="x")
+            tk.Label(top, text=f"DS{i}", bg="#ffffff", fg=color,
+                     font=("Segoe UI", 8, "bold")).pack(side="left")
+
+            v = tk.Label(body, text="—", bg="#ffffff", fg=color,
+                         font=("Segoe UI", 22, "bold"))
+            v.pack(anchor="w", pady=(2, 0))
+
+            tk.Label(body, text=label, bg="#ffffff", fg=C_MUTED,
+                     font=("Segoe UI", 7)).pack(anchor="w")
+
+            self.v_ds_live.append(v)
+
+        # Séparateur + BME inline
+        tk.Frame(row, bg=C_GRID, width=1).pack(side="left", fill="y", padx=6, pady=4)
+
+        bme_border = tk.Frame(row, bg=C_BME_T, padx=1, pady=1)
+        bme_border.pack(side="left", fill="both", padx=4)
+
+        bme_body = tk.Frame(bme_border, bg="#ffffff", padx=12, pady=8)
+        bme_body.pack(fill="both", expand=True)
+
+        tk.Label(bme_body, text="BME", bg="#ffffff", fg=C_BME_T,
+                 font=("Segoe UI", 8, "bold")).pack(anchor="w")
+        self.v_bmt_live = tk.Label(bme_body, text="—", bg="#ffffff", fg=C_BME_T,
+                                   font=("Segoe UI", 22, "bold"))
+        self.v_bmt_live.pack(anchor="w", pady=(2, 0))
+        tk.Label(bme_body, text="Ambiante", bg="#ffffff", fg=C_MUTED,
+                 font=("Segoe UI", 7)).pack(anchor="w")
+
+        # Séparateur + carte Sursaturation IPA
+        tk.Frame(row, bg=C_GRID, width=1).pack(side="left", fill="y", padx=6, pady=4)
+
+        self._sat_border = tk.Frame(row, bg=C_MUTED, padx=1, pady=1)
+        self._sat_border.pack(side="left", fill="both", padx=4)
+
+        sat_body = tk.Frame(self._sat_border, bg="#ffffff", padx=12, pady=8)
+        sat_body.pack(fill="both", expand=True)
+
+        tk.Label(sat_body, text="SURSAT. IPA", bg="#ffffff", fg=C_SECONDARY,
+                 font=("Segoe UI", 8, "bold")).pack(anchor="w")
+        self.v_sat_live = tk.Label(sat_body, text="—", bg="#ffffff", fg=C_MUTED,
+                                   font=("Segoe UI", 22, "bold"))
+        self.v_sat_live.pack(anchor="w", pady=(2, 0))
+        tk.Label(sat_body, text="Psat(T_amb) / Psat(ds4)", bg="#ffffff",
+                 fg=C_MUTED, font=("Segoe UI", 7)).pack(anchor="w")
+        self.v_sat_prog_lbl = tk.Label(sat_body, text="—", bg="#ffffff",
+                                       fg=C_MUTED, font=("Segoe UI", 8))
+        self.v_sat_prog_lbl.pack(anchor="w", pady=(3, 0))
+        prog_outer = tk.Frame(sat_body, bg=C_GRID, height=5)
+        prog_outer.pack(fill="x", pady=(2, 0))
+        self.v_sat_bar = tk.Frame(prog_outer, bg=C_MUTED, height=5)
+        self.v_sat_bar.place(x=0, y=0, relheight=1.0, relwidth=0.0)
+
+        tk.Frame(parent, bg=C_GRID, height=1).pack(fill="x", padx=14, pady=(4, 0))
 
     def _build_notebook(self, parent):
         style = ttk.Style()
@@ -257,6 +370,7 @@ class App:
 
         nb = ttk.Notebook(parent, style='Chambre.TNotebook')
         nb.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.nb = nb
 
         tab_overview = tk.Frame(nb, bg=C_SURFACE)
         nb.add(tab_overview, text="  VUE GLOBALE  ")
@@ -281,7 +395,7 @@ class App:
         self.ln_ds = []
         for i, (lbl, col) in enumerate(zip(DS_LABELS, DS_COLORS)):
             ln, = self.ax_t.plot([], [], color=col, lw=1.8,
-                                 label=lbl, solid_capstyle="round")
+                                 label="_nolegend_", solid_capstyle="round")
             self.ln_ds.append(ln)
         self.ln_bmt, = self.ax_t.plot([], [], color=C_BME_T, lw=1.8, label="BME280 (amb.)",
                                       solid_capstyle="round", linestyle="--", alpha=0.8)
@@ -364,7 +478,9 @@ class App:
         ax.spines[["top", "right", "left", "bottom"]].set_visible(False)
         ax.yaxis.grid(True, color=C_GRID, linewidth=0.8, linestyle="-")
         ax.xaxis.grid(True, color=C_GRID, linewidth=0.4, linestyle=":")
-        ax.set_xlabel("t (s)", fontsize=7.5, color=C_MUTED, labelpad=3)
+        ax.xaxis.set_major_formatter(
+            FuncFormatter(lambda v, _: f"{int(v)//60}:{int(v)%60:02d}"))
+        ax.set_xlabel("t (min:s)", fontsize=7.5, color=C_MUTED, labelpad=3)
         ax.set_axisbelow(True)
 
     def _build_controls(self, parent):
@@ -446,6 +562,7 @@ class App:
         self.v_iso_duty   = stat_row("ISO duty")
         self.v_safety     = stat_row("Sécurité")
         self.v_uptime     = stat_row("Durée")
+        self.v_ds_count   = stat_row("Capteurs DS")
 
         divider(top=12, bottom=10)
 
@@ -503,6 +620,10 @@ class App:
         ts = datetime.now().strftime("%H:%M:%S")
         self.log.config(state="normal")
         self.log.insert("end", f"[{ts}] {msg}\n")
+        # Borner le journal (une session de plusieurs heures ne doit pas
+        # faire gonfler le widget Text indéfiniment)
+        if int(self.log.index("end-1c").split(".")[0]) > 400:
+            self.log.delete("1.0", "2.0")
         self.log.see("end")
         self.log.config(state="disabled")
 
@@ -523,7 +644,6 @@ class App:
 
         self.thread = SerialThread(self.port, self.baud, self.data_q, self.cmd_q)
         self.thread.start()
-        self.lbl_status.config(text="● Connecté", fg=C_GOOD)
         self._poll()
 
     def _stop(self):
@@ -543,33 +663,63 @@ class App:
                 kind, ts, payload = self.data_q.get_nowait()
                 if kind == "state":
                     self._ingest(ts, payload)
+                    self._serial_err = None
                     updated = True
                 elif kind == "msg":
                     self._log(payload)
-                    if "error" in kind:
-                        self.lbl_status.config(text=f"● Erreur", fg=C_WARN)
+                elif kind == "info":
+                    self._log(payload)
+                    self._serial_err = None
+                elif kind == "error":
+                    self._log(f"ERREUR série : {payload}")
+                    self._serial_err = payload
         except queue.Empty:
             pass
+
+        self._refresh_status()
 
         if updated:
             self._update_tiles()
             self._update_controls()
-            self._update_plots()
+            self.root.update_idletasks()   # force le rendu des tuiles avant tout draw matplotlib
+            now = time.monotonic()
+            if now - self._last_plot_t >= 0.4:
+                self._update_plots()
+                self._last_plot_t = now
 
         self.root.after(100, self._poll)
+
+    def _refresh_status(self):
+        """Statut de connexion basé sur la fraîcheur réelle des données."""
+        if self._serial_err is not None:
+            self.lbl_status.config(text="●  Port série perdu — reconnexion…",
+                                   fg=C_WARN)
+        elif self._last_state_t is None:
+            self.lbl_status.config(text="●  En attente de données…", fg=C_ORANGE)
+        else:
+            age = time.monotonic() - self._last_state_t
+            if age < 2.0:
+                self.lbl_status.config(text="●  En ligne", fg=C_GOOD)
+            else:
+                self.lbl_status.config(text=f"●  Silence depuis {age:.0f} s",
+                                       fg=C_ORANGE)
 
     def _ingest(self, ts: datetime, s: dict):
         if self.t0 is None:
             self.t0 = ts
         t = (ts - self.t0).total_seconds()
         self.last = s
+        self._last_state_t = time.monotonic()
 
-        self.t_rel.append(t)
-        for i in range(5):
-            self.d_ds[i].append(s.get(f"ds{i}"))
-        self.d_bmt.append(s.get("bme_t"))
-        self.d_prs.append(s.get("bme_p"))
-        self.d_hum.append(s.get("bme_h"))
+        # Courbes : décimation temporelle (le CSV, lui, garde tout)
+        if self._last_state_t - self._last_plot_pt >= PLOT_DT_S:
+            self._last_plot_pt = self._last_state_t
+            self.t_rel.append(t)
+            for i in range(5):
+                self.d_ds[i].append(s.get(f"ds{i}"))
+            self.d_bmt.append(s.get("bt"))
+            self.d_prs.append(s.get("bp"))
+            self.d_hum.append(s.get("bh"))
 
         if self.writer:
             self.writer.writerow({
@@ -577,14 +727,14 @@ class App:
                 "ds0_c":     s.get("ds0"), "ds1_c": s.get("ds1"),
                 "ds2_c":     s.get("ds2"), "ds3_c": s.get("ds3"),
                 "ds4_c":     s.get("ds4"),
-                "bme_t_c":   s.get("bme_t"),
-                "bme_p_hpa": s.get("bme_p"),
-                "bme_h_pct": s.get("bme_h"),
-                "target_c":  s.get("target"),
-                "comp":      s.get("comp"),
+                "bme_t_c":   s.get("bt"),
+                "bme_p_hpa": s.get("bp"),
+                "bme_h_pct": s.get("bh"),
+                "target_c":  s.get("tg"),
+                "comp":      s.get("co"),
                 "hv":        s.get("hv"),
                 "iso_duty":  s.get("iso"),
-                "safe":      s.get("safe"),
+                "safe":      s.get("sf"),
                 "up_s":      s.get("up"),
             })
             self.csv_file.flush()
@@ -596,15 +746,48 @@ class App:
         return f"{v:.{decimals}f} {unit}".strip()
 
     def _update_tiles(self):
-        self.v_ds.config( text=self._fmt("ds4",   "°C",  1))  # base chambre
-        self.v_bmt.config(text=self._fmt("bme_t", "°C",  1))
-        self.v_prs.config(text=self._fmt("bme_p", "hPa", 0))
-        self.v_hum.config(text=self._fmt("bme_h", "%",   0))
+        self.v_ds.config( text=self._fmt("ds4", "°C",  1))
+        self.v_bmt.config(text=self._fmt("bt",  "°C",  1))
+        self.v_prs.config(text=self._fmt("bp",  "hPa", 0))
+        self.v_hum.config(text=self._fmt("bh",  "%",   0))
+
+        # Tuiles DS live instantanées
+        for i, lbl in enumerate(self.v_ds_live):
+            v = self.last.get(f"ds{i}")
+            lbl.config(text=f"{v:.1f}°C" if v is not None else "—")
+        v_bmt = self.last.get("bt")
+        self.v_bmt_live.config(text=f"{v_bmt:.1f}°C" if v_bmt is not None else "—")
+
+        # Indicateur d'âge de la mesure
+        if self._last_state_t is not None:
+            age = time.monotonic() - self._last_state_t
+            self.lbl_live_age.config(text=f"mis à jour il y a {age:.1f} s")
+
+        # Sursaturation IPA : S = Psat(T_amb) / Psat(T_base_chambre)
+        t_amb  = self.last.get("bt")
+        t_cold = self.last.get("ds4")
+        t_tgt  = self.last.get("tg")
+        if t_amb is not None and t_cold is not None:
+            s = _sursaturation(t_amb, t_cold)
+            color = C_GOOD if s >= 50 else (C_ORANGE if s >= 5 else C_WARN)
+            self.v_sat_live.config(text=f"×{s:.0f}", fg=color)
+            self._sat_border.config(bg=color)
+            if t_tgt is not None and abs(t_amb - t_tgt) > 0.1:
+                prog = (t_amb - t_cold) / (t_amb - t_tgt)
+                prog = max(0.0, min(1.2, prog))
+                self.v_sat_prog_lbl.config(
+                    text=f"{prog * 100:.0f} %  vers  {t_tgt:.0f} °C")
+                self.v_sat_bar.place(relwidth=max(0.0, min(prog, 1.0)))
+                self.v_sat_bar.config(bg=color)
+        else:
+            self.v_sat_live.config(text="—", fg=C_MUTED)
+            self._sat_border.config(bg=C_GRID)
+            self.v_sat_prog_lbl.config(text="capteurs indisponibles")
 
     def _update_controls(self):
         s = self.last
-        self.v_target_act.config(text=self._fmt("target", "°C", 1))
-        comp = s.get("comp")
+        self.v_target_act.config(text=self._fmt("tg", "°C", 1))
+        comp = s.get("co")
         if comp is not None:
             txt = "ON" if comp else "OFF"
             col = C_GOOD if comp else C_MUTED
@@ -612,7 +795,7 @@ class App:
         iso = s.get("iso")
         if iso is not None:
             self.v_iso_duty.config(text=f"{iso*100:.0f} %")
-        safe = s.get("safe")
+        safe = s.get("sf")
         if safe is not None:
             self.v_safety.config(
                 text="ARRÊT D'URGENCE" if safe else "OK",
@@ -622,6 +805,13 @@ class App:
             h, rem = divmod(int(up), 3600)
             m, sec = divmod(rem, 60)
             self.v_uptime.config(text=f"{h:02d}:{m:02d}:{sec:02d}")
+
+        # Capteurs DS en ligne (valeur numérique = détecté et lu)
+        online = [i for i in range(5) if s.get(f"ds{i}") is not None]
+        n = len(online)
+        self.v_ds_count.config(
+            text=f"{n}/5" + (f"  ({', '.join(f'ds{i}' for i in online)})" if 0 < n < 5 else ""),
+            fg=C_GOOD if n == 5 else (C_ORANGE if n else C_WARN))
 
     def _update_plots(self):
         t = list(self.t_rel)
@@ -636,29 +826,34 @@ class App:
         prs = to_plot(self.d_prs)
         hum = to_plot(self.d_hum)
 
-        # Onglet Vue globale
-        for i, ln in enumerate(self.ln_ds):
-            ln.set_data(t, ds_data[i])
-        self.ln_bmt.set_data(t, bmt)
-        self.ln_prs.set_data(t, prs)
-        self.ln_hum.set_data(t, hum)
-        for ax in (self.ax_t, self.ax_p, self.ax_h):
-            ax.relim(); ax.autoscale_view()
-        self.canvas.draw_idle()
+        try:
+            active = self.nb.index(self.nb.select())
+        except Exception:
+            active = 0
 
-        # Onglet Températures DS
-        for i, (ln, ax) in enumerate(zip(self.ln_ds_ind, self.ax_ds)):
-            ln.set_data(t, ds_data[i])
-            ax.relim(); ax.autoscale_view()
-        self.canvas_ds.draw_idle()
+        if active == 0:
+            for i, ln in enumerate(self.ln_ds):
+                ln.set_data(t, ds_data[i])
+            self.ln_bmt.set_data(t, bmt)
+            self.ln_prs.set_data(t, prs)
+            self.ln_hum.set_data(t, hum)
+            for ax in (self.ax_t, self.ax_p, self.ax_h):
+                ax.relim(); ax.autoscale_view()
+            self.canvas.draw_idle()
 
-        # Onglet Ambiance BME280
-        self.ln_bmt_bme.set_data(t, bmt)
-        self.ln_prs_bme.set_data(t, prs)
-        self.ln_hum_bme.set_data(t, hum)
-        for ax in (self.ax_bme_t, self.ax_bme_p, self.ax_bme_h):
-            ax.relim(); ax.autoscale_view()
-        self.canvas_bme.draw_idle()
+        elif active == 1:
+            for i, (ln, ax) in enumerate(zip(self.ln_ds_ind, self.ax_ds)):
+                ln.set_data(t, ds_data[i])
+                ax.relim(); ax.autoscale_view()
+            self.canvas_ds.draw_idle()
+
+        elif active == 2:
+            self.ln_bmt_bme.set_data(t, bmt)
+            self.ln_prs_bme.set_data(t, prs)
+            self.ln_hum_bme.set_data(t, hum)
+            for ax in (self.ax_bme_t, self.ax_bme_p, self.ax_bme_h):
+                ax.relim(); ax.autoscale_view()
+            self.canvas_bme.draw_idle()
 
 
 # ── Point d'entrée ────────────────────────────────────────────────────────────

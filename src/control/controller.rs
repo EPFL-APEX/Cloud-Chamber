@@ -39,6 +39,9 @@ pub struct Controller {
     compressor_on: bool,
     /// PID du chauffage isopropanol.
     iso_pid: PidController,
+    /// Cycles consécutifs en condition de sécurité — déclenche l'arrêt seulement
+    /// après N cycles pour ignorer les lectures parasites au reconnectement.
+    safety_cycles: u8,
 }
 
 impl Controller {
@@ -46,6 +49,7 @@ impl Controller {
         Self {
             compressor_on: false,
             iso_pid: PidController::new(ISO_KP, ISO_KI, ISO_KD, 0.0, 1.0),
+            safety_cycles: 0,
         }
     }
 
@@ -59,10 +63,18 @@ impl Controller {
         dt_s:   f32,
     ) -> ControlOutput {
         // ── 1. Sécurité — priorité absolue ───────────────────────────────────
+        // Anti-rebond : une lecture CRC-valide mais parasite (bus instable au
+        // reconnectement) ne doit pas provoquer un arrêt immédiat. On exige
+        // 3 cycles consécutifs (~300 ms) avant de verrouiller.
         if self.safety_triggered(state) {
-            self.compressor_on = false;
-            self.iso_pid.reset();
-            return ControlOutput::emergency_stop();
+            self.safety_cycles = self.safety_cycles.saturating_add(1);
+            if self.safety_cycles >= 3 {
+                self.compressor_on = false;
+                self.iso_pid.reset();
+                return ControlOutput::emergency_stop();
+            }
+        } else {
+            self.safety_cycles = 0;
         }
 
         // ── 2. Compresseur (hystérésis sur la base de la chambre) ────────────
@@ -79,8 +91,11 @@ impl Controller {
                 self.compressor_on = false;
             }
             // Dans la bande d'hystérésis → on conserve l'état courant.
+        } else {
+            // Capteur perdu → arrêt immédiat : sans mesure on ne peut pas
+            // savoir si la chambre surchauffe, continuer serait dangereux.
+            self.compressor_on = false;
         }
-        // Si lecture invalide : on conserve l'état précédent (fail-safe neutre).
 
         // ── 3. Chauffage isopropanol (PID) ───────────────────────────────────
         let iso = &state.temperatures[ISO_TEMP_IDX];
