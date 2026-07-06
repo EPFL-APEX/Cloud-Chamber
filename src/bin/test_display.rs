@@ -1,0 +1,101 @@
+//! Diagnostic brut SPI display — sans mipidsi.
+//! Envoie SWRESET + SLPOUT + DISPON + remplissage rouge directement.
+//! Si l'écran change : SPI fonctionne.  Si reste blanc : MOSI pas connecté.
+
+#![no_std]
+#![no_main]
+
+use rp2040_hal as hal;
+use hal::{pac, Clock};
+use embedded_hal::digital::OutputPin;
+use embedded_hal::delay::DelayNs;
+use embedded_hal::spi::SpiBus;
+
+use defmt_rtt as _;
+use panic_halt as _;
+
+#[link_section = ".boot2"]
+#[used]
+pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
+
+struct Delay;
+impl DelayNs for Delay {
+    fn delay_ns(&mut self, ns: u32) { cortex_m::asm::delay(ns / 32 + 1); }
+}
+
+#[hal::entry]
+fn main() -> ! {
+    let mut pac      = pac::Peripherals::take().unwrap();
+    let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
+    let clocks = hal::clocks::init_clocks_and_plls(
+        12_000_000u32, pac.XOSC, pac.CLOCKS, pac.PLL_SYS, pac.PLL_USB,
+        &mut pac.RESETS, &mut watchdog,
+    ).ok().unwrap();
+
+    let sio  = hal::Sio::new(pac.SIO);
+    let pins = hal::gpio::Pins::new(
+        pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS,
+    );
+    let mut delay = Delay;
+
+    let mosi = pins.gpio11.into_function::<hal::gpio::FunctionSpi>();
+    let miso = pins.gpio12.into_function::<hal::gpio::FunctionSpi>();
+    let sck  = pins.gpio10.into_function::<hal::gpio::FunctionSpi>();
+    let mut cs  = pins.gpio9.into_push_pull_output();
+    let mut dc  = pins.gpio8.into_push_pull_output();
+    let mut rst = pins.gpio7.into_push_pull_output();
+
+    use rp2040_hal::fugit::RateExtU32;
+    let mut spi = hal::Spi::<_, _, _, 8>::new(pac.SPI1, (mosi, miso, sck))
+        .init(&mut pac.RESETS, clocks.peripheral_clock.freq(),
+              1_000_000u32.Hz(), embedded_hal::spi::MODE_0);
+
+    cs.set_high().ok();
+    dc.set_high().ok();
+
+    // ── RST pulse ─────────────────────────────────────────────────────────────
+    rst.set_high().ok(); delay.delay_ms(10);
+    rst.set_low().ok();  delay.delay_ms(20);
+    rst.set_high().ok(); delay.delay_ms(150);
+
+    // ── Macro helpers locaux ───────────────────────────────────────────────────
+    macro_rules! cmd {
+        ($c:expr) => {{
+            dc.set_low().ok();
+            cs.set_low().ok();
+            spi.write(&[$c]).ok();
+            cs.set_high().ok();
+        }};
+    }
+    macro_rules! dat {
+        ($d:expr) => {{
+            dc.set_high().ok();
+            cs.set_low().ok();
+            spi.write($d).ok();
+            cs.set_high().ok();
+        }};
+    }
+
+    // ── Init ILI9341 / ST7789 (commandes communes) ───────────────────────────
+    cmd!(0x01); delay.delay_ms(150); // SWRESET
+    cmd!(0x11); delay.delay_ms(120); // SLPOUT
+    cmd!(0x3A); dat!(&[0x55]);       // COLMOD  16-bit RGB565
+    cmd!(0x36); dat!(&[0x00]);       // MADCTL  portrait normal
+    cmd!(0x29); delay.delay_ms(20);  // DISPON
+
+    // ── Remplissage rouge (0xF800 = rouge pur en RGB565) ─────────────────────
+    // CASET : colonnes 0..239
+    cmd!(0x2A); dat!(&[0x00, 0x00, 0x00, 0xEF]);
+    // PASET : lignes 0..319
+    cmd!(0x2B); dat!(&[0x00, 0x00, 0x01, 0x3F]);
+    // RAMWR : 240×320 pixels
+    cmd!(0x2C);
+    dc.set_high().ok();
+    cs.set_low().ok();
+    for _ in 0u32..(240 * 320) {
+        spi.write(&[0xF8, 0x00]).ok(); // rouge RGB565
+    }
+    cs.set_high().ok();
+
+    loop { cortex_m::asm::wfi(); }
+}
