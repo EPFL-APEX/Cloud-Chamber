@@ -544,6 +544,18 @@ class App:
 
         divider()
 
+        # ── Reset graphiques ───────────────────────────────────────────────────
+        section("GRAPHIQUES")
+        tk.Button(p, text="  ↺  EFFACER LES COURBES", command=self._clear_graphs,
+                  bg=C_DARK2, fg=C_DARK_SUB,
+                  font=("Segoe UI", 10, "bold"),
+                  relief="flat", cursor="hand2",
+                  pady=9, anchor="w", padx=14, bd=0,
+                  activebackground="#252836",
+                  activeforeground=C_DARK_TXT).pack(fill="x", pady=(0, 16))
+
+        divider()
+
         # ── Indicateurs d'état ────────────────────────────────────────────────
         section("ÉTAT SYSTÈME")
 
@@ -812,6 +824,31 @@ class App:
         self.v_ds_count.config(
             text=f"{n}/5" + (f"  ({', '.join(f'ds{i}' for i in online)})" if 0 < n < 5 else ""),
             fg=C_GOOD if n == 5 else (C_ORANGE if n else C_WARN))
+
+    def _clear_graphs(self):
+        """Vide toutes les séries et repart de t=0 au prochain point."""
+        self.t_rel.clear()
+        for d in self.d_ds:
+            d.clear()
+        self.d_bmt.clear()
+        self.d_prs.clear()
+        self.d_hum.clear()
+        self.t0 = None
+        self._last_plot_pt = 0.0
+
+        # Vider les lignes sur les 3 onglets
+        for ln in self.ln_ds:
+            ln.set_data([], [])
+        for ln in self.ln_ds_ind:
+            ln.set_data([], [])
+        for ln in (self.ln_bmt, self.ln_prs, self.ln_hum,
+                   self.ln_bmt_bme, self.ln_prs_bme, self.ln_hum_bme):
+            ln.set_data([], [])
+
+        self.canvas.draw_idle()
+        self.canvas_ds.draw_idle()
+        self.canvas_bme.draw_idle()
+        self._log("Courbes effacées")
 
     def _update_plots(self):
         t = list(self.t_rel)
