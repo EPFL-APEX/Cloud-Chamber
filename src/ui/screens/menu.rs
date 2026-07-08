@@ -8,7 +8,7 @@
 //! La liste est statique (`MAIN_MENU_ITEMS`) — pas d'allocation heap.
 
 use embedded_graphics::{
-    Drawable, draw_target::DrawTarget, geometry::{OriginDimensions, Point, Size}, image::{Image, ImageDrawable, ImageDrawableExt}, pixelcolor::{Rgb565, Rgb888}, primitives::{Primitive, PrimitiveStyleBuilder, Rectangle},
+    Drawable, draw_target::DrawTarget, geometry::{OriginDimensions, Point, Size}, image::{Image, ImageDrawable, ImageDrawableExt}, pixelcolor::{Rgb565, Rgb888}, primitives::{Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle},
 };
 
 use tinybmp::Bmp;
@@ -62,28 +62,64 @@ impl MainMenuScreen {
     {
 
         // BACKGROUND
-        const BACKGROUND_COLOR:Rgb565 = Rgb565::new(0, 4, 3);
+        const BACKGROUND_COLOR:Rgb565 = Rgb565::new(0, 5, 4);
         display.clear(BACKGROUND_COLOR);
         
-        let highlightcolor: Rgb565 = Rgb888::new(10, 116, 192).into();
+        
+        const HIGHLIGHT_COLOR: Rgb565 = Rgb565::new(1, 29, 23);
 
         // STRUCTURE UI
+        const SCREEN_SIZE:(u32, u32) = (320, 240);
+
+        const BACKGROUND_COLOR_DARKER:Rgb565 = Rgb565::new(1, 4, 3);
         
+        const STROKE_COLOR:Rgb565 = Rgb565::new(1, 9, 8);
+        const STROKE_WIDTH:u32 = 1;
+
+        // TOP BAND
+        const TOP_UI_STYLE:PrimitiveStyle<Rgb565> = PrimitiveStyleBuilder::new()
+            .fill_color(BACKGROUND_COLOR_DARKER)
+            .stroke_color(STROKE_COLOR)
+            .stroke_width(STROKE_WIDTH)
+            .build();
+        const TOP_UI_BACKGROUND:Rectangle = Rectangle::new(
+                Point { x: -1, y: -1 },
+                Size { width: SCREEN_SIZE.0 + 2, height: 29 }
+            );
+
+        TOP_UI_BACKGROUND.into_styled(TOP_UI_STYLE).draw(display);
+
+        // BOTTOM BAND
+        const BOTTOM_UI_HEIGHT:u32 = 32;
+
+        const BOTTOM_UI_BACKGROUND:Rectangle = Rectangle::new(
+            Point { x: -1, y: (SCREEN_SIZE.1 - BOTTOM_UI_HEIGHT) as i32 + 1},
+                    Size { width: SCREEN_SIZE.0 + 2, height: BOTTOM_UI_HEIGHT + 1}
+            );
+
+        BOTTOM_UI_BACKGROUND.into_styled(TOP_UI_STYLE).draw(display);
 
 
         // ICONS
         let icons_data = include_bytes!("../images/menu_icons.bmp");
-        let icons = Bmp::<Rgb565>::from_slice(icons_data).unwrap();
+        let icons: Bmp<'_, Rgb565> = Bmp::<Rgb565>::from_slice(icons_data).unwrap();
         const ICON_SIZE:u32 = 64;
+
+        const ICON_STARTING_COORDS:(i32, i32) = (32, 44);
+        const ICON_STEP_SIZE:(i32, i32) = (96, 84);
 
         for i in 0..2 {
             for j in 0..3 {
                 let drawing_icon_id = i * 3 + j;
                 let selected_y_shift = if drawing_icon_id == self.selected {ICON_SIZE} else {0};
-                let top_left = Point::new(drawing_icon_id as i32 * 64 , selected_y_shift as i32);
-                let icon = icons.sub_image(&Rectangle { top_left, size: Size { width: ICON_SIZE, height: ICON_SIZE } });
+                let top_left_of_texture = Point::new(drawing_icon_id as i32 * ICON_SIZE as i32 , selected_y_shift as i32);
+                let icon = icons.sub_image(&Rectangle { top_left: top_left_of_texture, size: Size { width: ICON_SIZE, height: ICON_SIZE } });
 
-                Image::new(&icon, Point::new(20 + j as i32 * 70, 50 + i as i32 * 70)).draw(display);
+                let icon_x = ICON_STARTING_COORDS.0 + j as i32 * ICON_STEP_SIZE.0;
+                let icon_y = ICON_STARTING_COORDS.1 + i as i32 * ICON_STEP_SIZE.1;
+
+                Image::new(&icon, Point::new(icon_x, icon_y))
+                .draw(display);
             }
         }
 

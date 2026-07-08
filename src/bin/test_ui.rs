@@ -1,8 +1,8 @@
 use embedded_graphics::{
-    pixelcolor::{BinaryColor, Rgb565},
+    pixelcolor::Rgb565,
     geometry::Size,
 };
-use embedded_graphics_simulator::{BinaryColorTheme, SimulatorDisplay, OutputSettingsBuilder};
+use embedded_graphics_simulator::{SimulatorDisplay, OutputSettingsBuilder};
 
 use ::cloud_chamber::ui::screens;
 
@@ -13,7 +13,7 @@ fn main() -> Result<(), core::convert::Infallible> {
 
     main_menu_screen.draw(&mut display)?;
 
-    /// SAVE SCREENSHOT
+    // SAVE SCREENSHOT
     let output_settings = OutputSettingsBuilder::new()
         .build();
 
