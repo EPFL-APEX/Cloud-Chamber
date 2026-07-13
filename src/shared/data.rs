@@ -23,16 +23,17 @@ use core::cell::RefCell;
 use critical_section::Mutex;
 
 use crate::{
-    config::{
-        NUMBER_OF_TEMP_SENSOR, NUMBER_OF_PRESSURE_SENSOR,
-        NUMBER_OF_VOLTMETER,
-    },
-    logic::{
+    cloud_chamber_hal::timer::Instant, config::{
+        NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER,
+    }, logic::{
         cooling::CoolingPhase,
         stopping::StoppingPhase,
-    },
-    cloud_chamber_hal::timer::Instant,
+    }
 };
+
+pub trait TimeStamped {
+    fn get_instant(&self) -> &Instant;
+}
 
 
 /// Lecture d'un capteur de température DS18B20 ou BME280.
@@ -42,6 +43,12 @@ pub struct TemperatureReading {
     pub value: f32,
 }
 
+impl TimeStamped for TemperatureReading {
+    fn get_instant(&self) -> &Instant {
+        &self.time
+    }
+}
+
 /// Lecture d'un capteur de pression ABP2.
 #[derive(Clone, Copy, Debug)]
 pub struct PressureReading {
@@ -49,11 +56,23 @@ pub struct PressureReading {
     pub value: f32,
 }
 
+impl TimeStamped for PressureReading {
+    fn get_instant(&self) -> &Instant {
+        &self.time
+    }
+}
+
 /// Lecture d'un voltmètre
 #[derive(Clone, Copy, Debug)]
 pub struct VoltsReading {
     pub time: Instant,
     pub value: f32,
+}
+
+impl TimeStamped for VoltsReading {
+    fn get_instant(&self) -> &Instant {
+        &self.time
+    }
 }
 
 /// Instantané des dernières mesures de tous les capteurs.
