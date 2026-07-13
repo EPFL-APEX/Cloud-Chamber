@@ -10,5 +10,5 @@ pub struct TempGraphScreen {
 }
 
 impl TempGraphScreen {
-    todo!();
+    fn test() {todo!()}
 }

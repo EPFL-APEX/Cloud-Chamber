@@ -8,7 +8,7 @@
 //! La liste est statique (`MAIN_MENU_ITEMS`) — pas d'allocation heap.
 
 use embedded_graphics::{
-    Drawable, draw_target::DrawTarget, geometry::{OriginDimensions, Point, Size}, image::{Image, ImageDrawable, ImageDrawableExt}, mono_font::{MonoTextStyle, ascii::FONT_6X13}, pixelcolor::{Rgb565, Rgb888}, primitives::{Line, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle}, text::{Baseline, LineHeight, Text, TextStyle, TextStyleBuilder},
+    Drawable, draw_target::DrawTarget, geometry::{OriginDimensions, Point, Size}, image::{Image, ImageDrawableExt}, mono_font::{MonoTextStyle, ascii::FONT_6X13}, pixelcolor::{Rgb565, Rgb888}, primitives::{Line, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle}, text::{Baseline, LineHeight, Text, TextStyle, TextStyleBuilder},
 };
 
 use tinybmp::Bmp;
@@ -182,14 +182,14 @@ mod tests {
     use super::*;
 
     use embedded_graphics::{
-    pixelcolor::BinaryColor,
-    prelude::*,
-    primitives::{Circle, Line, Rectangle, PrimitiveStyle},
-    mono_font::{ascii::FONT_6X9, MonoTextStyle},
-    text::Text,
+        pixelcolor::Rgb565,
+        primitives::{Circle, Line, Rectangle, PrimitiveStyle},
+        geometry::Size,
+        mono_font::{ascii::FONT_6X9, MonoTextStyle},
+        text::Text,
     };
 
-    use embedded_graphics_simulator::{SimulatorDisplay, Window, OutputSettingsBuilder, BinaryColorTheme};
+    use embedded_graphics_simulator::{SimulatorDisplay, OutputSettingsBuilder};
 
     fn make_display() -> SimulatorDisplay<Rgb565> {
         SimulatorDisplay::new(Size::new(320, 240))
@@ -236,34 +236,26 @@ mod tests {
     //}
 
     #[test]
-    fn test_() {
-        let mut display = SimulatorDisplay::<BinaryColor>::new(Size::new(128, 64));
+    fn main_menu_screenshot() -> Result<(), core::convert::Infallible> {
+        let mut display = SimulatorDisplay::<Rgb565>::new(Size::new(320, 240));
 
-        let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
-        let text_style = MonoTextStyle::new(&FONT_6X9, BinaryColor::On);
+        let main_menu_screen = MainMenuScreen::new();
 
-        Circle::new(Point::new(72, 8), 48)
-            .into_styled(line_style)
-            .draw(&mut display);
+        main_menu_screen.draw(&mut display)?;
 
-        Line::new(Point::new(48, 16), Point::new(8, 16))
-            .into_styled(line_style)
-            .draw(&mut display);
-
-        Line::new(Point::new(48, 16), Point::new(64, 32))
-            .into_styled(line_style)
-            .draw(&mut display);
-
-        Rectangle::new(Point::new(79, 15), Size::new(34, 34))
-            .into_styled(line_style)
-            .draw(&mut display);
-
-        Text::new("Hello World!", Point::new(5, 5), text_style).draw(&mut display);
-
+        // SAVE SCREENSHOT
         let output_settings = OutputSettingsBuilder::new()
-            .theme(BinaryColorTheme::OledBlue)
             .build();
-        Window::new("Hello World", &output_settings).show_static(&display);
-}
+
+        let path = std::env::args_os()
+            .nth(1)
+            .unwrap_or_else(|| "screenshot.png".into());
+        display
+            .to_rgb_output_image(&output_settings)
+            .save_png(&path)
+            .expect("failed to save screenshot");
+
+        Ok(())
+    }
 
 }
