@@ -17,3 +17,4 @@ pub mod drivers;
 pub mod security_loop;
 pub mod shared;
 pub mod ui;
+pub mod logic;

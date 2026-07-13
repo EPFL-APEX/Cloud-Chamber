@@ -22,129 +22,74 @@
 use core::cell::RefCell;
 use critical_section::Mutex;
 
-// ─── Structures capteurs externes ────────────────────────────────────────────
+use crate::{
+    config::{
+        NUMBER_OF_TEMP_SENSOR, NUMBER_OF_PRESSURE_SENSOR,
+        NUMBER_OF_AMPMETER, NUMBER_OF_VOLTMETER,
+    },
+    logic::{
+        cooling::CoolingPhase,
+        stopping::StoppingPhase,
+    },
+};
+
 
 /// Lecture d'un capteur de température DS18B20 ou BME280.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct TemperatureReading {
-    pub value:    f32,
-    pub valid:    bool,
-    /// `true` pour les capteurs dont le dépassement doit déclencher une alarme.
-    pub critical: bool,
+    pub time: f32,
+    pub value: f32,
 }
 
 /// Lecture d'un capteur de pression ABP2.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct PressureReading {
-    pub pressure:    f32,
-    pub temperature: f32,
-    pub valid:       bool,
+    pub time: f32,
+    pub value: f32,
 }
 
-// ─── Constantes de configuration ─────────────────────────────────────────────
-
-/// Nombre de capteurs de température dans le système.
-pub const NUMBER_OF_TEMPS: usize = 5;
-
-/// Nombre de capteurs de tension.
-pub const NUMBER_OF_VOLT: usize = 3;
-
-/// Nombre de capteurs de courant (ampèremètres).
-pub const NUMBER_OF_AMP: usize = 1;
-
-/// Profondeur maximale de la pile de navigation de l'interface utilisateur.
-pub const NAV_STACK_DEPTH: usize = 8;
-
-// ─── Structures de données ────────────────────────────────────────────────────
+/// Lecture d'un voltmètre
+pub struct VoltsReading {
+    pub time: f32,
+    pub value: f32,
+}
 
 /// Instantané des dernières mesures de tous les capteurs.
-///
-/// # Pourquoi `Copy` ?
-///
-/// Le trait `Copy` en Rust signifie qu'une valeur est dupliquée bit-à-bit
-/// lors d'une assignation. C'est possible uniquement si tous les champs sont
-/// eux-mêmes `Copy` (`f32`, `bool`, et les tableaux de types `Copy` le sont).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct SensorSnapshot {
     /// Températures mesurées, en degrés Celsius, indexées par numéro de capteur.
-    pub temps: [f32; NUMBER_OF_TEMPS],
+    pub temps: [Option<TemperatureReading>; NUMBER_OF_TEMP_SENSOR],
+    /// Pressions meseurées,
+    pub press: [Option<PressureReading>; NUMBER_OF_PRESSURE_SENSOR],
     /// Tensions mesurées, en Volts.
-    pub volts: [f32; NUMBER_OF_VOLT],
-    /// Courants mesurés, en Ampères.
-    pub amps: [f32; NUMBER_OF_AMP],
+    pub volts: [Option<VoltsReading>; NUMBER_OF_VOLTMETER],
     /// `true` si la chambre est physiquement fermée (capteur de fermeture).
     pub is_closed: bool,
 }
 
-impl Default for SensorSnapshot {
-    fn default() -> Self {
-        Self {
-            temps: [0.0; NUMBER_OF_TEMPS],
-            volts: [0.0; NUMBER_OF_VOLT],
-            amps: [0.0; NUMBER_OF_AMP],
-            is_closed: false,
-        }
-    }
-}
-
-/// État global du système de sécurité.
-///
-/// # Pourquoi un `enum` ?
-///
-/// Les `enum` Rust sont des **types somme** : une valeur de type `SystemState`
-/// ne peut être qu'une seule variante à la fois. Le compilateur oblige à gérer
-/// tous les cas dans un `match` — impossible d'oublier un état.
+/// État global de la machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SystemState {
-    /// Fonctionnement normal, tous les capteurs dans les limites.
-    Normal,
-    /// Une valeur approche d'un seuil critique. Avertissement visuel.
-    Warning,
-    /// Un seuil critique est dépassé. Action corrective requise.
-    Alarm,
-    /// Situation d'urgence : le disjoncteur a été déclenché.
-    Emergency,
+pub enum SystemTask {
+    IDLE,
+    COOLING(CoolingPhase),
+    STABILISING,
+    STOPPING(StoppingPhase),
 }
 
-impl Default for SystemState {
+impl Default for SystemTask {
     fn default() -> Self {
-        SystemState::Normal
+        SystemTask::IDLE
     }
 }
 
 /// Données échangées entre Core1 (producteur) et Core0 (consommateur).
 pub struct SharedState {
     pub snapshot: SensorSnapshot,
-    pub system_state: SystemState,
+    pub system_state: SystemTask,
     /// Mis à `true` par Core1 quand de nouvelles données sont disponibles.
     pub new_data: bool,
 }
 
-impl Default for SharedState {
-    fn default() -> Self {
-        Self {
-            snapshot: SensorSnapshot::default(),
-            system_state: SystemState::default(),
-            new_data: false,
-        }
-    }
-}
-
-// ─── Point de partage global ─────────────────────────────────────────────────
-
-/// Static partagé entre Core0 et Core1.
-///
-/// Toujours accédé via `critical_section::with(|cs| { SHARED.borrow(cs)... })`.
-pub static SHARED: Mutex<RefCell<SharedState>> = Mutex::new(RefCell::new(SharedState {
-    snapshot: SensorSnapshot {
-        temps: [0.0; NUMBER_OF_TEMPS],
-        volts: [0.0; NUMBER_OF_VOLT],
-        amps: [0.0; NUMBER_OF_AMP],
-        is_closed: false,
-    },
-    system_state: SystemState::Normal,
-    new_data: false,
-}));
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -153,30 +98,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn system_state_default_is_normal() {
-        assert_eq!(SystemState::default(), SystemState::Normal);
+    fn system_task_default_is_idle() {
+        assert_eq!(SystemTask::default(), SystemTask::IDLE);
     }
 
     #[test]
-    fn sensor_snapshot_default_zeroed() {
+    fn sensor_snapshot_default_is_none() {
         let s = SensorSnapshot::default();
-        for &t in &s.temps { assert_eq!(t, 0.0f32); }
-        for &v in &s.volts { assert_eq!(v, 0.0f32); }
+        for &t in &s.temps { assert_eq!(t, None); }
+        for &p in &s.press { assert_eq!(p, None); }
+        for &v in &s.volts { assert_eq!(v, None); }
         assert!(!s.is_closed);
     }
 
     #[test]
     fn system_state_variants_are_distinct() {
-        assert_ne!(SystemState::Normal, SystemState::Warning);
-        assert_ne!(SystemState::Warning, SystemState::Alarm);
-        assert_ne!(SystemState::Alarm, SystemState::Emergency);
-    }
-
-    #[test]
-    fn shared_state_default_has_no_new_data() {
-        let s = SharedState::default();
-        assert_eq!(s.system_state, SystemState::Normal);
-        assert!(!s.new_data);
+        assert_ne!(SystemTask::IDLE, SystemTask::STABILISING);
+        assert_ne!(SystemTask::IDLE , SystemTask::COOLING(cp));
+        assert_ne!(SystemTask::COOLING(cp), SystemTask::STOPPING(sp));
     }
 
     #[test]

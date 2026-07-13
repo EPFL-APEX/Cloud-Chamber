@@ -12,8 +12,6 @@
 //! (GPIO, SPI, ADC) dépendent du câblage physique de votre système.
 //! Remplacez les commentaires `TODO:` par les initialisations HAL réelles.
 
-// Imports utilisés dans les TODO — silencer les warnings jusqu'à l'implémentation.
-#[allow(unused_imports)]
 use crate::security_loop::{
     loop_runner::{CriticalSectionWriter, SecurityLoop},
     safety::SafetyConfig,
