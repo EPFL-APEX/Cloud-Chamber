@@ -19,10 +19,13 @@
 //!   `&RefCell<T>`, on peut obtenir une `&mut T` via `borrow_mut()`.
 //!   C'est nécessaire car Rust n'autorise pas `&mut T` depuis un `static`.
 
+use core::cell::RefCell;
+use critical_section::Mutex;
+
 use crate::{
     config::{
         NUMBER_OF_TEMP_SENSOR, NUMBER_OF_PRESSURE_SENSOR,
-        NUMBER_OF_AMPMETER, NUMBER_OF_VOLTMETER,
+        NUMBER_OF_VOLTMETER,
     },
     logic::{
         cooling::CoolingPhase,
@@ -88,6 +91,21 @@ pub struct SharedState {
     /// Mis à `true` par Core1 quand de nouvelles données sont disponibles.
     pub new_data: bool,
 }
+
+// ─── Point de partage global ─────────────────────────────────────────────────
+/// Static partagé entre Core0 et Core1.
+///
+/// Toujours accéder via `critical_section::with(|cs| { SHARED.borrow(cs)... })`.
+pub static SHARED: Mutex<RefCell<SharedState>> = Mutex::new(RefCell::new(SharedState {
+    snapshot: SensorSnapshot { 
+            temps: [None; NUMBER_OF_TEMP_SENSOR],
+            press: [None; NUMBER_OF_PRESSURE_SENSOR],
+            volts: [None; NUMBER_OF_VOLTMETER],
+            is_closed: false 
+    },
+    system_state: SystemTask::Idle,
+    new_data: false,
+}));
 
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
