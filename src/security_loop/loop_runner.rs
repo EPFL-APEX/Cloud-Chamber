@@ -24,7 +24,7 @@ use crate::{
     security_loop::safety::{evaluate_safety, SafetyConfig},
     security_loop::states::SensorHistory,
     shared::data::{
-        SensorSnapshot, SharedState, SystemState, NUMBER_OF_AMP, NUMBER_OF_TEMPS, NUMBER_OF_VOLT,
+        SensorSnapshot, SharedState, SystemTask, NUMBER_OF_AMP, NUMBER_OF_TEMPS, NUMBER_OF_VOLT,
     },
 };
 

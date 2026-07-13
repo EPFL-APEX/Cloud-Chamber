@@ -17,7 +17,7 @@ pub trait MonotonicTimer {
     /// Retourne le temps écoulé depuis le démarrage, en µs.
     ///
     /// La valeur est monotone : elle ne décroît jamais.
-    fn get_counter_us(&self) -> u64;
+    fn get_counter_us(&self) -> Instant;
 }
 
 /// Alimentation (« nourrissage ») du watchdog matériel.
@@ -29,18 +29,23 @@ pub trait WatchdogFeed {
     fn feed(&mut self);
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Instant {
+    time:u64
+}
+
 // ─── Implémentations concrètes (matériel ARM uniquement) ─────────────────────
 
 #[cfg(all(rp2040, target_arch = "arm"))]
 impl MonotonicTimer for rp2040_hal::Timer {
-    fn get_counter_us(&self) -> u64 {
+    fn get_counter_us(&self) -> Instant {
         self.get_counter().ticks()
     }
 }
 
 #[cfg(all(rp2350, any(target_arch = "arm", target_arch = "riscv32")))]
 impl MonotonicTimer for rp235x_hal::Timer<rp235x_hal::timer::CopyableTimer0> {
-    fn get_counter_us(&self) -> u64 {
+    fn get_counter_us(&self) -> Instant {
         self.get_counter().ticks()
     }
 }

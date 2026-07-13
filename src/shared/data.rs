@@ -19,9 +19,6 @@
 //!   `&RefCell<T>`, on peut obtenir une `&mut T` via `borrow_mut()`.
 //!   C'est nécessaire car Rust n'autorise pas `&mut T` depuis un `static`.
 
-use core::cell::RefCell;
-use critical_section::Mutex;
-
 use crate::{
     config::{
         NUMBER_OF_TEMP_SENSOR, NUMBER_OF_PRESSURE_SENSOR,
@@ -31,26 +28,28 @@ use crate::{
         cooling::CoolingPhase,
         stopping::StoppingPhase,
     },
+    cloud_chamber_hal::timer::Instant,
 };
 
 
 /// Lecture d'un capteur de température DS18B20 ou BME280.
 #[derive(Clone, Copy, Debug)]
 pub struct TemperatureReading {
-    pub time: f32,
+    pub time: Instant,
     pub value: f32,
 }
 
 /// Lecture d'un capteur de pression ABP2.
 #[derive(Clone, Copy, Debug)]
 pub struct PressureReading {
-    pub time: f32,
+    pub time: Instant,
     pub value: f32,
 }
 
 /// Lecture d'un voltmètre
+#[derive(Clone, Copy, Debug)]
 pub struct VoltsReading {
-    pub time: f32,
+    pub time: Instant,
     pub value: f32,
 }
 
@@ -70,15 +69,15 @@ pub struct SensorSnapshot {
 /// État global de la machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemTask {
-    IDLE,
-    COOLING(CoolingPhase),
-    STABILISING,
-    STOPPING(StoppingPhase),
+    Idle,
+    Cooling(CoolingPhase),
+    Stabilising,
+    Stopping(StoppingPhase),
 }
 
 impl Default for SystemTask {
     fn default() -> Self {
-        SystemTask::IDLE
+        SystemTask::Idle
     }
 }
 
@@ -99,23 +98,26 @@ mod tests {
 
     #[test]
     fn system_task_default_is_idle() {
-        assert_eq!(SystemTask::default(), SystemTask::IDLE);
+        assert_eq!(SystemTask::default(), SystemTask::Idle);
     }
 
     #[test]
     fn sensor_snapshot_default_is_none() {
         let s = SensorSnapshot::default();
-        for &t in &s.temps { assert_eq!(t, None); }
-        for &p in &s.press { assert_eq!(p, None); }
-        for &v in &s.volts { assert_eq!(v, None); }
+        for &t in &s.temps { assert!(t.is_none()); }
+        for &p in &s.press { assert!(p.is_none()); }
+        for &v in &s.volts { assert!(v.is_none()); }
         assert!(!s.is_closed);
     }
 
     #[test]
     fn system_state_variants_are_distinct() {
-        assert_ne!(SystemTask::IDLE, SystemTask::STABILISING);
-        assert_ne!(SystemTask::IDLE , SystemTask::COOLING(cp));
-        assert_ne!(SystemTask::COOLING(cp), SystemTask::STOPPING(sp));
+        assert_ne!(SystemTask::Idle, SystemTask::Stabilising);
+        assert_ne!(SystemTask::Idle, SystemTask::Cooling(CoolingPhase::Todo));
+        assert_ne!(
+            SystemTask::Cooling(CoolingPhase::Todo),
+            SystemTask::Stopping(StoppingPhase::Todo)
+        );
     }
 
     #[test]
