@@ -38,7 +38,9 @@ impl<T: Copy + Default, const N: usize> RingBuffer<T, N> {
             is_full: false,
         }
     }
+}
 
+impl<T: Copy, const N: usize> RingBuffer<T, N> {
     /// Ajoute une valeur. Si le buffer est plein, écrase la plus ancienne.
     pub fn push(&mut self, value: T) {
         self.data[self.write_index] = value;
