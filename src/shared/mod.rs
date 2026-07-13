@@ -17,3 +17,22 @@ pub mod error;
 
 /// Buffer circulaire générique pour l'historique des mesures.
 pub mod ring_buffer;
+
+
+
+use crate::config::{
+    NUMBER_OF_TEMP_SENSOR,
+    NUMBER_OF_PRESSURE_SENSOR,
+    NUMBER_OF_VOLTMETER,
+};
+use data::{SharedState, SensorSnapshot, SystemTask};
+
+// ─── Point de partage global ─────────────────────────────────────────────────
+/// Static partagé entre Core0 et Core1.
+///
+/// Toujours accédé via `critical_section::with(|cs| { SHARED.borrow(cs)... })`.
+pub static SHARED: Mutex<RefCell<SharedState>> = Mutex::new(RefCell::new(SharedState {
+    snapshot: SensorSnapshot::default(),
+    system_state: SystemTask::IDLE,
+    new_data: false,
+}));

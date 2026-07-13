@@ -1,6 +1,13 @@
 /// Configuration centrale du système.
 /// Modifier ces constantes pour adapter le firmware à votre installation.
 
+// ─── Capteurs ──────────────────────────────────────
+
+pub const NUMBER_OF_TEMP_SENSOR: usize = 5;
+pub const NUMBER_OF_PRESSURE_SENSOR: usize = 1;
+pub const NUMBER_OF_VOLTMETER: usize = 3;
+pub const NUMBER_OF_AMPMETER: usize = 1;
+
 // ─── Broches GPIO (numéros GP du RP2040/RP2350) ───────────────────────────────
 
 /// Bus 1-Wire pour les DS18B20 (avec pull-up 4.7 kΩ externe)
@@ -24,6 +31,27 @@ pub const BP_PRESSURE_MAX: f32 = 1.0;
 pub const HP_PRESSURE_MIN: f32 = 0.0;
 pub const HP_PRESSURE_MAX: f32 = 12.0;
 
+
+// ─── Labels des capteurs de température ──────────────────────────────────────
+
+pub const TEMP_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
+    "sortie_compresseur",
+    "sortie_condenseur",
+    "entree_evaporateur",
+    "sortie_evaporateur",
+    "base_chambre",
+];
+
+
+
+/// Index des capteurs de température critiques (utilisé par le driver DS18B20).
+pub const CRITICAL_TEMP_INDICES: [usize; 1] = [0];
+
+/// Index des capteurs de température non-critiques.
+pub const NON_CRITICAL_TEMP_INDICES: [usize; 4] = [1, 2, 3, 4];
+
+
+
 // ─── Seuils de sécurité ───────────────────────────────────────────────────────
 
 pub const SAFETY_HP_MAX: f32              = 14.0;
@@ -36,19 +64,3 @@ pub const TARGET_CHAMBER_TEMP: f32        = -40.0;
 pub const CRITICAL_READ_INTERVAL_MS:     u64 = 500;
 pub const NON_CRITICAL_READ_INTERVAL_MS: u64 = 2000;
 pub const DATA_PUBLISH_INTERVAL_MS:      u64 = 1000;
-
-// ─── Labels des capteurs de température ──────────────────────────────────────
-
-pub const TEMP_LABELS: [&str; 5] = [
-    "sortie_compresseur",
-    "sortie_condenseur",
-    "entree_evaporateur",
-    "sortie_evaporateur",
-    "base_chambre",
-];
-
-/// Index des capteurs de température critiques (utilisé par le driver DS18B20).
-pub const CRITICAL_TEMP_INDICES: [usize; 1] = [0];
-
-/// Index des capteurs de température non-critiques.
-pub const NON_CRITICAL_TEMP_INDICES: [usize; 4] = [1, 2, 3, 4];
