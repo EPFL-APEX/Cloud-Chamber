@@ -34,6 +34,12 @@ pub struct Instant {
     time:u64
 }
 
+impl Instant {
+    pub fn is_newer_than(&self, other: &Instant) -> bool {
+        self.time > other.time
+    }
+}
+
 // ─── Implémentations concrètes (matériel ARM uniquement) ─────────────────────
 
 #[cfg(all(rp2040, target_arch = "arm"))]
