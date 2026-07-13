@@ -9,13 +9,18 @@
 //! # Structure `SensorHistory`
 //!
 //! Contient un `RingBuffer` par capteur et par type de grandeur.
-//! Les constantes `NUMBER_OF_TEMPS`, `NUMBER_OF_VOLT`, `NUMBER_OF_AMP` sont
+//! Les constantes `NUMBER_OF_TEMP_SENSOR`, `NUMBER_OF_VOLTMETER`, `NUMBER_OF_AMPMETER` sont
 //! importées de `shared::data` pour garantir la cohérence avec `SensorSnapshot`.
 
 use crate::security_loop::error::{Error, Result};
 use crate::shared::{
-    data::{NUMBER_OF_AMP, NUMBER_OF_TEMPS, NUMBER_OF_VOLT},
     ring_buffer::RingBuffer,
+};
+use crate::config::{
+    NUMBER_OF_TEMP_SENSOR,
+    NUMBER_OF_PRESSURE_SENSOR,
+    NUMBER_OF_VOLTMETER,
+    NUMBER_OF_AMPMETER,
 };
 
 /// Nombre de mesures conservées par capteur.
@@ -23,9 +28,9 @@ const HISTORY_LENGTH: usize = 10;
 
 /// Historique glissant pour tous les capteurs.
 pub struct SensorHistory {
-    temps: [RingBuffer<f32, HISTORY_LENGTH>; NUMBER_OF_TEMPS],
-    volts: [RingBuffer<f32, HISTORY_LENGTH>; NUMBER_OF_VOLT],
-    amps: [RingBuffer<f32, HISTORY_LENGTH>; NUMBER_OF_AMP],
+    temps: [RingBuffer<f32, HISTORY_LENGTH>; NUMBER_OF_TEMP_SENSOR],
+    volts: [RingBuffer<f32, HISTORY_LENGTH>; NUMBER_OF_VOLTMETER],
+    amps: [RingBuffer<f32, HISTORY_LENGTH>; NUMBER_OF_AMPMETER],
     closeness: RingBuffer<bool, HISTORY_LENGTH>,
 }
 
@@ -44,7 +49,7 @@ impl SensorHistory {
 
 impl SensorHistory {
     pub fn push_temp(&mut self, sensor: usize, value: f32) -> Result<()> {
-        if sensor >= NUMBER_OF_TEMPS {
+        if sensor >= NUMBER_OF_TEMP_SENSOR {
             return Err(Error::SensorIndexOutOfBounds { index: sensor });
         }
         self.temps[sensor].push(value);
@@ -52,7 +57,7 @@ impl SensorHistory {
     }
 
     pub fn push_voltage(&mut self, sensor: usize, value: f32) -> Result<()> {
-        if sensor >= NUMBER_OF_VOLT {
+        if sensor >= NUMBER_OF_VOLTMETER {
             return Err(Error::SensorIndexOutOfBounds { index: sensor });
         }
         self.volts[sensor].push(value);
@@ -60,7 +65,7 @@ impl SensorHistory {
     }
 
     pub fn push_amperage(&mut self, sensor: usize, value: f32) -> Result<()> {
-        if sensor >= NUMBER_OF_AMP {
+        if sensor >= NUMBER_OF_AMPMETER {
             return Err(Error::SensorIndexOutOfBounds { index: sensor });
         }
         self.amps[sensor].push(value);
@@ -76,21 +81,21 @@ impl SensorHistory {
 
 impl SensorHistory {
     pub fn get_temp(&self, sensor: usize, index: usize) -> Result<f32> {
-        if sensor >= NUMBER_OF_TEMPS {
+        if sensor >= NUMBER_OF_TEMP_SENSOR {
             return Err(Error::SensorIndexOutOfBounds { index: sensor });
         }
         self.temps[sensor].get(index).map_err(|_| Error::HistoryIndexOutOfBounds { index })
     }
 
     pub fn get_voltage(&self, sensor: usize, index: usize) -> Result<f32> {
-        if sensor >= NUMBER_OF_VOLT {
+        if sensor >= NUMBER_OF_VOLTMETER {
             return Err(Error::SensorIndexOutOfBounds { index: sensor });
         }
         self.volts[sensor].get(index).map_err(|_| Error::HistoryIndexOutOfBounds { index })
     }
 
     pub fn get_amperage(&self, sensor: usize, index: usize) -> Result<f32> {
-        if sensor >= NUMBER_OF_AMP {
+        if sensor >= NUMBER_OF_AMPMETER {
             return Err(Error::SensorIndexOutOfBounds { index: sensor });
         }
         self.amps[sensor].get(index).map_err(|_| Error::HistoryIndexOutOfBounds { index })
@@ -117,7 +122,7 @@ mod tests {
     #[test]
     fn push_temp_invalid_sensor_returns_err() {
         let mut h = SensorHistory::new();
-        assert!(h.push_temp(NUMBER_OF_TEMPS, 0.0).is_err());
+        assert!(h.push_temp(NUMBER_OF_TEMP_SENSOR, 0.0).is_err());
     }
 
     #[test]
@@ -137,7 +142,7 @@ mod tests {
     #[test]
     fn push_amperage_invalid_sensor_returns_err() {
         let mut h = SensorHistory::new();
-        assert!(h.push_amperage(NUMBER_OF_AMP, 0.0).is_err());
+        assert!(h.push_amperage(NUMBER_OF_AMPMETER, 0.0).is_err());
     }
 
     #[test]

@@ -14,6 +14,7 @@ use embedded_hal::digital::{InputPin, OutputPin};
 use heapless::Vec;
 
 use crate::cloud_chamber_hal::sensors::TemperatureSensor;
+use crate::cloud_chamber_hal::timer::MonotonicTimer;
 use crate::config::CRITICAL_TEMP_INDICES;
 use crate::shared::data::TemperatureReading;
 
@@ -357,19 +358,20 @@ impl<P: InputPin + OutputPin> Ds18b20Bus<P> {
 
     /// Lecture bloquante de tous les capteurs.
     ///
-    /// `resolution` doit correspondre à celle configurée sur les capteurs ;
+    /// `resolution` doit correspondre à celle configurée sur les capteurs ; !!!! C'est pas bien de faire ça comme ça !!!!
     /// elle détermine le délai d'attente après Convert T.
-    pub fn read_all<D: DelayNs>(
-        &mut self, delay: &mut D, resolution: Resolution,
-    ) -> [TemperatureReading; MAX_SENSORS] {
-        let mut readings = [TemperatureReading::default(); MAX_SENSORS];
+    pub fn read_all<D: DelayNs, C: MonotonicTimer>(
+        &mut self, delay: &mut D, clock: &C, resolution: Resolution,
+    ) -> [Option<TemperatureReading>; MAX_SENSORS] {
+        let mut readings = [None; MAX_SENSORS];
         for idx in 0..self.sensors.len() {
             let is_critical = CRITICAL_TEMP_INDICES.contains(&idx);
             if self.start_conversion(idx, delay).is_ok() {
                 delay.delay_ms(resolution.conversion_time_ms());
+                let time = clock.get_counter_us();
                 readings[idx] = match self.read_celsius(idx, delay) {
-                    Ok(t)  => TemperatureReading { value: t,        valid: true,  critical: is_critical },
-                    Err(_) => TemperatureReading { value: f32::NAN, valid: false, critical: is_critical },
+                    Ok(temp)  => Some(TemperatureReading { time, value:temp }),
+                    Err(_) => None,
                 };
             }
         }
