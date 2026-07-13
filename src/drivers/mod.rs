@@ -17,9 +17,6 @@ pub mod adc;
 /// Driver disjoncteur : contrôle d'un relai ou contacteur via GPIO.
 pub mod breaker;
 
-/// Driver d'affichage : wrapper autour du contrôleur ILI9341.
-pub mod display;
-
 /// Driver encodeur rotatif : lecture des impulsions et du bouton.
 pub mod encoder;
 

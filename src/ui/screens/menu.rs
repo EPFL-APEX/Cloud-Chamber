@@ -204,21 +204,21 @@ mod tests {
     #[test]
     fn select_previous_increments() {
         let mut menu = MainMenuScreen::new();
-        menu.select_previous();
+        menu.left_turn();
         assert_eq!(menu.selected, 1);
     }
 
     #[test]
     fn select_next_at_top_stays() {
         let mut menu = MainMenuScreen::new();
-        menu.select_next();
+        menu.right_turn();
         assert_eq!(menu.selected, 0);
     }
 
     #[test]
     fn select_previous_at_bottom_stays() {
         let mut menu = MainMenuScreen::new();
-        for _ in 0..20 { menu.select_previous(); }
+        for _ in 0..20 { menu.left_turn(); }
         assert_eq!(menu.selected, MAIN_MENU_SIZE - 1);
     }
 
