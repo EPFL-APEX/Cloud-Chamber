@@ -11,8 +11,8 @@
 use core::fmt::Debug;
 
 use crate::{
-    config::{NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER},
-    shared::data::{PressureReading, TemperatureReading, VoltsReading}
+    cloud_chamber_hal::{timer::Instant, units::{Celsius, HectoPascal, Volt}},
+    config::{NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER}
 };
 
 pub trait Sensor<T> {
@@ -20,43 +20,33 @@ pub trait Sensor<T> {
     fn read(&mut self) -> Result<T, Self::Error>;
 }
 
-/// Capteur de température retournant des degrés Celsius.
-pub trait TemperatureSensor : Sensor<TemperatureReading> {
-    /// Déclenche une conversion (peut être asynchrone sur certains capteurs).
-    fn start_measurement(&mut self) -> Result<(), Self::Error>;
-    /// Lit la dernière température convertie, en °C.
-    fn read_celsius(&mut self) -> Result<f32, Self::Error>;
+pub struct Measurement<Unit> {
+    pub time: Instant,
+    pub value: Unit,
 }
 
-/// Capteur de tension retournant des Volts.
-pub trait VoltageSensor : Sensor<VoltsReading> {
-    fn read_voltage(&mut self) -> Result<f32, Self::Error>;
-}
-
-/// Capteur de courant retournant des Ampères.
-pub trait CurrentSensor : Sensor<T> {
-    fn read_amperes(&mut self) -> Result<f32, Self::Error>;
-}
-
-/// Capteur de pression retournant des pascal
-pub trait PressureSensor : Sensor<PressureReading> {
-    fn read_pascal(&mut self) -> Result<f32, Self::Error>;
-}
-
-/// Capteur de fermeture (contact sec) retournant un booléen.
-pub trait ClosureSensor : Sensor<T> {
-    /// Retourne `true` si la chambre est physiquement fermée.
-    fn is_closed(&mut self) -> Result<bool, Self::Error>;
-}
-
-pub struct Sensors<T: TemperatureSensor, P: PressureSensor, V: VoltageSensor> {
+pub struct Sensors<T, P, V>
+where
+    T: Sensor<Measurement<Celsius>>,
+    P: Sensor<Measurement<HectoPascal>>,
+    V: Sensor<Measurement<Volt>>,
+{
     pub temperature_sensors: [T; NUMBER_OF_TEMP_SENSOR],
     pub pressure_sensors: [P; NUMBER_OF_PRESSURE_SENSOR],
     pub voltage_sensors: [V; NUMBER_OF_VOLTMETER],
 }
 
-impl<T: TemperatureSensor, P: PressureSensor, V: VoltageSensor> Sensors<T, P, V> {
-    pub fn new() -> Self {
-        todo!()
+impl<T, P, V> Sensors<T, P, V>
+where
+    T: Sensor<Measurement<Celsius>>,
+    P: Sensor<Measurement<HectoPascal>>,
+    V: Sensor<Measurement<Volt>>,
+{
+    pub fn new(
+        temperature_sensors: [T; NUMBER_OF_TEMP_SENSOR],
+        pressure_sensors: [P; NUMBER_OF_PRESSURE_SENSOR],
+        voltage_sensors: [V; NUMBER_OF_VOLTMETER],
+    ) -> Self {
+        Self { temperature_sensors, pressure_sensors, voltage_sensors }
     }
 }
