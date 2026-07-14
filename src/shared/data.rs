@@ -23,7 +23,9 @@ use core::cell::RefCell;
 use critical_section::Mutex;
 
 use crate::{
-    cloud_chamber_hal::timer::Instant, config::{
+    cloud_chamber_hal::sensors::Measurement,
+    cloud_chamber_hal::units::{Celsius, HectoPascal, Volt},
+    config::{
         NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER,
     }, logic::{
         cooling::CoolingPhase,
@@ -31,59 +33,15 @@ use crate::{
     }
 };
 
-pub trait TimeStamped {
-    fn get_instant(&self) -> &Instant;
-}
-
-
-/// Lecture d'un capteur de température DS18B20 ou BME280.
-#[derive(Clone, Copy, Debug)]
-pub struct TemperatureReading {
-    pub time: Instant,
-    pub value: f32,
-}
-
-impl TimeStamped for TemperatureReading {
-    fn get_instant(&self) -> &Instant {
-        &self.time
-    }
-}
-
-/// Lecture d'un capteur de pression ABP2.
-#[derive(Clone, Copy, Debug)]
-pub struct PressureReading {
-    pub time: Instant,
-    pub value: f32,
-}
-
-impl TimeStamped for PressureReading {
-    fn get_instant(&self) -> &Instant {
-        &self.time
-    }
-}
-
-/// Lecture d'un voltmètre
-#[derive(Clone, Copy, Debug)]
-pub struct VoltsReading {
-    pub time: Instant,
-    pub value: f32,
-}
-
-impl TimeStamped for VoltsReading {
-    fn get_instant(&self) -> &Instant {
-        &self.time
-    }
-}
-
 /// Instantané des dernières mesures de tous les capteurs.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SensorSnapshot {
-    /// Températures mesurées, en degrés Celsius, indexées par numéro de capteur.
-    pub temps: [Option<TemperatureReading>; NUMBER_OF_TEMP_SENSOR],
-    /// Pressions meseurées,
-    pub press: [Option<PressureReading>; NUMBER_OF_PRESSURE_SENSOR],
-    /// Tensions mesurées, en Volts.
-    pub volts: [Option<VoltsReading>; NUMBER_OF_VOLTMETER],
+    /// Températures mesurées, indexées par numéro de capteur.
+    pub temps: [Option<Measurement<Celsius>>; NUMBER_OF_TEMP_SENSOR],
+    /// Pressions mesurées.
+    pub press: [Option<Measurement<HectoPascal>>; NUMBER_OF_PRESSURE_SENSOR],
+    /// Tensions mesurées.
+    pub volts: [Option<Measurement<Volt>>; NUMBER_OF_VOLTMETER],
     /// `true` si la chambre est physiquement fermée (capteur de fermeture).
     pub is_closed: bool,
 }

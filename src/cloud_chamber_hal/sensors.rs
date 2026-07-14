@@ -142,7 +142,7 @@ where
 /// enveloppés dans `IndependentSensors`.
 pub struct Sensors<Tmp, Prs, Vlt>
 where
-    Tmp: BatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
+    Tmp: DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
     Prs: BatchSensor<HectoPascal, NUMBER_OF_PRESSURE_SENSOR>,
     Vlt: BatchSensor<Volt, NUMBER_OF_VOLTMETER>,
 {
@@ -153,7 +153,7 @@ where
 
 impl<Tmp, Prs, Vlt> Sensors<Tmp, Prs, Vlt>
 where
-    Tmp: BatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
+    Tmp: DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
     Prs: BatchSensor<HectoPascal, NUMBER_OF_PRESSURE_SENSOR>,
     Vlt: BatchSensor<Volt, NUMBER_OF_VOLTMETER>,
 {

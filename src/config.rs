@@ -44,14 +44,6 @@ pub const TEMP_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
 
 
 
-/// Index des capteurs de température critiques (utilisé par le driver DS18B20).
-pub const CRITICAL_TEMP_INDICES: [usize; 1] = [0];
-
-/// Index des capteurs de température non-critiques.
-pub const NON_CRITICAL_TEMP_INDICES: [usize; 4] = [1, 2, 3, 4];
-
-
-
 // ─── Seuils de sécurité ───────────────────────────────────────────────────────
 
 pub const SAFETY_HP_MAX: f32              = 14.0;
@@ -61,8 +53,6 @@ pub const TARGET_CHAMBER_TEMP: f32        = -40.0;
 
 // ─── Timing (ms) ──────────────────────────────────────────────────────────────
 
-pub const CRITICAL_READ_INTERVAL_MS:     u64 = 500;
-pub const NON_CRITICAL_READ_INTERVAL_MS: u64 = 2000;
 pub const DATA_PUBLISH_INTERVAL_MS:      u64 = 1000;
 
 

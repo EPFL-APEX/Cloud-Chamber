@@ -1,46 +1,36 @@
-use core::fmt::Debug;
-
-use crate::cloud_chamber_hal::sensors::{PressureSensor, Sensor, Sensors, TemperatureSensor, VoltageSensor};
+use crate::cloud_chamber_hal::sensors::{BatchSensor, DeferredBatchSensor, Measurement, Sensors};
+use crate::cloud_chamber_hal::units::{Celsius, HectoPascal, Volt};
 use crate::config::{
     NUMBER_OF_TEMP_SENSOR, NUMBER_OF_PRESSURE_SENSOR,
     NUMBER_OF_VOLTMETER, CONTROL_LOOP_HISTORY_SIZE
 };
 use crate::shared::{
-    data::{SystemTask, TimeStamped, TemperatureReading, PressureReading, VoltsReading, SensorSnapshot},
+    data::{SystemTask, SensorSnapshot},
     ring_buffer::RingBuffer
 };
 use crate::cloud_chamber_hal::timer::Instant;
 
-#[derive(Clone, Copy, Debug)]
+/// Décide quelles catégories de capteurs sonder ce cycle.
+///
+/// `BatchSensor::read()` lit toujours les `N` capteurs d'une catégorie en un
+/// seul appel (diffusion partagée pour les bus comme le 1-Wire) : impossible
+/// de choisir un sous-ensemble de capteurs individuels. Le seul levier est
+/// donc "sonder cette catégorie ce cycle, ou pas" — utile pour éviter le
+/// délai de conversion température (jusqu'à ~800 ms) à chaque itération.
+#[derive(Clone, Copy, Debug, Default)]
 pub struct ProbingPlan {
-    temp_sensor_mask:u8,
-    pressure_sensor_mask:u8,
-    voltmeter_mask:u8,
+    pub probe_temperature: bool,
+    pub probe_pressure: bool,
+    pub probe_voltage: bool,
 }
 
 impl ProbingPlan {
-    pub const fn new() -> Self {
-        todo!()
+    pub const fn new(probe_temperature: bool, probe_pressure: bool, probe_voltage: bool) -> Self {
+        Self { probe_temperature, probe_pressure, probe_voltage }
     }
 
     pub const fn all() -> Self {
-        Self { 
-            temp_sensor_mask: 0b1111_1111,
-            pressure_sensor_mask: 0b1111_1111,
-            voltmeter_mask: 0b1111_1111
-        }
-    }
-
-    pub const fn should_probe<TemperatureSensor>(&self, id:u8) -> bool {
-        self.temp_sensor_mask & (1 << id) != 0
-    }
-
-    pub fn should_probe<PressureSensor>(&self, id:u8) -> bool {
-        self.pressure_sensor_mask & (1 << id) != 0
-    }
-
-    pub fn should_probe<VoltageSensor>(&self, id:u8) -> bool {
-        self.voltmeter_mask & (1 << id) != 0
+        Self { probe_temperature: true, probe_pressure: true, probe_voltage: true }
     }
 }
 
@@ -57,18 +47,18 @@ impl SystemTask {
 
 #[derive(Debug)]
 pub struct MeasurementHistory {
-    temps: [RingBuffer<TemperatureReading, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_TEMP_SENSOR],
-    press: [RingBuffer<PressureReading, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_PRESSURE_SENSOR],
-    volts: [RingBuffer<VoltsReading, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_VOLTMETER],
+    temps: [RingBuffer<Measurement<Celsius>, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_TEMP_SENSOR],
+    press: [RingBuffer<Measurement<HectoPascal>, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_PRESSURE_SENSOR],
+    volts: [RingBuffer<Measurement<Volt>, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_VOLTMETER],
 }
 
 impl MeasurementHistory {
 
     pub fn new() -> Self {
         let t0 = Instant::new(0);
-        let default_temp = TemperatureReading {time: t0, value: f32::NAN};
-        let default_press = PressureReading {time: t0, value: f32::NAN};
-        let default_volts = VoltsReading {time: t0, value: f32::NAN};
+        let default_temp = Measurement::new(t0, Celsius(f32::NAN));
+        let default_press = Measurement::new(t0, HectoPascal(f32::NAN));
+        let default_volts = Measurement::new(t0, Volt(f32::NAN));
         Self {
             temps: core::array::from_fn(|_| RingBuffer::filled(default_temp)),
             press: core::array::from_fn(|_| RingBuffer::filled(default_press)),
@@ -84,24 +74,60 @@ impl MeasurementHistory {
     }
 }
 
-fn push_if_newer<T: Copy + TimeStamped, const N: usize>(dst: &mut [RingBuffer<T, N>], src: &[Option<T>]) {
+fn push_if_newer<Unit: Copy, const N: usize>(
+    dst: &mut [RingBuffer<Measurement<Unit>, N>], src: &[Option<Measurement<Unit>>],
+) {
     for (d_buffer, s_data) in dst.iter_mut().zip(src.iter()) {
         let Some(s_value) = s_data else { continue; };
 
         match d_buffer.get(0) {
-            Ok(newest) if !s_value.get_instant().is_newer_than(newest.get_instant()) => {}
+            Ok(newest) if !s_value.is_newer_than(&newest) => {}
             _ => d_buffer.push(*s_value),
         }
     }
 }
 
-impl<T: TemperatureSensor, P: PressureSensor, V: VoltageSensor> Sensors<T, P, V> {
+impl<Tmp, Prs, Vlt> Sensors<Tmp, Prs, Vlt>
+where
+    Tmp: DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
+    Prs: BatchSensor<HectoPascal, NUMBER_OF_PRESSURE_SENSOR>,
+    Vlt: BatchSensor<Volt, NUMBER_OF_VOLTMETER>,
+{
     pub fn probe(&mut self, probing_plan: ProbingPlan) -> SensorSnapshot {
         let mut result = SensorSnapshot::default();
 
-        probe_and_insert(&mut self.temperature_sensors, &probing_plan, &mut result.temps);
-        probe_and_insert(&mut self.pressure_sensors, &probing_plan, &mut result.press);
-        probe_and_insert(&mut self.voltage_sensors, &probing_plan, &mut result.volts);
+        if probing_plan.probe_temperature {
+            self.temperature_source.start_conversion();
+        }
+
+        if probing_plan.probe_pressure {
+            for (slot, reading) in result.press.iter_mut().zip(self.pressure_source.read()) {
+                if reading.is_ok() {
+                    *slot = Some(reading.unwrap());
+                } else {
+                    todo!("Error handling for pressure probing");
+                }
+            }
+        }
+        if probing_plan.probe_voltage {
+            for (slot, reading) in result.volts.iter_mut().zip(self.voltage_source.read()) {
+                if reading.is_ok() {
+                    *slot = reading.ok();
+                } else {
+                    todo!("Error handling for voltage probing");
+                }
+            }
+        }
+        
+        if probing_plan.probe_temperature {
+            for (slot, reading) in result.temps.iter_mut().zip(self.temperature_source.read_result()) {
+                if reading.is_ok() {
+                    *slot = reading.ok();
+                } else {
+                    todo!("Error handling for temperature probing");
+                }
+            }
+        }
 
         result
     }
@@ -109,17 +135,4 @@ impl<T: TemperatureSensor, P: PressureSensor, V: VoltageSensor> Sensors<T, P, V>
     pub fn probe_all(&mut self) -> SensorSnapshot {
         self.probe(ProbingPlan::all())
     }
-}
-
-fn probe_and_insert<S: Sensor<T>, T: Debug>(sensors: &mut [S], plan: &ProbingPlan, dest: &mut [Option<T>]) -> Result<(), (usize, S::Error)>{
-    for (id, (sensor, d_val)) in sensors.iter_mut().zip(dest.iter_mut()).enumerate() {
-        if !plan.should_probe<T>(id) {continue;}
-        
-        let result = sensor.read();
-        if result.is_err() { return Err((id, result.unwrap_err())) };
-
-        *d_val = Some(result.unwrap());
-    };
-
-    Ok(())
 }
