@@ -1,17 +1,10 @@
 //! All the logic for controlling the state of the chamber goes here
 
-use crate::shared::{
-    data::{PressureReading, SHARED, SensorSnapshot, SystemTask, TemperatureReading, TimeStamped, VoltsReading},
-    ring_buffer::RingBuffer,
+use crate::{cloud_chamber_hal::sensors::Sensors, 
+    shared::data::{SHARED, SensorSnapshot, SystemTask},
 };
 
-use super::probing::ProbingPlan;
-
-use crate::config::{
-    CONTROL_LOOP_HISTORY_SIZE,
-    NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER,
-    NUMBER_OF_PRESSURE_SENSOR, 
-};
+use super::probing::MeasurementHistory;
 
 use defmt::panic;
 
@@ -21,37 +14,38 @@ use defmt::panic;
 pub fn run() -> ! {
 
     // Sensor Init
-    let latest_measurement = probe_every_sensor();
-    if !latest_measurement.are_all_valid() {panic!("Not every sensor returned a valid measurement, something goes wrong...")};
+    let mut sensors = Sensors::new();
+
+    // Initial values, mais est-ce qu'on veut vraiment ça ?
+    let mut latest_measurement = sensors.probe_all();
+    if !latest_measurement.are_all_some() {panic!("Not every sensor returned a valid measurement, something goes wrong...")};
 
     update_global_state(&latest_measurement);
     
     // History
-    let mut measurement_history: MeasurementHistory = MeasurementHistory::new();
+    let mut measurement_history  = MeasurementHistory::new();
     measurement_history.update(&latest_measurement);
 
     // Task Init
-    let current_task = SystemTask::default();
+    let mut current_task = SystemTask::default();
+
+    // Probing plan
+    let mut probing_plan = current_task.create_probing_plan(&measurement_history);
     
 
     // Control loop
     loop {
-        latest_measurement = measure_placeholder();
-        if latest_measurement.has_new_data() {
+        latest_measurement = sensors.probe(probing_plan);
+        if !latest_measurement.are_all_none() {
             update_global_state(&latest_measurement);
         };
         measurement_history.update(&latest_measurement);
-        current_task.react_to(&measurement_history);
+
+        current_task = get_current_task();
+        current_task = current_task.react_to(&measurement_history);
+        
+        probing_plan = current_task.create_probing_plan(&measurement_history);
     }
-}
-
-
-fn measure_placeholder(plan:ProbingPlan) -> SensorSnapshot {
-    todo!()
-}
-
-fn probe_every_sensor() -> SensorSnapshot {
-    todo!()
 }
 
 
@@ -59,7 +53,7 @@ fn probe_every_sensor() -> SensorSnapshot {
 fn update_global_state(latest_measurement:&SensorSnapshot) {
     critical_section::with(|cs| {
         let mut shared_state = SHARED.borrow_ref_mut(cs);
-        let mut shared_sensor_data = &shared_state.snapshot;
+        let mut shared_sensor_data = &mut shared_state.snapshot;
         
         merge_new_readings(&mut shared_sensor_data.temps, &latest_measurement.temps);
         merge_new_readings(&mut shared_sensor_data.press, &latest_measurement.press);
@@ -86,45 +80,12 @@ fn get_current_task() -> SystemTask {
 
 
 impl SystemTask {
-    fn react_to(&self, current_state: &MeasurementHistory) {
+    pub fn react_to(self, current_state: &MeasurementHistory) -> SystemTask {
         match self {
             SystemTask::Idle => { todo!() }
-            SystemTask::Cooling(phase) => { todo!() }
+            SystemTask::Cooling(phase) => phase.react_to(current_state),
             SystemTask::Stabilising => { todo!() }
             SystemTask::Stopping(phase) => { todo!() }
-        }
-    }
-}
-
-
-#[derive(Debug)]
-struct MeasurementHistory {
-    temps: [RingBuffer<TemperatureReading, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_TEMP_SENSOR],
-    press: [RingBuffer<PressureReading, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_PRESSURE_SENSOR],
-    volts: [RingBuffer<VoltsReading, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_VOLTMETER],
-}
-
-impl MeasurementHistory {
-    fn update(&mut self, latest_measurement: &SensorSnapshot) {
-        push_if_newer(&mut self.temps, &latest_measurement.temps);
-        push_if_newer(&mut self.press, &latest_measurement.press);
-        push_if_newer(&mut self.volts, &latest_measurement.volts);
-    }
-}
-
-fn push_if_newer<T: Copy + TimeStamped, const N: usize>(dst: &mut [RingBuffer<T, N>], src: &[Option<T>]) {
-    for (d_buffer, s_data) in dst.iter_mut().zip(src.iter()) {
-        if s_data.is_none() {continue;}
-        
-        let newest_buffer_item = d_buffer.get(0);
-
-        if newest_buffer_item.is_err() {continue;}
-        
-        let newest_buffer_item_instant = d_buffer.get(0).unwrap().get_instant();
-        let s_data_instant = s_data.unwrap().get_instant();
-
-        if s_data_instant.is_newer_than(newest_buffer_item_instant) {
-            d_buffer.push(s_data.unwrap());
         }
     }
 }
