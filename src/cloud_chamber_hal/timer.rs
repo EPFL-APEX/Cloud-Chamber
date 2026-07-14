@@ -31,15 +31,30 @@ pub trait WatchdogFeed {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Instant {
-    time:u64
+    time:u32
 }
 
 impl Instant {
-    pub fn new(time: u64) -> Self {
+    pub fn new(time: u32) -> Self {
         Self { time }
     }
     pub fn is_newer_than(&self, other: &Instant) -> bool {
         self.time > other.time
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
+pub struct Duration {
+    duration:u32
+}
+
+impl Duration {
+    pub fn new(duration: u32) -> Self {
+        Self { duration }
+    }
+
+    pub fn as_millis(self) -> u32 {
+        self.duration
     }
 }
 
