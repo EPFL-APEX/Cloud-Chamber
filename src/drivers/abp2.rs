@@ -17,7 +17,9 @@
 /// ```
 
 use embedded_hal::i2c::I2c as I2cTrait;
-use crate::cloud_chamber_hal::sensors::PressureSensor;
+use crate::cloud_chamber_hal::sensors::{Sensor, Measurement};
+use crate::cloud_chamber_hal::timer::MonotonicTimer;
+use crate::cloud_chamber_hal::units::HectoPascal;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Constantes ABP2 (datasheet Honeywell)
@@ -133,14 +135,28 @@ impl<I: I2cTrait> Abp2Driver<I> {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Trait PressureSensor — retourne en Pascal
+// Wrapper implémentant Sensor<Measurement<HectoPascal>> (horloge stockée en interne)
 // ════════════════════════════════════════════════════════════════════════════
 
-impl<I: I2cTrait> PressureSensor for Abp2Driver<I> {
+/// Le capteur ABP2 convertit en continu en arrière-plan : `read()` est donc
+/// immédiat, sans phase de déclenchement séparée (pas de `DeferredSensor`).
+pub struct Abp2Sensor<I, C> {
+    driver: Abp2Driver<I>,
+    clock:  C,
+}
+
+impl<I: I2cTrait, C: MonotonicTimer> Abp2Sensor<I, C> {
+    pub fn new(driver: Abp2Driver<I>, clock: C) -> Self {
+        Self { driver, clock }
+    }
+}
+
+impl<I: I2cTrait, C: MonotonicTimer> Sensor<Measurement<HectoPascal>> for Abp2Sensor<I, C> {
     type Error = Abp2Error;
 
-    /// Lit la pression et la convertit en Pascal (1 bar = 100 000 Pa).
-    fn read_pascal(&mut self) -> Result<f32, Self::Error> {
-        Ok(self.read()?.pressure_bar * 100_000.0)
+    /// Lit la pression et la convertit en hectopascal (1 bar = 1000 hPa).
+    fn read(&mut self) -> Result<Measurement<HectoPascal>, Self::Error> {
+        let hpa = self.driver.read()?.pressure_bar * 1000.0;
+        Ok(Measurement::new(self.clock.get_counter_us(), HectoPascal(hpa)))
     }
 }

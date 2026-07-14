@@ -6,12 +6,14 @@
 /// # Pattern delay
 ///
 /// Le délai est passé explicitement à `start_measurement(delay)`.
-/// Pour le trait `TemperatureSensor`, utiliser `Bme280Sensor<I, D>`
-/// qui stocke le delay en interne.
+/// Pour les traits `Sensor`/`DeferredSensor`, utiliser `Bme280Sensor<I, D, C>`
+/// qui stocke le delay et l'horloge en interne.
 
 use embedded_hal::i2c::I2c as I2cTrait;
 use embedded_hal::delay::DelayNs;
-use crate::cloud_chamber_hal::sensors::TemperatureSensor;
+use crate::cloud_chamber_hal::sensors::{Sensor, DeferredSensor, Measurement};
+use crate::cloud_chamber_hal::timer::{Duration, MonotonicTimer};
+use crate::cloud_chamber_hal::units::Celsius;
 
 const BME_ADDR:       u8 = 0x76;
 const REG_CHIP_ID:    u8 = 0xD0;
@@ -159,12 +161,21 @@ impl<I: I2cTrait> Bme280Driver<I> {
         Ok((self.read_celsius()?, self.read_pressure_hpa()?, self.read_humidity()?))
     }
 
-    /// Envoie une mesure forcée, attend ~15 ms, stocke les données brutes.
-    pub fn start_measurement<D: DelayNs>(&mut self, delay: &mut D) -> Result<(), Bme280Error> {
+    /// Déclenche une mesure forcée sans attendre la conversion (~15 ms).
+    ///
+    /// À combiner avec `fetch_raw()` après le délai de conversion. Séparer les
+    /// deux étapes permet de déclencher plusieurs BME280 (adresses I2C
+    /// distinctes) avant d'attendre une seule fois, au lieu de bloquer ~15 ms
+    /// par capteur.
+    pub fn trigger_measurement(&mut self) -> Result<(), Bme280Error> {
         if self.calib.is_none() { return Err(Bme280Error::NotInitialized); }
         self.reg_write(REG_CTRL_HUM,  0x01)?;
         self.reg_write(REG_CTRL_MEAS, 0x25)?; // mode forcé — temp x1, pression x1
-        delay.delay_ms(15);
+        Ok(())
+    }
+
+    /// Lit les données brutes après le délai de conversion suivant `trigger_measurement()`.
+    pub fn fetch_raw(&mut self) -> Result<(), Bme280Error> {
         let mut raw = [0u8; 8];
         self.reg_read(REG_DATA, &mut raw)?;
         // Registres 0xF7-0xFE : press[2:0], temp[2:0], hum[1:0]
@@ -172,6 +183,15 @@ impl<I: I2cTrait> Bme280Driver<I> {
         self.last_adc_t = ((raw[3] as i32) << 12) | ((raw[4] as i32) << 4) | ((raw[5] as i32) >> 4);
         self.last_adc_h = ((raw[6] as i32) << 8)  |  (raw[7] as i32);
         Ok(())
+    }
+
+    /// Envoie une mesure forcée, attend ~15 ms, stocke les données brutes.
+    /// Combine `trigger_measurement()` + `fetch_raw()` pour un usage simple,
+    /// mono-capteur, bloquant.
+    pub fn start_measurement<D: DelayNs>(&mut self, delay: &mut D) -> Result<(), Bme280Error> {
+        self.trigger_measurement()?;
+        delay.delay_ms(15);
+        self.fetch_raw()
     }
 
     /// Température en °C depuis la dernière mesure.
@@ -197,25 +217,40 @@ impl<I: I2cTrait> Bme280Driver<I> {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Wrapper implémentant TemperatureSensor (delay stocké en interne)
+// Wrapper implémentant Sensor/DeferredSensor (delay + horloge stockés en interne)
 // ════════════════════════════════════════════════════════════════════════════
 
-pub struct Bme280Sensor<I, D> {
+pub struct Bme280Sensor<I, D, C> {
     driver: Bme280Driver<I>,
     delay:  D,
+    clock:  C,
 }
 
-impl<I: I2cTrait, D: DelayNs> Bme280Sensor<I, D> {
-    pub fn new(driver: Bme280Driver<I>, delay: D) -> Self { Self { driver, delay } }
+impl<I: I2cTrait, D: DelayNs, C: MonotonicTimer> Bme280Sensor<I, D, C> {
+    pub fn new(driver: Bme280Driver<I>, delay: D, clock: C) -> Self { Self { driver, delay, clock } }
     pub fn init(&mut self) -> Result<(), Bme280Error> { self.driver.init() }
 }
 
-impl<I: I2cTrait, D: DelayNs> TemperatureSensor for Bme280Sensor<I, D> {
+impl<I: I2cTrait, D: DelayNs, C: MonotonicTimer> Sensor<Measurement<Celsius>> for Bme280Sensor<I, D, C> {
     type Error = Bme280Error;
-    fn start_measurement(&mut self) -> Result<(), Self::Error> {
-        self.driver.start_measurement(&mut self.delay)
+
+    fn read(&mut self) -> Result<Measurement<Celsius>, Self::Error> {
+        self.start_conversion()?;
+        self.delay.delay_ms(self.conversion_time_ms().as_millis());
+        self.read_result()
     }
-    fn read_celsius(&mut self) -> Result<f32, Self::Error> {
-        self.driver.read_celsius()
+}
+
+impl<I: I2cTrait, D: DelayNs, C: MonotonicTimer> DeferredSensor<Measurement<Celsius>> for Bme280Sensor<I, D, C> {
+    fn start_conversion(&mut self) -> Result<(), Self::Error> {
+        self.driver.trigger_measurement()
+    }
+
+    fn conversion_time_ms(&self) -> Duration { Duration::new(15) }
+
+    fn read_result(&mut self) -> Result<Measurement<Celsius>, Self::Error> {
+        self.driver.fetch_raw()?;
+        let value = self.driver.read_celsius()?;
+        Ok(Measurement::new(self.clock.get_counter_us(), Celsius(value)))
     }
 }
