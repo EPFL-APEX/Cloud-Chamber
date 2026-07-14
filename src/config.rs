@@ -51,11 +51,6 @@ pub const SAFETY_TEMP_COMPRESSOR_MAX: f32 = 120.0;
 pub const SAFETY_BP_MIN: f32              = 0.15;
 pub const TARGET_CHAMBER_TEMP: f32        = -40.0;
 
-// ─── Timing (ms) ──────────────────────────────────────────────────────────────
-
-pub const DATA_PUBLISH_INTERVAL_MS:      u64 = 1000;
-
-
 
 // ─── Contol loop options ──────────────────────────────────────────────────────────────
 pub const CONTROL_LOOP_HISTORY_SIZE:usize = 10;
