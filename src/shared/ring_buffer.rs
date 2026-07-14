@@ -23,6 +23,7 @@ use crate::shared::error::{Error, Result};
 ///
 /// Les nouvelles valeurs écrasent les plus anciennes quand le buffer est plein.
 /// `get(0)` retourne toujours la valeur la plus récente.
+#[derive(Debug)]
 pub struct RingBuffer<T: Copy, const N: usize> {
     data: [T; N],
     write_index: usize,
@@ -41,6 +42,15 @@ impl<T: Copy + Default, const N: usize> RingBuffer<T, N> {
 }
 
 impl<T: Copy, const N: usize> RingBuffer<T, N> {
+
+    pub fn filled(value:T) -> Self {
+        Self {
+            data: [value; N],
+            write_index: 0,
+            is_full: false,
+        }
+    }
+
     /// Ajoute une valeur. Si le buffer est plein, écrase la plus ancienne.
     pub fn push(&mut self, value: T) {
         self.data[self.write_index] = value;
