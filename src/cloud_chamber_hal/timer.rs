@@ -35,6 +35,9 @@ pub struct Instant {
 }
 
 impl Instant {
+    pub fn new(time: u64) -> Self {
+        Self { time }
+    }
     pub fn is_newer_than(&self, other: &Instant) -> bool {
         self.time > other.time
     }
