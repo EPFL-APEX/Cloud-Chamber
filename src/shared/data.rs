@@ -88,6 +88,20 @@ pub struct SensorSnapshot {
     pub is_closed: bool,
 }
 
+impl SensorSnapshot {
+    pub fn are_all_none(&self) -> bool {
+        self.temps.iter().all(Option::is_none)
+            && self.press.iter().all(Option::is_none)
+            && self.volts.iter().all(Option::is_none)
+    }
+
+    pub fn are_all_some(&self) -> bool {
+        self.temps.iter().all(Option::is_some)
+            && self.press.iter().all(Option::is_some)
+            && self.volts.iter().all(Option::is_some)
+    }
+}
+
 /// État global de la machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemTask {
@@ -152,7 +166,7 @@ mod tests {
         assert_ne!(SystemTask::Idle, SystemTask::Stabilising);
         assert_ne!(SystemTask::Idle, SystemTask::Cooling(CoolingPhase::Todo));
         assert_ne!(
-            SystemTask::Cooling(CoolingPhase::Todo),
+            SystemTask::Cooling(CoolingPhase::SensorCheck),
             SystemTask::Stopping(StoppingPhase::Todo)
         );
     }
