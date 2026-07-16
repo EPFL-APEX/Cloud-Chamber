@@ -272,10 +272,11 @@ class App:
     def _build_tiles(self, parent):
         row = tk.Frame(parent, bg=C_SURFACE, pady=12, padx=10)
         row.pack(fill="x")
-        self.v_ds  = self._tile(row, "Base chambre", C_DS)
-        self.v_bmt = self._tile(row, "BME280 T",     C_BME_T)
-        self.v_prs = self._tile(row, "Pression",     C_PRESSURE)
-        self.v_hum = self._tile(row, "Humidité",     C_HUMIDITY)
+        self.v_ds     = self._tile(row, "Base chambre", C_DS)
+        self.v_ds_max = self._tile(row, "Max DS",       C_ORANGE)
+        self.v_bmt    = self._tile(row, "BME280 T",     C_BME_T)
+        self.v_prs    = self._tile(row, "Pression",     C_PRESSURE)
+        self.v_hum    = self._tile(row, "Humidité",     C_HUMIDITY)
         self._build_ds_live(parent)
 
     def _build_ds_live(self, parent):
@@ -762,6 +763,14 @@ class App:
         self.v_bmt.config(text=self._fmt("bt",  "°C",  1))
         self.v_prs.config(text=self._fmt("bp",  "hPa", 0))
         self.v_hum.config(text=self._fmt("bh",  "%",   0))
+
+        vals = [self.last.get(f"ds{i}") for i in range(5)]
+        valid_vals = [v for v in vals if v is not None]
+        if valid_vals:
+            mx = max(valid_vals)
+            self.v_ds_max.config(text=f"{mx:.1f}°C")
+        else:
+            self.v_ds_max.config(text="—")
 
         # Tuiles DS live instantanées
         for i, lbl in enumerate(self.v_ds_live):
