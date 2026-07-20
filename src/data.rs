@@ -78,7 +78,9 @@ impl SystemState {
             pressure_bp:        PressureReading { pressure: 0.0, temperature: 0.0, valid: false },
             pressure_hp:        PressureReading { pressure: 0.0, temperature: 0.0, valid: false },
             bme280:             BmeReading { temp_c: 0.0, pressure_hpa: 0.0, humidity_pct: 0.0, valid: false },
-            compressor_allowed: true,
+            // OFF au démarrage — l'opérateur active via le bouton MARCHE de
+            // l'écran ou la commande COMP 1 (fail-safe au boot).
+            compressor_allowed: false,
             alarms:             Vec::new(),
             cycle_count:        0,
             uptime_s:           0,

@@ -16,9 +16,6 @@ const CHAMBER_TEMP_IDX:   usize = 4; // "base_chambre"        — cible de refro
 // Constantes de contrôle — TODO: calibrer expérimentalement
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Hystérésis du compresseur (°C de part et d'autre de chamber_temp_c).
-/// Ex : cible −40 °C → ON si T > −38, OFF si T < −42.
-const COMPRESSOR_HYST_BAND_C: f32 = 2.0; // TODO: affiner
 
 /// Le HV n'est activé que si la chambre est à moins de N °C au-dessus de la cible.
 const HV_READY_WINDOW_C: f32 = 5.0; // TODO: affiner
@@ -77,25 +74,14 @@ impl Controller {
             self.safety_cycles = 0;
         }
 
-        // ── 2. Compresseur (hystérésis sur la base de la chambre) ────────────
-        let chamber = &state.temperatures[CHAMBER_TEMP_IDX];
-        if chamber.valid {
-            let t   = chamber.value;
-            let tgt = target.chamber_temp_c;
-            // La chambre est trop chaude → démarrer le compresseur.
-            if t > tgt + COMPRESSOR_HYST_BAND_C {
-                self.compressor_on = true;
-            }
-            // La chambre a trop dépassé la cible → arrêter.
-            else if t < tgt - COMPRESSOR_HYST_BAND_C {
-                self.compressor_on = false;
-            }
-            // Dans la bande d'hystérésis → on conserve l'état courant.
-        } else {
-            // Capteur perdu → arrêt immédiat : sans mesure on ne peut pas
-            // savoir si la chambre surchauffe, continuer serait dangereux.
-            self.compressor_on = false;
-        }
+        // ── 2. Compresseur — tourne en continu dès qu'il est autorisé ───────
+        // On veut le fond le plus froid possible pour maximiser la
+        // sursaturation. Seules les sécurités (HP, BP, T° sortie compresseur,
+        // via safety_triggered) et l'interlock opérateur coupent le compresseur.
+        // NOTE : la perte du capteur base_chambre (ds4) ne le coupe plus —
+        // l'ancien comportement forçait OFF dès que moins de 5 DS18B20 étaient
+        // découverts, d'où l'incohérence « autorisé » IHM / « OFF » écran.
+        self.compressor_on = true;
 
         // ── 3. Chauffage isopropanol (PID) ───────────────────────────────────
         let iso = &state.temperatures[ISO_TEMP_IDX];

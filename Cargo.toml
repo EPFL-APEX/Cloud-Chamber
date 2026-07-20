@@ -39,6 +39,7 @@ mipidsi           = "0.9"
 embedded-graphics = "0.8"
 embedded-hal-bus  = "0.2"
 portable-atomic   = { version = "1", features = ["critical-section"] }
+libm              = "0.2"
 
 [profile.release]
 debug     = 2

@@ -19,9 +19,17 @@ Dépendances :
 
 import sys, os, re, csv, queue, threading, collections, math, time
 from datetime import datetime
+from tkinter import filedialog
 
 import tkinter as tk
 from tkinter import ttk
+
+try:
+    import winsound as _winsound
+    def _beep(freq: int, dur: int):
+        threading.Thread(target=_winsound.Beep, args=(freq, dur), daemon=True).start()
+except ImportError:
+    def _beep(freq: int, dur: int): pass
 import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.figure import Figure
@@ -184,15 +192,28 @@ class App:
         self.d_hum  = collections.deque(maxlen=WINDOW)
         self.t0: datetime | None = None
 
-        self.last: dict = {}          # dernier STATE reçu
+        self.last: dict = {"ca": 0, "hv": 0}  # STATE courant (défauts = firmware defaults)
         self._last_plot_t:  float = 0.0          # dernier redraw graphiques
         self._last_plot_pt: float = 0.0          # dernier point ajouté aux courbes
         self._last_state_t: float | None = None  # dernier STATE reçu (monotonic)
         self._serial_err:   str | None   = None  # dernière erreur série active
 
-        # État des boutons (cohérent avec le firmware au démarrage)
-        self.comp_allowed = True
-        self.hv_enabled   = False
+
+        # Alarmes — dernier bip par type (anti-repeat)
+        self._alarm_last: dict[str, float] = {}
+        self.alarm_enabled = True
+
+        # Stats de session
+        self._t_min_ds4:     float | None = None
+        self._ready_t_start: float | None = None   # monotonic où la chambre est devenue prête
+        self._ready_total_s: float        = 0.0    # cumul temps en zone prête
+
+        # Replay CSV
+        self._replay_stop   = threading.Event()
+        self._replay_thread: threading.Thread | None = None
+        self._replay_win:    tk.Toplevel | None = None
+        self._replay_progress_var: tk.DoubleVar | None = None
+        self._replay_time_lbl:     tk.Label    | None = None
 
         root.title("Chambre à brouillard — Contrôle")
         root.configure(bg=C_DARK)
@@ -210,17 +231,48 @@ class App:
         content = tk.Frame(self.root, bg=C_SURFACE)
         content.pack(fill="both", expand=True)
 
+        # Panneau gauche — graphiques (pas de scroll, fill normal)
         left = tk.Frame(content, bg=C_SURFACE)
         left.pack(side="left", fill="both", expand=True)
 
-        # Sidebar sombre
-        right = tk.Frame(content, bg=C_DARK, width=380)
-        right.pack_propagate(False)
-        right.pack(side="right", fill="y")
+        # ── Panneau droit avec défilement vertical ────────────────────────────
+        right_outer = tk.Frame(content, bg=C_DARK, width=380)
+        right_outer.pack_propagate(False)
+        right_outer.pack(side="right", fill="y")
+
+        right_scroll = ttk.Scrollbar(right_outer, orient="vertical")
+        right_scroll.pack(side="right", fill="y")
+
+        self._right_canvas = tk.Canvas(right_outer, bg=C_DARK,
+                                       yscrollcommand=right_scroll.set,
+                                       highlightthickness=0)
+        self._right_canvas.pack(side="left", fill="both", expand=True)
+        right_scroll.config(command=self._right_canvas.yview)
+
+        right = tk.Frame(self._right_canvas, bg=C_DARK)
+        self._right_inner_id = self._right_canvas.create_window(
+            (0, 0), window=right, anchor="nw")
+
+        right.bind("<Configure>", self._on_right_frame_configure)
+        self._right_canvas.bind("<Configure>", self._on_right_canvas_configure)
+        # Molette active uniquement quand la souris survole le panneau de droite
+        self._right_canvas.bind(
+            "<Enter>", lambda e: self.root.bind_all("<MouseWheel>", self._on_right_mousewheel))
+        self._right_canvas.bind(
+            "<Leave>", lambda e: self.root.unbind_all("<MouseWheel>"))
 
         self._build_tiles(left)
         self._build_notebook(left)
         self._build_controls(right)
+
+    def _on_right_frame_configure(self, _e):
+        self._right_canvas.configure(scrollregion=self._right_canvas.bbox("all"))
+
+    def _on_right_canvas_configure(self, e):
+        self._right_canvas.itemconfig(self._right_inner_id, width=e.width)
+
+    def _on_right_mousewheel(self, e):
+        self._right_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
 
     def _build_header(self):
         bar = tk.Frame(self.root, bg=C_DARK2, pady=10, padx=18)
@@ -249,6 +301,10 @@ class App:
         self.lbl_status = tk.Label(bar, text="●  Connexion…", bg=C_DARK2,
                                    fg=C_ORANGE, font=("Segoe UI", 10, "bold"))
         self.lbl_status.pack(side="right", padx=16)
+
+        self.lbl_ready = tk.Label(bar, text="◌  En préparation", bg=C_DARK2,
+                                  fg=C_DARK_SUB, font=("Segoe UI", 10, "bold"))
+        self.lbl_ready.pack(side="right", padx=16)
 
     def _tile(self, parent, label: str, color: str) -> tk.Label:
         # Bordure simulée par un frame englobant
@@ -553,7 +609,57 @@ class App:
                   relief="flat", cursor="hand2",
                   pady=9, anchor="w", padx=14, bd=0,
                   activebackground="#252836",
+                  activeforeground=C_DARK_TXT).pack(fill="x", pady=(0, 6))
+        tk.Button(p, text="  ↓  EXPORTER (PNG)", command=self._export_graphs,
+                  bg=C_DARK2, fg=C_DARK_SUB,
+                  font=("Segoe UI", 10, "bold"),
+                  relief="flat", cursor="hand2",
+                  pady=9, anchor="w", padx=14, bd=0,
+                  activebackground="#252836",
+                  activeforeground=C_DARK_TXT).pack(fill="x", pady=(0, 6))
+        tk.Button(p, text="  ▶  REJOUER CSV", command=self._replay_csv,
+                  bg=C_DARK2, fg=C_DARK_SUB,
+                  font=("Segoe UI", 10, "bold"),
+                  relief="flat", cursor="hand2",
+                  pady=9, anchor="w", padx=14, bd=0,
+                  activebackground="#252836",
                   activeforeground=C_DARK_TXT).pack(fill="x", pady=(0, 16))
+
+        divider()
+
+        # ── Alarmes ────────────────────────────────────────────────────────────
+        section("ALARMES")
+        alarm_row = tk.Frame(p, bg=C_DARK)
+        alarm_row.pack(fill="x", pady=(0, 4))
+        self._alarm_lbl = tk.Label(alarm_row, text="●  Actives", bg=C_DARK,
+                                   fg=C_GOOD, font=("Segoe UI", 9, "bold"))
+        self._alarm_lbl.pack(side="left")
+        tk.Button(alarm_row, text="ON/OFF", command=self._toggle_alarms,
+                  bg=C_DARK2, fg=C_DARK_SUB, font=("Segoe UI", 8),
+                  relief="flat", cursor="hand2", padx=8, pady=2, bd=0,
+                  activebackground=C_DARK_DIV,
+                  activeforeground=C_DARK_TXT).pack(side="right")
+
+        def alarm_row_cfg(label, var, unit):
+            f = tk.Frame(p, bg=C_DARK)
+            f.pack(fill="x", pady=2)
+            tk.Label(f, text=label, bg=C_DARK, fg=C_DARK_SUB,
+                     font=("Segoe UI", 8), width=16, anchor="w").pack(side="left")
+            e = tk.Entry(f, textvariable=var, width=6,
+                         font=("Segoe UI", 9), bg=C_DARK2, fg=C_DARK_TXT,
+                         bd=0, relief="flat", insertbackground=C_DARK_TXT,
+                         highlightthickness=1, highlightbackground=C_DARK_DIV,
+                         highlightcolor=C_DS)
+            e.pack(side="left", ipady=2)
+            tk.Label(f, text=unit, bg=C_DARK, fg=C_DARK_SUB,
+                     font=("Segoe UI", 8)).pack(side="left", padx=4)
+
+        self.alarm_ds0_var     = tk.StringVar(value="80")
+        self.alarm_sursat_var  = tk.StringVar(value="5")
+        self.alarm_silence_var = tk.StringVar(value="10")
+        alarm_row_cfg("ds0 max",      self.alarm_ds0_var,     "°C")
+        alarm_row_cfg("Sursat min",   self.alarm_sursat_var,  "×")
+        alarm_row_cfg("Silence max",  self.alarm_silence_var, "s")
 
         divider()
 
@@ -570,12 +676,14 @@ class App:
             v.pack(side="left")
             return v
 
-        self.v_target_act = stat_row("Cible active")
-        self.v_comp_act   = stat_row("Compresseur")
-        self.v_iso_duty   = stat_row("ISO duty")
-        self.v_safety     = stat_row("Sécurité")
-        self.v_uptime     = stat_row("Durée")
-        self.v_ds_count   = stat_row("Capteurs DS")
+        self.v_target_act  = stat_row("Cible active")
+        self.v_comp_act    = stat_row("Compresseur")
+        self.v_iso_duty    = stat_row("ISO duty")
+        self.v_safety      = stat_row("Sécurité")
+        self.v_uptime      = stat_row("Durée Pico")
+        self.v_ds_count    = stat_row("Capteurs DS")
+        self.v_tmin_ds4    = stat_row("T min ds4")
+        self.v_ready_time  = stat_row("Tps zone prête")
 
         divider(top=12, bottom=10)
 
@@ -600,17 +708,17 @@ class App:
         self._send(f"TARGET {v}")
 
     def _toggle_comp(self):
-        self.comp_allowed = not self.comp_allowed
-        self._send(f"COMP {'1' if self.comp_allowed else '0'}")
+        self.last["ca"] = 0 if self.last.get("ca", 1) else 1
+        self._send(f"COMP {self.last['ca']}")
         self._refresh_comp()
 
     def _toggle_hv(self):
-        self.hv_enabled = not self.hv_enabled
-        self._send(f"HV {'1' if self.hv_enabled else '0'}")
+        self.last["hv"] = 0 if self.last.get("hv", 0) else 1
+        self._send(f"HV {self.last['hv']}")
         self._refresh_hv()
 
     def _refresh_comp(self):
-        if self.comp_allowed:
+        if self.last.get("ca", 1):
             self.btn_comp.config(text="  ●  AUTORISÉ", bg="#0f3d14",
                                  fg="#4cde58", activebackground="#144d1a",
                                  activeforeground="#4cde58")
@@ -620,7 +728,7 @@ class App:
                                  activeforeground="#e87070")
 
     def _refresh_hv(self):
-        if self.hv_enabled:
+        if self.last.get("hv", 0):
             self.btn_hv.config(text="  ⚡  ACTIVÉ", bg="#3d2a00",
                                fg="#f0b429", activebackground="#4d3500",
                                activeforeground="#f0b429")
@@ -651,7 +759,7 @@ class App:
             "timestamp",
             "ds0_c", "ds1_c", "ds2_c", "ds3_c", "ds4_c",
             "bme_t_c", "bme_p_hpa", "bme_h_pct",
-            "target_c", "comp", "hv", "iso_duty", "safe", "up_s"])
+            "target_c", "comp", "comp_allowed", "hv", "iso_duty", "safe", "up_s"])
         self.writer.writeheader()
         self.lbl_file.config(text=f"→ {os.path.basename(path)}")
 
@@ -678,6 +786,8 @@ class App:
                     self._ingest(ts, payload)
                     self._serial_err = None
                     updated = True
+                elif kind == "replay_progress":
+                    self._update_replay_window(payload)
                 elif kind == "msg":
                     self._log(payload)
                 elif kind == "info":
@@ -690,6 +800,7 @@ class App:
             pass
 
         self._refresh_status()
+        self._check_alarms()
 
         if updated:
             self._update_tiles()
@@ -721,7 +832,7 @@ class App:
         if self.t0 is None:
             self.t0 = ts
         t = (ts - self.t0).total_seconds()
-        self.last = s
+        self.last.update(s)
         self._last_state_t = time.monotonic()
 
         # Courbes : décimation temporelle (le CSV, lui, garde tout)
@@ -734,6 +845,22 @@ class App:
             self.d_prs.append(s.get("bp"))
             self.d_hum.append(s.get("bh"))
 
+        # Stats session
+        ds4_v = s.get("ds4")
+        if ds4_v is not None:
+            if self._t_min_ds4 is None or ds4_v < self._t_min_ds4:
+                self._t_min_ds4 = ds4_v
+        bt_v = s.get("bt")
+        if ds4_v is not None and bt_v is not None:
+            now_m = time.monotonic()
+            if _sursaturation(bt_v, ds4_v) >= 50:
+                if self._ready_t_start is None:
+                    self._ready_t_start = now_m
+            else:
+                if self._ready_t_start is not None:
+                    self._ready_total_s += now_m - self._ready_t_start
+                    self._ready_t_start = None
+
         if self.writer:
             self.writer.writerow({
                 "timestamp": ts.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
@@ -744,8 +871,9 @@ class App:
                 "bme_p_hpa": s.get("bp"),
                 "bme_h_pct": s.get("bh"),
                 "target_c":  s.get("tg"),
-                "comp":      s.get("co"),
-                "hv":        s.get("hv"),
+                "comp":         s.get("co"),
+                "comp_allowed": s.get("ca"),
+                "hv":           s.get("hv"),
                 "iso_duty":  s.get("iso"),
                 "safe":      s.get("sf"),
                 "up_s":      s.get("up"),
@@ -792,6 +920,10 @@ class App:
             s = _sursaturation(t_amb, t_cold)
             color = C_GOOD if s >= 50 else (C_ORANGE if s >= 5 else C_WARN)
             self.v_sat_live.config(text=f"×{s:.0f}", fg=color)
+            if s >= 50:
+                self.lbl_ready.config(text="●  Chambre prête", fg=C_GOOD)
+            else:
+                self.lbl_ready.config(text="◌  En préparation", fg=C_DARK_SUB)
             self._sat_border.config(bg=color)
             if t_tgt is not None and abs(t_amb - t_tgt) > 0.1:
                 prog = (t_amb - t_cold) / (t_amb - t_tgt)
@@ -804,10 +936,14 @@ class App:
             self.v_sat_live.config(text="—", fg=C_MUTED)
             self._sat_border.config(bg=C_GRID)
             self.v_sat_prog_lbl.config(text="capteurs indisponibles")
+            self.lbl_ready.config(text="◌  En préparation", fg=C_DARK_SUB)
 
     def _update_controls(self):
         s = self.last
         self.v_target_act.config(text=self._fmt("tg", "°C", 1))
+        self._refresh_comp()
+        self._refresh_hv()
+
         comp = s.get("co")
         if comp is not None:
             txt = "ON" if comp else "OFF"
@@ -833,6 +969,228 @@ class App:
         self.v_ds_count.config(
             text=f"{n}/5" + (f"  ({', '.join(f'ds{i}' for i in online)})" if 0 < n < 5 else ""),
             fg=C_GOOD if n == 5 else (C_ORANGE if n else C_WARN))
+
+        # Stats session
+        self.v_tmin_ds4.config(
+            text=f"{self._t_min_ds4:.1f} °C" if self._t_min_ds4 is not None else "—")
+        total = self._ready_total_s
+        if self._ready_t_start is not None:
+            total += time.monotonic() - self._ready_t_start
+        m, sec = divmod(int(total), 60)
+        self.v_ready_time.config(text=f"{m}:{sec:02d}" if total > 0 else "—")
+
+    def _toggle_alarms(self):
+        self.alarm_enabled = not self.alarm_enabled
+        if self.alarm_enabled:
+            self._alarm_lbl.config(text="●  Actives", fg=C_GOOD)
+        else:
+            self._alarm_lbl.config(text="○  Désactivées", fg=C_DARK_SUB)
+
+    def _check_alarms(self):
+        if not self.alarm_enabled:
+            return
+        now = time.monotonic()
+
+        def beep_if(name: str, condition: bool, freq: int = 880, dur: int = 400):
+            if condition and now - self._alarm_last.get(name, 0) > 5.0:
+                self._alarm_last[name] = now
+                _beep(freq, dur)
+
+        ds0 = self.last.get("ds0")
+        sf  = self.last.get("sf")
+        t_amb  = self.last.get("bt")
+        t_cold = self.last.get("ds4")
+
+        try:
+            ds0_thresh = float(self.alarm_ds0_var.get())
+        except ValueError:
+            ds0_thresh = 80.0
+        try:
+            sursat_thresh = float(self.alarm_sursat_var.get())
+        except ValueError:
+            sursat_thresh = 5.0
+        try:
+            silence_thresh = float(self.alarm_silence_var.get())
+        except ValueError:
+            silence_thresh = 10.0
+
+        beep_if("comp_overheat", ds0 is not None and ds0 > ds0_thresh,  freq=1200, dur=600)
+        beep_if("safety",        sf == 1,                                 freq=880,  dur=1000)
+        if t_amb is not None and t_cold is not None:
+            s = _sursaturation(t_amb, t_cold)
+            beep_if("sursat_low", s < sursat_thresh, freq=440, dur=300)
+        if self._last_state_t is not None:
+            age = time.monotonic() - self._last_state_t
+            beep_if("pico_silence", age > silence_thresh, freq=660, dur=300)
+
+    def _export_graphs(self):
+        try:
+            active = self.nb.index(self.nb.select())
+        except Exception:
+            active = 0
+        fig = [self.fig, self.fig_ds, self.fig_bme][active]
+        default = f"chambre_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        path = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[("PNG", "*.png"), ("PDF", "*.pdf")],
+            initialfile=default,
+            initialdir="data",
+        )
+        if not path:
+            return
+        fig.savefig(path, dpi=150, bbox_inches="tight", facecolor=C_SURFACE)
+        self._log(f"Exporté : {os.path.basename(path)}")
+
+    def _replay_csv(self):
+        path = filedialog.askopenfilename(
+            filetypes=[("CSV", "*.csv")],
+            initialdir="data",
+        )
+        if not path:
+            return
+        # Arrêter le thread série et un replay précédent
+        if self.thread:
+            self.thread.stop()
+            self.thread = None
+        self._stop_replay()
+        self._replay_stop.clear()
+        self._clear_graphs()
+        self._open_replay_window(path)
+        self._replay_thread = threading.Thread(
+            target=self._replay_worker, args=(path,), daemon=True)
+        self._replay_thread.start()
+        self._log(f"Replay : {os.path.basename(path)}")
+
+    def _stop_replay(self):
+        """Interrompt le replay en cours et ferme la fenêtre."""
+        self._replay_stop.set()
+        if self._replay_thread and self._replay_thread.is_alive():
+            self._replay_thread.join(timeout=1.0)
+        if self._replay_win is not None:
+            try:
+                self._replay_win.destroy()
+            except tk.TclError:
+                pass
+            self._replay_win = None
+
+    def _open_replay_window(self, path: str):
+        """Fenêtre de lecture style vidéo avec barre de progression."""
+        fname = os.path.basename(path)
+
+        win = tk.Toplevel(self.root)
+        win.title(f"Replay — {fname}")
+        win.geometry("520x210")
+        win.resizable(False, False)
+        win.configure(bg=C_DARK)
+        win.attributes("-topmost", True)
+        win.protocol("WM_DELETE_WINDOW", self._stop_replay)
+
+        # Nom du fichier
+        tk.Label(win, text=fname, bg=C_DARK, fg=C_DARK_TXT,
+                 font=("Segoe UI", 10, "bold"),
+                 anchor="w").pack(pady=(16, 2), padx=22, fill="x")
+
+        # Barre de progression (0–100 %)
+        style = ttk.Style(win)
+        style.configure("Replay.Horizontal.TProgressbar",
+                        troughcolor=C_DARK2, background=C_DS,
+                        borderwidth=0, lightcolor=C_DS, darkcolor=C_DS)
+        self._replay_progress_var = tk.DoubleVar(value=0.0)
+        ttk.Progressbar(win,
+                        variable=self._replay_progress_var,
+                        style="Replay.Horizontal.TProgressbar",
+                        orient="horizontal", length=476,
+                        mode="determinate", maximum=100.0
+                        ).pack(pady=(4, 0), padx=22)
+
+        # Temps / points
+        self._replay_time_lbl = tk.Label(
+            win, text="0:00 / 0:00  ·  0 / 0 points",
+            bg=C_DARK, fg=C_DARK_SUB, font=("Segoe UI", 9))
+        self._replay_time_lbl.pack(pady=(4, 0))
+
+        # Vitesse
+        tk.Label(win, text="Vitesse : ×2", bg=C_DARK, fg=C_DARK_LBL,
+                 font=("Segoe UI", 8)).pack(pady=(2, 0))
+
+        # Bouton stop
+        tk.Button(win, text="  ■  ARRÊTER LE REPLAY",
+                  command=self._stop_replay,
+                  bg="#3a1a1a", fg="#e87070",
+                  font=("Segoe UI", 9, "bold"),
+                  relief="flat", pady=6, padx=16, bd=0, cursor="hand2",
+                  activebackground="#4a2020",
+                  activeforeground="#ff9090").pack(pady=(10, 14))
+
+        self._replay_win = win
+
+    def _update_replay_window(self, info: dict):
+        """Met à jour la barre de progression depuis le thread replay (via data_q)."""
+        if self._replay_win is None:
+            return
+        row       = info.get("row", 0)
+        total     = info.get("total", 1)
+        t_csv_s   = info.get("t_csv_s", 0.0)
+        t_total_s = info.get("t_total_s", 0.0)
+
+        pct = (row / total * 100.0) if total > 0 else 0.0
+        if self._replay_progress_var is not None:
+            self._replay_progress_var.set(pct)
+
+        def fmt_t(s: float) -> str:
+            return f"{int(s) // 60}:{int(s) % 60:02d}"
+
+        if self._replay_time_lbl is not None:
+            self._replay_time_lbl.config(
+                text=f"{fmt_t(t_csv_s)} / {fmt_t(t_total_s)}  ·  {row} / {total} points")
+
+    def _replay_worker(self, path: str):
+        COL_MAP = {
+            "ds0_c": "ds0", "ds1_c": "ds1", "ds2_c": "ds2",
+            "ds3_c": "ds3", "ds4_c": "ds4",
+            "bme_t_c": "bt", "bme_p_hpa": "bp", "bme_h_pct": "bh",
+            "target_c": "tg", "comp": "co", "hv": "hv",
+            "iso_duty": "iso", "safe": "sf", "up_s": "up",
+        }
+        try:
+            with open(path, newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+            if not rows:
+                return
+            total    = len(rows)
+            t0_csv   = datetime.fromisoformat(rows[0]["timestamp"])
+            t_end_csv = (datetime.fromisoformat(rows[-1]["timestamp"]) - t0_csv).total_seconds()
+            t_start  = time.monotonic()
+
+            for idx, row in enumerate(rows):
+                if self._replay_stop.is_set():
+                    break
+                ts    = datetime.fromisoformat(row["timestamp"])
+                t_csv = (ts - t0_csv).total_seconds()
+                wait  = t_csv / 2.0 - (time.monotonic() - t_start)  # ×2 vitesse
+                if wait > 0:
+                    self._replay_stop.wait(wait)
+
+                state = {}
+                for col, key in COL_MAP.items():
+                    v = row.get(col, "")
+                    if v and v.lower() not in ("", "none", "nan"):
+                        try:
+                            state[key] = float(v)
+                        except ValueError:
+                            pass
+                self.data_q.put(("state", ts, state))
+
+                # Envoyer la progression toutes les 5 lignes pour ne pas surcharger la queue
+                if idx % 5 == 0 or idx == total - 1:
+                    self.data_q.put(("replay_progress", datetime.now(), {
+                        "row": idx + 1, "total": total,
+                        "t_csv_s": t_csv, "t_total_s": t_end_csv,
+                    }))
+
+            self.data_q.put(("info", datetime.now(), "Replay terminé"))
+        except Exception as e:
+            self.data_q.put(("error", datetime.now(), f"Replay : {e}"))
 
     def _clear_graphs(self):
         """Vide toutes les séries et repart de t=0 au prochain point."""

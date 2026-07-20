@@ -16,7 +16,7 @@ impl Default for TargetState {
         Self {
             chamber_temp_c: TARGET_CHAMBER_TEMP,
             isopropanol_temp_c: -20.0, // TODO: à déterminer expérimentalement
-            high_voltage_enabled: true,
+            high_voltage_enabled: false,
         }
     }
 }

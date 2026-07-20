@@ -120,8 +120,8 @@ fn main() -> ! {
     if let Some(d) = disp_opt.as_mut() {
         usb_write(&timer, &mut usb_dev, &mut serial, b"SCREEN OK - dessin du layout...\r\n");
 
-        // Fond statique (labels, séparateurs)
-        display::draw_static(d);
+        // Fond statique (labels, séparateurs) — compresseur bloqué (bouton MARCHE)
+        display::draw_static(d, false);
 
         // Valeurs factices pour tester le rendu complet
         let mut state  = SystemState::new();

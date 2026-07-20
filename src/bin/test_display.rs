@@ -76,25 +76,56 @@ fn main() -> ! {
         }};
     }
 
-    // ── Init ILI9341 / ST7789 (commandes communes) ───────────────────────────
+    // ── Calibration MADCTL : moitié gauche ROUGE, moitié droite VERTE ────────
+    // Bande blanche sur le bord gauche (x 0-4), bande bleue en haut (y 0-4).
+    // Observer l'écran :
+    //   → bande BLANCHE à GAUCHE physique  &  bande BLEUE en HAUT  → valeur ok
+    //   → bande blanche à DROITE           → inverser bit 6 (MX)
+    //   → bande bleue en BAS               → inverser bit 7 (MY)
+    //
+    // Valeurs courantes à tester (changer const et reflasher) :
+    //   0x08  no flip  (BGR)
+    //   0x48  MX flip  (BGR)
+    //   0x88  MY flip  (BGR)
+    //   0xC8  MX+MY    (BGR)
+    const MADCTL_TEST: u8 = 0x08;
+
     cmd!(0x01); delay.delay_ms(150); // SWRESET
     cmd!(0x11); delay.delay_ms(120); // SLPOUT
-    cmd!(0x3A); dat!(&[0x55]);       // COLMOD  16-bit RGB565
-    cmd!(0x36); dat!(&[0x00]);       // MADCTL  portrait normal
+    cmd!(0x3A); dat!(&[0x55]);       // COLMOD 16-bit RGB565
+    cmd!(0x36); dat!(&[MADCTL_TEST]);
     cmd!(0x29); delay.delay_ms(20);  // DISPON
 
-    // ── Remplissage rouge (0xF800 = rouge pur en RGB565) ─────────────────────
-    // CASET : colonnes 0..239
-    cmd!(0x2A); dat!(&[0x00, 0x00, 0x00, 0xEF]);
-    // PASET : lignes 0..319
+    // moitié gauche ROUGE (x 0..119, y 0..319)
+    cmd!(0x2A); dat!(&[0x00, 0x00, 0x00, 0x77]);
     cmd!(0x2B); dat!(&[0x00, 0x00, 0x01, 0x3F]);
-    // RAMWR : 240×320 pixels
     cmd!(0x2C);
-    dc.set_high().ok();
-    cs.set_low().ok();
-    for _ in 0u32..(240 * 320) {
-        spi.write(&[0xF8, 0x00]).ok(); // rouge RGB565
-    }
+    dc.set_high().ok(); cs.set_low().ok();
+    for _ in 0u32..(120 * 320) { spi.write(&[0xF8, 0x00]).ok(); }
+    cs.set_high().ok();
+
+    // moitié droite VERTE (x 120..239, y 0..319)
+    cmd!(0x2A); dat!(&[0x00, 0x78, 0x00, 0xEF]);
+    cmd!(0x2B); dat!(&[0x00, 0x00, 0x01, 0x3F]);
+    cmd!(0x2C);
+    dc.set_high().ok(); cs.set_low().ok();
+    for _ in 0u32..(120 * 320) { spi.write(&[0x07, 0xE0]).ok(); }
+    cs.set_high().ok();
+
+    // bande BLANCHE sur le bord gauche (x 0..4, y 0..319)
+    cmd!(0x2A); dat!(&[0x00, 0x00, 0x00, 0x04]);
+    cmd!(0x2B); dat!(&[0x00, 0x00, 0x01, 0x3F]);
+    cmd!(0x2C);
+    dc.set_high().ok(); cs.set_low().ok();
+    for _ in 0u32..(5 * 320) { spi.write(&[0xFF, 0xFF]).ok(); }
+    cs.set_high().ok();
+
+    // bande BLEUE en haut (x 0..239, y 0..4)
+    cmd!(0x2A); dat!(&[0x00, 0x00, 0x00, 0xEF]);
+    cmd!(0x2B); dat!(&[0x00, 0x00, 0x00, 0x04]);
+    cmd!(0x2C);
+    dc.set_high().ok(); cs.set_low().ok();
+    for _ in 0u32..(240 * 5) { spi.write(&[0x00, 0x1F]).ok(); }
     cs.set_high().ok();
 
     loop { cortex_m::asm::wfi(); }

@@ -11,7 +11,7 @@
 //!
 //! Publications (Pico → PC, 5 Hz) :
 //!   STATE ds0=<T> .. ds4=<T> bt=<T> bp=<P> bh=<H>
-//!         tg=<T> co=<0|1> hv=<0|1> iso=<0.00> sf=<0|1> up=<s>
+//!         tg=<T> co=<0|1> ca=<0|1> hv=<0|1> iso=<0.00> sf=<0|1> up=<s>
 
 #![no_std]
 #![no_main]
@@ -25,6 +25,9 @@ use embedded_hal::delay::DelayNs;
 
 use usb_device::{class_prelude::*, prelude::*};
 use usbd_serial::SerialPort;
+
+/// Port série USB avec buffers dédiés — RX 128 o, TX 512 o (cf. new_with_store).
+type Serial<'a> = SerialPort<'a, hal::usb::UsbBus, [u8; 128], [u8; 512]>;
 use heapless::String;
 
 use cloud_chamber_firmware::{
@@ -34,7 +37,8 @@ use cloud_chamber_firmware::{
     display,
 };
 
-use mipidsi::{Builder, interface::SpiInterface, models::ILI9341Rgb565, options::ColorOrder};
+use mipidsi::{Builder, interface::SpiInterface, models::ILI9341Rgb565,
+              options::{ColorOrder, Orientation, Rotation}};
 use embedded_hal_bus::spi::ExclusiveDevice;
 
 use defmt_rtt as _;
@@ -181,7 +185,7 @@ impl OwSearch {
 fn usb_write(
     timer:   &hal::Timer,
     usb_dev: &mut UsbDevice<hal::usb::UsbBus>,
-    serial:  &mut SerialPort<hal::usb::UsbBus>,
+    serial:  &mut Serial<'_>,
     data:    &[u8],
 ) {
     let deadline = timer.get_counter().ticks() + 10_000;
@@ -200,7 +204,7 @@ fn usb_write(
 
 fn keepalive(timer: &hal::Timer, ms: u64,
              usb_dev: &mut UsbDevice<hal::usb::UsbBus>,
-             serial:  &mut SerialPort<hal::usb::UsbBus>) {
+             serial:  &mut Serial<'_>) {
     let end = timer.get_counter().ticks() + ms * 1_000;
     while timer.get_counter().ticks() < end { usb_dev.poll(&mut [serial]); }
 }
@@ -236,7 +240,7 @@ fn handle_command(
     state:   &mut SystemState,
     timer:   &hal::Timer,
     usb_dev: &mut UsbDevice<hal::usb::UsbBus>,
-    serial:  &mut SerialPort<hal::usb::UsbBus>,
+    serial:  &mut Serial<'_>,
 ) {
     let cmd  = cmd.trim();
     let (name, rest) = cmd.split_once(' ').unwrap_or((cmd, ""));
@@ -272,7 +276,7 @@ fn handle_command(
 fn publish_state(
     timer:    &hal::Timer,
     usb_dev:  &mut UsbDevice<hal::usb::UsbBus>,
-    serial:   &mut SerialPort<hal::usb::UsbBus>,
+    serial:   &mut Serial<'_>,
     state:    &SystemState,
     output:   &ControlOutput,
     target:   &TargetState,
@@ -304,9 +308,10 @@ fn publish_state(
 
     let t = target.chamber_temp_c;
     let tn = t < 0.0; let ta = if tn { -t } else { t };
-    let _ = write!(msg, "tg={}{}.{} co={} hv={} iso={}.{:02} sf={} up={}\r\n",
+    let _ = write!(msg, "tg={}{}.{} co={} ca={} hv={} iso={}.{:02} sf={} up={}\r\n",
         if tn {"-"} else {""}, ta as i32, ((ta%1.0)*10.0) as u32,
         output.compressor as u8,
+        state.compressor_allowed as u8,
         output.high_voltage as u8,
         output.isopropanol_heater_duty as i32,
         ((output.isopropanol_heater_duty%1.0)*100.0) as u32,
@@ -314,6 +319,91 @@ fn publish_state(
         uptime_s);
 
     usb_write(timer, usb_dev, serial,msg.as_bytes());
+}
+
+// ── XPT2046 bit-bang ──────────────────────────────────────────────────────────
+// DCLK max du XPT2046 = 2 MHz : l'ADC SAR convertit PENDANT les clocks de
+// lecture. Bit-bangé sans délai, le RP2040 dépasse cette limite → conversions
+// fausses (X/Y ≈ 0 constants alors que Z1 semble plausible). On force ~500 kHz.
+#[inline(always)]
+fn xpt_tick() { cortex_m::asm::delay(125); } // ~1 µs @125 MHz → DCLK ≈ 500 kHz
+
+// Envoie une commande 8 bits et lit 16 bits de réponse.
+// Retourne les 12 bits de données : (val >> 3) & 0x0FFF (protocole XPT2046).
+fn xpt2046_read(
+    clk:  &mut impl embedded_hal::digital::OutputPin,
+    din:  &mut impl embedded_hal::digital::OutputPin,
+    dout: &mut impl embedded_hal::digital::InputPin,
+    cmd:  u8,
+) -> u16 {
+    for i in (0..8u8).rev() {
+        if (cmd >> i) & 1 == 1 { din.set_high().ok(); } else { din.set_low().ok(); }
+        xpt_tick();
+        clk.set_high().ok();
+        xpt_tick();
+        clk.set_low().ok();
+    }
+    din.set_low().ok();
+    let mut val = 0u16;
+    for _ in 0..16u8 {
+        clk.set_high().ok();
+        xpt_tick();
+        val = (val << 1) | dout.is_high().unwrap_or(false) as u16;
+        clk.set_low().ok();
+        xpt_tick();
+    }
+    (val >> 3) & 0x0FFF
+}
+
+// Lecture d'un canal avec temps d'établissement : la 1re conversion après le
+// changement de drivers du panneau est jetée, puis moyenne de 2 lectures.
+fn xpt2046_read_ch(
+    clk:  &mut impl embedded_hal::digital::OutputPin,
+    din:  &mut impl embedded_hal::digital::OutputPin,
+    dout: &mut impl embedded_hal::digital::InputPin,
+    cmd:  u8,
+) -> u16 {
+    let _ = xpt2046_read(clk, din, dout, cmd); // dummy : polarise le panneau
+    let a  = xpt2046_read(clk, din, dout, cmd);
+    let b  = xpt2046_read(clk, din, dout, cmd);
+    (a + b) / 2
+}
+
+// Lit Z1, X, Y bruts — pour diagnostic uniquement.
+fn touch_raw(
+    clk:  &mut impl embedded_hal::digital::OutputPin,
+    din:  &mut impl embedded_hal::digital::OutputPin,
+    dout: &mut impl embedded_hal::digital::InputPin,
+    cs:   &mut impl embedded_hal::digital::OutputPin,
+) -> (u16, u16, u16) {
+    cs.set_low().ok();
+    let z1 = xpt2046_read(clk, din, dout, 0xB1);
+    let x  = xpt2046_read_ch(clk, din, dout, 0xD1);
+    let y  = xpt2046_read_ch(clk, din, dout, 0x91);
+    xpt2046_read(clk, din, dout, 0x00);
+    cs.set_high().ok();
+    (z1, x, y)
+}
+
+// Lit X et Y si l'écran est touché (Z1 > 50), sinon None.
+fn touch_read(
+    clk:  &mut impl embedded_hal::digital::OutputPin,
+    din:  &mut impl embedded_hal::digital::OutputPin,
+    dout: &mut impl embedded_hal::digital::InputPin,
+    cs:   &mut impl embedded_hal::digital::OutputPin,
+) -> Option<(u16, u16)> {
+    cs.set_low().ok();
+    let z1 = xpt2046_read(clk, din, dout, 0xB1); // canal pression Z1
+    if z1 < 50 {
+        cs.set_high().ok();
+        return None;
+    }
+    let x = xpt2046_read_ch(clk, din, dout, 0xD1); // canal X
+    let y = xpt2046_read_ch(clk, din, dout, 0x91); // canal Y
+    xpt2046_read(clk, din, dout, 0x00);            // mise en veille
+    cs.set_high().ok();
+    if x < 100 || x > 3950 || y < 100 || y > 3950 { return None; }
+    Some((x, y))
 }
 
 // ── Point d'entrée ────────────────────────────────────────────────────────────
@@ -337,7 +427,9 @@ fn main() -> ! {
             pac.USBCTRL_REGS, pac.USBCTRL_DPRAM, clocks.usb_clock, true, &mut pac.RESETS)));
         (*core::ptr::addr_of!(USB_BUS)).as_ref().unwrap()
     };
-    let mut serial  = SerialPort::new(usb_alloc);
+    // Buffer TX de 512 o : une ligne STATE (~150 o) tient d'un coup, usb_write
+    // n'a plus besoin de drainer en boucle (le défaut de 128 o était le goulot).
+    let mut serial  = SerialPort::new_with_store(usb_alloc, [0u8; 128], [0u8; 512]);
     let mut usb_dev = UsbDeviceBuilder::new(usb_alloc, UsbVidPid(0x2e8a, 0x0005))
         .device_class(0x02).build();
 
@@ -349,9 +441,9 @@ fn main() -> ! {
     let _disp_miso = pins.gpio12.into_function::<hal::gpio::FunctionSpi>(); // non câblé
     let _disp_sck  = pins.gpio10.into_function::<hal::gpio::FunctionSpi>();
     let spi1 = hal::Spi::<_, _, _, 8>::new(pac.SPI1, (_disp_mosi, _disp_miso, _disp_sck))
-        // 10 MHz minimum : un redraw plein écran (240×320×2 o) prend ~125 ms à
-        // 10 MHz mais ~1,25 s à 1 MHz, ce qui affame l'USB et bloque l'acquisition.
-        .init(&mut pac.RESETS, clocks.peripheral_clock.freq(), 10_000_000u32.Hz(), embedded_hal::spi::MODE_0);
+        // 20 MHz : l'ILI9341 accepte 20-40 MHz en écriture. Un redraw plein
+        // écran (240×320×2 o) prend ~62 ms. Repasser à 10 MHz si artefacts.
+        .init(&mut pac.RESETS, clocks.peripheral_clock.freq(), 20_000_000u32.Hz(), embedded_hal::spi::MODE_0);
     let disp_dc  = pins.gpio8.into_push_pull_output();
     let disp_rst = pins.gpio7.into_push_pull_output();
     let disp_cs  = pins.gpio9.into_push_pull_output(); // géré par ExclusiveDevice
@@ -364,6 +456,15 @@ fn main() -> ! {
     hv_out.set_low().ok();
     iso_out.set_low().ok();
 
+    // XPT2046 touch — bit-bang SPI (GP0=DO, GP1=CS, GP2=CLK, GP3=DIN)
+    let mut t_do  = pins.gpio0.into_pull_up_input();
+    let mut t_cs  = pins.gpio1.into_push_pull_output();
+    let mut t_clk = pins.gpio2.into_push_pull_output();
+    let mut t_din = pins.gpio3.into_push_pull_output();
+    t_cs.set_high().ok();
+    t_clk.set_low().ok();
+    t_din.set_low().ok();
+
     // DS18B20 — bus unique GP15, pull-up 4.7 kΩ externe
     let _ow = pins.gpio15.into_push_pull_output();
     unsafe {
@@ -371,7 +472,7 @@ fn main() -> ! {
         sio.gpio_out_clr().write(|w| w.bits(OW_MASK));
         sio.gpio_oe_clr().write(|w| w.bits(OW_MASK)); // high-Z = idle open-drain
     }
-    // Configurer résolution 9-bit sur tous (SKIP ROM = broadcast)
+    // Configurer résolution 12-bit sur tous (SKIP ROM = broadcast)
     if ow_reset(&timer, OW_MASK) {
         ow_write_byte(&timer, OW_MASK, 0xCC); // SKIP ROM
         ow_write_byte(&timer, OW_MASK, 0x4E); // WRITE SCRATCHPAD
@@ -498,26 +599,40 @@ fn main() -> ! {
         .reset_pin(disp_rst)
         .display_size(240, 320)
         .color_order(ColorOrder::Bgr)
+        // flip_horizontal() annule l'effet miroir gauche-droite du panneau.
+        // Si l'image devient à l'envers (haut-bas), remplacer Deg180 par Deg0.
+        .orientation(Orientation::new().rotate(Rotation::Deg180).flip_horizontal())
         .init(&mut CortexDelay)
         .ok();
     if let Some(d) = disp_opt.as_mut() {
-        display::draw_static(d);
+        display::draw_static(d, state.compressor_allowed);
         usb_write(&timer, &mut usb_dev, &mut serial, b"INFO display ILI9341 OK\r\n");
     } else {
         usb_write(&timer, &mut usb_dev, &mut serial, b"WARN display init failed\r\n");
     }
+    // État d'autorisation affiché sur le bouton — pour redessiner uniquement
+    // quand il change (p. ex. commande COMP reçue par USB).
+    let mut btn_shown_allowed = state.compressor_allowed;
+
+    // Watchdog — si la boucle principale fige plus de 4 s, le RP2040 redémarre
+    // et toutes les sorties (relais, HV, chauffage) repartent LOW (fail-safe).
+    watchdog.start(hal::fugit::MicrosDurationU32::secs(4));
 
     let t0 = timer.get_counter().ticks();
+    let mut last_touch_ms  = 0u64;
+    let mut touch_down     = false;
     let mut last_ds_start_ms  = 0u64;
     let mut ds_reading_phase  = false;
     let mut last_bme_ms  = 0u64;
     let mut last_pub_ms  = 0u64;
     let mut last_ctrl_ms = timer.get_counter().ticks() / 1_000;
     let mut last_disp_ms = 0u64;
+    let mut btn_flash_until_ms: u64 = 0; // 0 = pas de flash actif
     // Rescan 1-Wire périodique — détecte les capteurs branchés/débranchés à chaud.
     let mut last_scan_ms = timer.get_counter().ticks() / 1_000;
 
     loop {
+        watchdog.feed();
         let now_ms = timer.get_counter().ticks() / 1_000;
 
         // USB — poll à chaque itération
@@ -537,6 +652,51 @@ fn main() -> ! {
             }
         }
 
+        // Touch XPT2046 — toutes les 50 ms (anti-rebond via touch_down)
+        if now_ms.saturating_sub(last_touch_ms) >= 50 {
+            last_touch_ms = now_ms;
+
+            // ── Diagnostic brut — retirer quand la calibration est validée ──────
+            let (z1, rx_raw, ry_raw) = touch_raw(&mut t_clk, &mut t_din, &mut t_do, &mut t_cs);
+            if z1 > 500 {
+                let (sx, sy) = display::touch_to_screen(rx_raw, ry_raw);
+                let mut dbg: String<64> = String::new();
+                let _ = write!(dbg, "TOUCH z1={} raw={},{} px={},{}\r\n",
+                               z1, rx_raw, ry_raw, sx, sy);
+                usb_write(&timer, &mut usb_dev, &mut serial, dbg.as_bytes());
+            }
+            // ────────────────────────────────────────────────────────────────────
+
+            match touch_read(&mut t_clk, &mut t_din, &mut t_do, &mut t_cs) {
+                Some((rx, ry)) if !touch_down => {
+                    touch_down = true;
+                    let (sx, sy) = display::touch_to_screen(rx, ry);
+                    if display::is_btn_comp(sx, sy) {
+                        // Bascule autorisation compresseur (MARCHE ⇆ ARRÊT)
+                        state.compressor_allowed = !state.compressor_allowed;
+                        if !state.compressor_allowed {
+                            target.high_voltage_enabled = false; // l'arrêt coupe aussi le HV
+                        }
+                        if let Some(d) = disp_opt.as_mut() {
+                            display::draw_btn_comp_flash(d, state.compressor_allowed);
+                        }
+                        btn_flash_until_ms = now_ms + 250;
+                        usb_write(&timer, &mut usb_dev, &mut serial,
+                            if state.compressor_allowed { b"CMD COMP touch=1\r\n" }
+                            else                        { b"CMD COMP touch=0\r\n" });
+                    } else if display::is_btn_reset(sx, sy) {
+                        if let Some(d) = disp_opt.as_mut() {
+                            display::draw_btn_reset_flash(d);
+                        }
+                        CortexDelay.delay_ms(200);
+                        cortex_m::peripheral::SCB::sys_reset();
+                    }
+                }
+                Some(_) => { touch_down = true; }
+                None    => { touch_down = false; }
+            }
+        }
+
         // DS18B20 — Phase 1 : lancer la conversion (non-bloquant), 1 Hz
         if !ds_reading_phase && now_ms.saturating_sub(last_ds_start_ms) >= 1_000 {
             if ow_reset(&timer, OW_MASK) {
@@ -550,6 +710,9 @@ fn main() -> ! {
         // DS18B20 — Phase 2 : lecture après 750 ms (conversion 12-bit terminée)
         if ds_reading_phase && now_ms.saturating_sub(last_ds_start_ms) >= 750 {
             for idx in 0..5usize {
+                // La lecture des 5 capteurs bloque ~40 ms au total : on draine
+                // l'USB entre chaque capteur pour ne pas perdre de commandes.
+                usb_dev.poll(&mut [&mut serial]);
                 if idx >= rom_count {
                     state.temperatures[idx].valid = false;
                     continue;
@@ -631,10 +794,25 @@ fn main() -> ! {
             last_ctrl_ms       = now_ms;
         }
 
+        // Flash tactile — restaure le bouton (dans son nouvel état) après 250 ms
+        if btn_flash_until_ms > 0 && now_ms >= btn_flash_until_ms {
+            if let Some(d) = disp_opt.as_mut() {
+                display::draw_btn_comp(d, state.compressor_allowed);
+            }
+            btn_shown_allowed  = state.compressor_allowed;
+            btn_flash_until_ms = 0;
+        }
+
         // Écran TFT — toutes les 500 ms
         if now_ms.saturating_sub(last_disp_ms) >= 500 {
             if let Some(d) = disp_opt.as_mut() {
                 display::draw(d, &state, &target, &last_output, rom_count);
+                // Redessine le bouton compresseur si l'autorisation a changé
+                // ailleurs que par le tactile (commande COMP via USB).
+                if btn_flash_until_ms == 0 && btn_shown_allowed != state.compressor_allowed {
+                    display::draw_btn_comp(d, state.compressor_allowed);
+                    btn_shown_allowed = state.compressor_allowed;
+                }
             }
             last_disp_ms = now_ms;
         }
