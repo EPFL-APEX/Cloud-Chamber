@@ -120,8 +120,8 @@ fn main() -> ! {
     if let Some(d) = disp_opt.as_mut() {
         usb_write(&timer, &mut usb_dev, &mut serial, b"SCREEN OK - dessin du layout...\r\n");
 
-        // Fond statique (labels, séparateurs) — compresseur bloqué (bouton MARCHE)
-        display::draw_static(d, false);
+        // Fond statique (labels, séparateurs) — compresseur bloqué, cycle inactif
+        display::draw_static(d, false, false);
 
         // Valeurs factices pour tester le rendu complet
         let mut state  = SystemState::new();
@@ -141,7 +141,7 @@ fn main() -> ! {
         state.bme280.humidity_pct = 45.0;
         state.uptime_s            = 42;
 
-        display::draw(d, &state, &target, &output, 3);
+        display::draw(d, &state, &target, &output, 3, None);
 
         usb_write(&timer, &mut usb_dev, &mut serial, b"SCREEN OK - layout affiche\r\n");
     } else {

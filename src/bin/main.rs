@@ -33,6 +33,7 @@ use heapless::String;
 use cloud_chamber_firmware::{
     control::{controller::Controller, output::ControlOutput, target::TargetState},
     data::SystemState,
+    logic::history::MeasurementHistory,
     sensors::bme280::Bme280Driver,
     display,
 };
@@ -238,6 +239,7 @@ fn handle_command(
     cmd:     &str,
     target:  &mut TargetState,
     state:   &mut SystemState,
+    ctrl:    &mut Controller,
     timer:   &hal::Timer,
     usb_dev: &mut UsbDevice<hal::usb::UsbBus>,
     serial:  &mut Serial<'_>,
@@ -245,8 +247,35 @@ fn handle_command(
     let cmd  = cmd.trim();
     let (name, rest) = cmd.split_once(' ').unwrap_or((cmd, ""));
     let rest = rest.trim();
+    let now_ms = timer.get_counter().ticks() / 1_000;
 
     match name {
+        "CYCLE" => match rest {
+            "1" => {
+                // Le cycle automatique implique l'autorisation compresseur.
+                state.compressor_allowed = true;
+                if ctrl.request_start(now_ms) {
+                    usb_write(timer, usb_dev, serial, b"OK CYCLE=1\r\n");
+                } else if ctrl.is_tripped() {
+                    usb_write(timer, usb_dev, serial,
+                        b"ERR CYCLE refuse - disjoncteur verrouille (CYCLE 0 pour rearmer)\r\n");
+                } else if ctrl.phase_code() >= 8 {
+                    usb_write(timer, usb_dev, serial,
+                        b"ERR CYCLE refuse - arret en cours (equilibrage anti court-cycle, ~60 s)\r\n");
+                } else {
+                    usb_write(timer, usb_dev, serial,
+                        b"ERR CYCLE refuse - cycle deja en cours\r\n");
+                }
+            }
+            "0" => {
+                if ctrl.request_stop(now_ms) {
+                    usb_write(timer, usb_dev, serial, b"OK CYCLE=0\r\n");
+                } else {
+                    usb_write(timer, usb_dev, serial, b"OK CYCLE=0 (deja inactif)\r\n");
+                }
+            }
+            _ => usb_write(timer, usb_dev, serial, b"ERR CYCLE needs 0 or 1\r\n"),
+        },
         "TARGET" => match parse_f32(rest) {
             Some(v) => {
                 target.chamber_temp_c = v;
@@ -280,6 +309,7 @@ fn publish_state(
     state:    &SystemState,
     output:   &ControlOutput,
     target:   &TargetState,
+    phase:    u8,
     uptime_s: u64,
 ) {
     let mut msg: String<320> = String::new();
@@ -308,11 +338,12 @@ fn publish_state(
 
     let t = target.chamber_temp_c;
     let tn = t < 0.0; let ta = if tn { -t } else { t };
-    let _ = write!(msg, "tg={}{}.{} co={} ca={} hv={} iso={}.{:02} sf={} up={}\r\n",
+    let _ = write!(msg, "tg={}{}.{} co={} ca={} hv={} ph={} iso={}.{:02} sf={} up={}\r\n",
         if tn {"-"} else {""}, ta as i32, ((ta%1.0)*10.0) as u32,
         output.compressor as u8,
         state.compressor_allowed as u8,
         output.high_voltage as u8,
+        phase,
         output.isopropanol_heater_duty as i32,
         ((output.isopropanol_heater_duty%1.0)*100.0) as u32,
         output.safety_override as u8,
@@ -501,10 +532,18 @@ fn main() -> ! {
     }
 
     use rp2040_hal::fugit::RateExtU32;
+    // Pull-ups INTERNES sur SDA/SCL : les pull-ups du bus sont sur le module
+    // BME280 — s'il est débranché à chaud, le bus flotte et le driver I²C
+    // (bloquant, sans timeout) gèle la boucle → USB mort + reboot watchdog.
+    // Avec les pull-ups internes, un bus vide répond NACK immédiatement.
+    let sda_pin: hal::gpio::Pin<_, hal::gpio::FunctionI2C, hal::gpio::PullUp> =
+        pins.gpio4.reconfigure();
+    let scl_pin: hal::gpio::Pin<_, hal::gpio::FunctionI2C, hal::gpio::PullUp> =
+        pins.gpio5.reconfigure();
     let i2c = hal::I2C::new_controller(
         pac.I2C0,
-        pins.gpio4.into_function::<hal::gpio::FunctionI2C>(),
-        pins.gpio5.into_function::<hal::gpio::FunctionI2C>(),
+        sda_pin,
+        scl_pin,
         100u32.kHz(), &mut pac.RESETS, clocks.system_clock.freq(),
     );
     let mut bme    = Bme280Driver::new(i2c);
@@ -518,6 +557,7 @@ fn main() -> ! {
     let mut state       = SystemState::new();
     let mut target      = TargetState::default();
     let mut controller  = Controller::new();
+    let mut history     = MeasurementHistory::new();
     let mut last_output = ControlOutput::emergency_stop();
     let mut cmd_buf: String<64> = String::new();
 
@@ -605,14 +645,16 @@ fn main() -> ! {
         .init(&mut CortexDelay)
         .ok();
     if let Some(d) = disp_opt.as_mut() {
-        display::draw_static(d, state.compressor_allowed);
+        display::draw_static(d, state.compressor_allowed, false);
         usb_write(&timer, &mut usb_dev, &mut serial, b"INFO display ILI9341 OK\r\n");
     } else {
         usb_write(&timer, &mut usb_dev, &mut serial, b"WARN display init failed\r\n");
     }
-    // État d'autorisation affiché sur le bouton — pour redessiner uniquement
-    // quand il change (p. ex. commande COMP reçue par USB).
+    // États affichés sur les boutons — pour redessiner uniquement quand ils
+    // changent (p. ex. commande COMP/CYCLE reçue par USB, transition auto).
     let mut btn_shown_allowed = state.compressor_allowed;
+    let mut btn_shown_cycle   = false;
+    let mut last_safety_logged = false;
 
     // Watchdog — si la boucle principale fige plus de 4 s, le RP2040 redémarre
     // et toutes les sorties (relais, HV, chauffage) repartent LOW (fail-safe).
@@ -623,7 +665,9 @@ fn main() -> ! {
     let mut touch_down     = false;
     let mut last_ds_start_ms  = 0u64;
     let mut ds_reading_phase  = false;
-    let mut last_bme_ms  = 0u64;
+    let mut last_bme_ms      = 0u64;
+    let mut bme_fail: u8     = 0;
+    let mut last_bme_init_ms = 0u64;
     let mut last_pub_ms  = 0u64;
     let mut last_ctrl_ms = timer.get_counter().ticks() / 1_000;
     let mut last_disp_ms = 0u64;
@@ -642,7 +686,7 @@ fn main() -> ! {
                 for &b in &buf[..n] {
                     if b == b'\n' || b == b'\r' {
                         if !cmd_buf.is_empty() {
-                            handle_command(cmd_buf.as_str(), &mut target, &mut state, &timer, &mut usb_dev, &mut serial);
+                            handle_command(cmd_buf.as_str(), &mut target, &mut state, &mut controller, &timer, &mut usb_dev, &mut serial);
                             cmd_buf.clear();
                         }
                     } else if b >= 0x20 {
@@ -671,7 +715,35 @@ fn main() -> ! {
                 Some((rx, ry)) if !touch_down => {
                     touch_down = true;
                     let (sx, sy) = display::touch_to_screen(rx, ry);
-                    if display::is_btn_comp(sx, sy) {
+                    if display::is_btn_cycle(sx, sy) {
+                        if controller.phase_code() == 0 {
+                            if controller.is_tripped() {
+                                // Disjoncteur verrouillé : 1er appui = réarmement
+                                // (request_stop réarme le moniteur, même en Idle).
+                                controller.request_stop(now_ms);
+                                usb_write(&timer, &mut usb_dev, &mut serial,
+                                          b"CMD REARM touch\r\n");
+                            } else {
+                                // Lancer la séquence automatique
+                                state.compressor_allowed = true;
+                                if controller.request_start(now_ms) {
+                                    if let Some(d) = disp_opt.as_mut() {
+                                        display::draw_btn_cycle_flash(d, true);
+                                    }
+                                    btn_flash_until_ms = now_ms + 250;
+                                    usb_write(&timer, &mut usb_dev, &mut serial, b"CMD CYCLE touch=1\r\n");
+                                }
+                            }
+                        } else {
+                            // Cycle en cours → arrêt propre
+                            controller.request_stop(now_ms);
+                            if let Some(d) = disp_opt.as_mut() {
+                                display::draw_btn_cycle_flash(d, false);
+                            }
+                            btn_flash_until_ms = now_ms + 250;
+                            usb_write(&timer, &mut usb_dev, &mut serial, b"CMD CYCLE touch=0\r\n");
+                        }
+                    } else if display::is_btn_comp(sx, sy) {
                         // Bascule autorisation compresseur (MARCHE ⇆ ARRÊT)
                         state.compressor_allowed = !state.compressor_allowed;
                         if !state.compressor_allowed {
@@ -738,14 +810,36 @@ fn main() -> ! {
             ds_reading_phase = false;
         }
 
-        // BME280 — toutes les 500 ms
-        if bme_ok && now_ms.saturating_sub(last_bme_ms) >= 500 {
-            match bme.measure(&mut CortexDelay) {
-                Ok((t, p, h)) => {
-                    state.bme280.temp_c = t; state.bme280.pressure_hpa = p;
-                    state.bme280.humidity_pct = h; state.bme280.valid = true;
+        // BME280 — mesure toutes les 500 ms. Hot-plug géré : après 4 échecs
+        // consécutifs (~2 s) le capteur est déclaré perdu, puis une ré-init
+        // est tentée toutes les 5 s — le rebranchement à chaud refonctionne
+        // sans reset (l'init reconfigure les registres du capteur).
+        if now_ms.saturating_sub(last_bme_ms) >= 500 {
+            if bme_ok {
+                match bme.measure(&mut CortexDelay) {
+                    Ok((t, p, h)) => {
+                        state.bme280.temp_c = t; state.bme280.pressure_hpa = p;
+                        state.bme280.humidity_pct = h; state.bme280.valid = true;
+                        bme_fail = 0;
+                    }
+                    Err(_) => {
+                        state.bme280.valid = false;
+                        bme_fail = bme_fail.saturating_add(1);
+                        if bme_fail >= 4 {
+                            bme_ok = false;
+                            usb_write(&timer, &mut usb_dev, &mut serial,
+                                      b"WARN BME280 perdu - re-init auto active\r\n");
+                        }
+                    }
                 }
-                Err(_) => { state.bme280.valid = false; }
+            } else if now_ms.saturating_sub(last_bme_init_ms) >= 5_000 {
+                last_bme_init_ms = now_ms;
+                if bme.init().is_ok() {
+                    bme_ok   = true;
+                    bme_fail = 0;
+                    usb_write(&timer, &mut usb_dev, &mut serial,
+                              b"INFO BME280 reconnecte\r\n");
+                }
             }
             last_bme_ms = now_ms;
         }
@@ -785,7 +879,28 @@ fn main() -> ! {
         // Boucle de contrôle — toutes les 100 ms
         if now_ms.saturating_sub(last_ctrl_ms) >= 100 {
             let dt_s = (now_ms - last_ctrl_ms).min(2_000) as f32 / 1_000.0;
-            last_output  = controller.step(&state, &target, dt_s);
+            history.update(&state, now_ms); // 1 échantillon/s max (gate interne)
+            let phase_before = controller.phase_code();
+            last_output  = controller.tick(&mut state, &history, &target, now_ms, dt_s);
+            // Trace le déclenchement/réarmement du disjoncteur.
+            if last_output.safety_override != last_safety_logged {
+                usb_write(&timer, &mut usb_dev, &mut serial,
+                    if last_output.safety_override {
+                        b"WARN DISJONCTEUR declenche - CYCLE 0 pour rearmer\r\n".as_slice()
+                    } else {
+                        b"INFO DISJONCTEUR rearme\r\n".as_slice()
+                    });
+                last_safety_logged = last_output.safety_override;
+            }
+            // Trace chaque transition de phase sur l'USB — visible dans le
+            // Journal de l'UI (abandons de phase inclus).
+            if controller.phase_code() != phase_before {
+                let mut info: String<48> = String::new();
+                let _ = write!(info, "INFO PHASE {} -> {} ({})\r\n",
+                    phase_before, controller.phase_code(),
+                    controller.phase_label().unwrap_or("Idle/manuel"));
+                usb_write(&timer, &mut usb_dev, &mut serial, info.as_bytes());
+            }
             if last_output.compressor     { relay.set_high().ok();   } else { relay.set_low().ok();   }
             if last_output.high_voltage   { hv_out.set_high().ok();  } else { hv_out.set_low().ok();  }
             if last_output.isopropanol_heater_duty > 0.0 { iso_out.set_high().ok(); } else { iso_out.set_low().ok(); }
@@ -794,24 +909,32 @@ fn main() -> ! {
             last_ctrl_ms       = now_ms;
         }
 
-        // Flash tactile — restaure le bouton (dans son nouvel état) après 250 ms
+        // Flash tactile — restaure les boutons (dans leur nouvel état) après 250 ms
         if btn_flash_until_ms > 0 && now_ms >= btn_flash_until_ms {
             if let Some(d) = disp_opt.as_mut() {
                 display::draw_btn_comp(d, state.compressor_allowed);
+                display::draw_btn_cycle(d, controller.phase_code() != 0);
             }
             btn_shown_allowed  = state.compressor_allowed;
+            btn_shown_cycle    = controller.phase_code() != 0;
             btn_flash_until_ms = 0;
         }
 
         // Écran TFT — toutes les 500 ms
         if now_ms.saturating_sub(last_disp_ms) >= 500 {
             if let Some(d) = disp_opt.as_mut() {
-                display::draw(d, &state, &target, &last_output, rom_count);
-                // Redessine le bouton compresseur si l'autorisation a changé
-                // ailleurs que par le tactile (commande COMP via USB).
+                display::draw(d, &state, &target, &last_output, rom_count,
+                              controller.phase_label());
+                // Redessine les boutons si leur état a changé ailleurs que par
+                // le tactile (commande USB, transition automatique de phase).
                 if btn_flash_until_ms == 0 && btn_shown_allowed != state.compressor_allowed {
                     display::draw_btn_comp(d, state.compressor_allowed);
                     btn_shown_allowed = state.compressor_allowed;
+                }
+                let cyc_active = controller.phase_code() != 0;
+                if btn_flash_until_ms == 0 && btn_shown_cycle != cyc_active {
+                    display::draw_btn_cycle(d, cyc_active);
+                    btn_shown_cycle = cyc_active;
                 }
             }
             last_disp_ms = now_ms;
@@ -819,7 +942,8 @@ fn main() -> ! {
 
         // Publication état — toutes les 200 ms (5 Hz)
         if now_ms.saturating_sub(last_pub_ms) >= 200 {
-            publish_state(&timer, &mut usb_dev, &mut serial, &state, &last_output, &target, state.uptime_s);
+            publish_state(&timer, &mut usb_dev, &mut serial, &state, &last_output, &target,
+                          controller.phase_code(), state.uptime_s);
             last_pub_ms = now_ms;
         }
     }

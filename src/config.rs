@@ -35,7 +35,7 @@ pub const HP_PRESSURE_MAX: f32 = 12.0;
 // Seuils de sécurité
 // ============================================================
 pub const SAFETY_HP_MAX: f32             = 14.0;
-pub const SAFETY_TEMP_COMPRESSOR_MAX: f32 = 120.0;
+pub const SAFETY_TEMP_COMPRESSOR_MAX: f32 = 30.0;
 pub const SAFETY_BP_MIN: f32             = 0.15;
 pub const TARGET_CHAMBER_TEMP: f32       = -40.0;
 
@@ -74,3 +74,44 @@ pub const CRITICAL_TEMP_INDICES: [usize; 1] = [0];
 
 /// Index des capteurs non-critiques
 pub const NON_CRITICAL_TEMP_INDICES: [usize; 4] = [1, 2, 3, 4];
+
+// ============================================================
+// Rôles des capteurs (index dans TEMP_LABELS)
+// ATTENTION : les slots ds0..ds4 suivent l'ordre de découverte SEARCH ROM.
+// Vérifier la correspondance physique via les lignes INFO ds{i} au boot.
+// ============================================================
+pub const COMPRESSOR_OUT_IDX: usize = 0; // "sortie_compresseur" — sécurité
+pub const ISO_TEMP_IDX:       usize = 3; // "sortie_evaporateur" — PID isopropanol
+pub const CHAMBER_TEMP_IDX:   usize = 4; // "base_chambre"       — cible refroidissement
+
+// ============================================================
+// Machine à états — seuils et timeouts des phases
+// (valeurs initiales, à calibrer sur la chambre réelle)
+// ============================================================
+/// PreCoolingThePlate → StartingIpaCirculation quand ds4 ≤ ce seuil.
+pub const PRECOOL_TARGET_C: f32 = -20.0;
+/// SaturatingAirWithIpa → HighVoltage quand ds4 ≤ ce seuil.
+pub const SATURATION_TARGET_C: f32 = -35.0;
+/// Fenêtre de stabilité pour valider la phase HighVoltage.
+pub const STABLE_WINDOW_MS: u64 = 60_000;
+/// Tolérance de variation de ds4 sur la fenêtre de stabilité.
+pub const STABLE_TOLERANCE_C: f32 = 1.0;
+/// Durée de circulation IPA (pas de capteur dédié — temporisation).
+pub const IPA_CIRCULATION_MS: u64 = 120_000;
+/// Durée minimale de la vérification finale.
+pub const FINAL_CHECK_MS: u64 = 5_000;
+
+// Timeouts d'abandon (phase trop longue → retour Idle)
+pub const SENSOR_CHECK_TIMEOUT_MS: u64 = 30_000;
+pub const PRECOOL_TIMEOUT_MS:      u64 = 45 * 60_000;
+pub const SATURATION_TIMEOUT_MS:   u64 = 30 * 60_000;
+pub const HV_STABILISE_TIMEOUT_MS: u64 = 15 * 60_000;
+pub const FINAL_CHECK_TIMEOUT_MS:  u64 = 30_000;
+
+// Arrêt (Stopping)
+/// Délai après coupure HV avant de couper le compresseur.
+pub const STOP_HV_SETTLE_MS: u64 = 2_000;
+/// HP considérée équilibrée sous ce seuil (bar) — si capteur présent.
+pub const STOP_EQUALIZE_HP_MAX: f32 = 2.0;
+/// Sans capteur HP : temporisation d'équilibrage (anti court-cycle).
+pub const STOP_EQUALIZE_FALLBACK_MS: u64 = 60_000;

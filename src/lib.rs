@@ -15,5 +15,14 @@ pub mod sensors;
 /// Logique de contrôle : TargetState, ControlOutput, PID, planificateur de mesures.
 pub mod control;
 
+/// Machine à états (SystemTask, phases Cooling/Stopping, historique de mesures).
+pub mod logic;
+
+/// Structures partagées (RingBuffer) — arborescence de la branche phases.
+pub mod shared;
+
+/// Boucle de sécurité (seuils deux niveaux, disjoncteur logiciel).
+pub mod security_loop;
+
 /// Affichage TFT ILI9341 (KMRTM28028-SPI).
 pub mod display;

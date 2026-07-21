@@ -579,6 +579,26 @@ class App:
 
         divider()
 
+        # ── Cycle automatique ──────────────────────────────────────────────────
+        section("CYCLE AUTOMATIQUE")
+        cf = tk.Frame(p, bg=C_DARK)
+        cf.pack(fill="x", pady=(0, 6))
+        tk.Button(cf, text="▶ DÉMARRER", command=lambda: self._send("CYCLE 1"),
+                  bg="#0f3d14", fg="#4cde58", font=("Segoe UI", 9, "bold"),
+                  relief="flat", cursor="hand2", pady=7, bd=0,
+                  activebackground="#144d1a", activeforeground="#4cde58"
+                  ).pack(side="left", fill="x", expand=True, padx=(0, 4))
+        tk.Button(cf, text="■ ARRÊTER", command=lambda: self._send("CYCLE 0"),
+                  bg="#3d0f0f", fg="#e87070", font=("Segoe UI", 9, "bold"),
+                  relief="flat", cursor="hand2", pady=7, bd=0,
+                  activebackground="#4d1414", activeforeground="#e87070"
+                  ).pack(side="left", fill="x", expand=True)
+        self.v_phase = tk.Label(p, text="Phase : —", bg=C_DARK, fg=C_DARK_SUB,
+                                font=("Segoe UI", 9))
+        self.v_phase.pack(anchor="w", pady=(2, 16))
+
+        divider()
+
         # ── Compresseur ────────────────────────────────────────────────────────
         section("COMPRESSEUR")
         self.btn_comp = tk.Button(p, command=self._toggle_comp,
@@ -938,11 +958,26 @@ class App:
             self.v_sat_prog_lbl.config(text="capteurs indisponibles")
             self.lbl_ready.config(text="◌  En préparation", fg=C_DARK_SUB)
 
+    PHASE_NAMES = {
+        0: "Idle (manuel)",       1: "Check capteurs",     2: "Pré-refroidissement",
+        3: "Circulation IPA",     4: "Saturation IPA",     5: "Haute tension",
+        6: "Vérif. finale",       7: "Stabilisé",          8: "Arrêt : HV off",
+        9: "Arrêt : compresseur", 10: "Arrêt : équilibrage",
+    }
+
     def _update_controls(self):
         s = self.last
         self.v_target_act.config(text=self._fmt("tg", "°C", 1))
         self._refresh_comp()
         self._refresh_hv()
+
+        ph = s.get("ph")
+        if ph is not None:
+            name = self.PHASE_NAMES.get(int(ph), f"? ({ph})")
+            active = int(ph) != 0
+            self.v_phase.config(
+                text=f"Phase : {name}",
+                fg="#4cde58" if active else C_DARK_SUB)
 
         comp = s.get("co")
         if comp is not None:
@@ -1016,7 +1051,12 @@ class App:
 
         beep_if("comp_overheat", ds0 is not None and ds0 > ds0_thresh,  freq=1200, dur=600)
         beep_if("safety",        sf == 1,                                 freq=880,  dur=1000)
-        if t_amb is not None and t_cold is not None:
+        # Sursaturation basse : pertinent uniquement quand un cycle est dans les
+        # phases où la couche sursaturée doit exister (4=saturation IPA,
+        # 5=HV, 6=vérif finale, 7=stabilisé). Sur banc / en manuel : silence.
+        ph = self.last.get("ph")
+        if ph is not None and int(ph) in (4, 5, 6, 7) \
+                and t_amb is not None and t_cold is not None:
             s = _sursaturation(t_amb, t_cold)
             beep_if("sursat_low", s < sursat_thresh, freq=440, dur=300)
         if self._last_state_t is not None:

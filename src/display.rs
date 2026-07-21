@@ -34,6 +34,7 @@ const YL:       Rgb565 = Rgb565::YELLOW;
 const DIM:      Rgb565 = Rgb565::new(8, 16, 8);
 const BTN_STOP: Rgb565 = Rgb565::new(18, 3, 3); // fond bouton ARRÊT (rouge sombre)
 const BTN_GO:   Rgb565 = Rgb565::new(2, 18, 2); // fond bouton MARCHE (vert sombre)
+const BTN_CYC:  Rgb565 = Rgb565::new(14, 28, 0); // fond bouton CYCLE (jaune sombre)
 const BTN_RST:  Rgb565 = Rgb565::new(3,  8, 18);
 
 // ── Layout vertical ───────────────────────────────────────────────────────────
@@ -49,11 +50,14 @@ const Y_DS23:     i32 = 164;  // ds2 + ds3
 const Y_BME:      i32 = 178;  // BME280
 
 // ── Boutons tactiles (coordonnées pixels écran) ───────────────────────────────
+// Trois colonnes : CYCLE | COMP | RESET
 pub const BTN_Y_TOP:   i32 = 196;
 pub const BTN_Y_BOT:   i32 = 316;
-pub const BTN_STOP_X1: i32 = 2;
-pub const BTN_STOP_X2: i32 = 117;
-pub const BTN_RST_X1:  i32 = 121;
+pub const BTN_CYC_X1:  i32 = 2;
+pub const BTN_CYC_X2:  i32 = 78;
+pub const BTN_STOP_X1: i32 = 82;
+pub const BTN_STOP_X2: i32 = 158;
+pub const BTN_RST_X1:  i32 = 162;
 pub const BTN_RST_X2:  i32 = 238;
 
 // ── Calibration XPT2046 — ajuster selon le module ────────────────────────────
@@ -73,6 +77,10 @@ pub fn touch_to_screen(raw_x: u16, raw_y: u16) -> (i32, i32) {
     (sx.min(239), sy.min(319))
 }
 
+pub fn is_btn_cycle(sx: i32, sy: i32) -> bool {
+    sx >= BTN_CYC_X1 && sx <= BTN_CYC_X2 && sy >= BTN_Y_TOP
+}
+
 pub fn is_btn_comp(sx: i32, sy: i32) -> bool {
     sx >= BTN_STOP_X1 && sx <= BTN_STOP_X2 && sy >= BTN_Y_TOP
 }
@@ -87,7 +95,9 @@ fn p_sat_ipa(t_c: f32) -> f32 {
 }
 
 // ── Éléments fixes — appeler une seule fois à l'init ─────────────────────────
-pub fn draw_static<D: DrawTarget<Color = Rgb565>>(disp: &mut D, comp_allowed: bool) {
+pub fn draw_static<D: DrawTarget<Color = Rgb565>>(
+    disp: &mut D, comp_allowed: bool, cycle_active: bool,
+) {
     fill(disp, 0, 0, 240, 320, BG);
 
     txt(disp, "CHAMBRE", 4, Y_HDR, &FONT_9X18_BOLD, WH);
@@ -100,6 +110,7 @@ pub fn draw_static<D: DrawTarget<Color = Rgb565>>(disp: &mut D, comp_allowed: bo
 
     txt(disp, "BASE CHAMBRE", 4, Y_LBL, &FONT_6X10, CY);
 
+    draw_btn_cycle(disp, cycle_active);
     draw_btn_comp(disp, comp_allowed);
     btn_reset_normal(disp);
 }
@@ -111,6 +122,7 @@ pub fn draw<D: DrawTarget<Color = Rgb565>>(
     target: &TargetState,
     out: &ControlOutput,
     rom_count: usize,
+    phase_label: Option<&'static str>,
 ) {
     // ─── Header : SAFE/ERR + uptime ──────────────────────────────────────────
     if out.safety_override {
@@ -153,6 +165,12 @@ pub fn draw<D: DrawTarget<Color = Rgb565>>(
         }
     }
 
+    // Cycle automatique actif → la phase remplace la ligne PRETE/PREPARATION.
+    // Libellés de 14 chars (SystemTask::label) → même largeur, pas de résidu.
+    if let Some(pl) = phase_label {
+        txt(disp, pl, 4, Y_READY, &FONT_9X18_BOLD, YL);
+    }
+
     // ─── Base chambre (ds4) — grande valeur ──────────────────────────────────
     {
         let mut val: String<12> = String::new();
@@ -180,11 +198,12 @@ pub fn draw<D: DrawTarget<Color = Rgb565>>(
     }
 
     // ─── Compresseur + HV ────────────────────────────────────────────────────
-    // Trois états : ON (sortie active), BLOQ (interdit par IHM/écran), OFF (sécurité).
+    // Trois états : ON (sortie active), BLOQ (interdit par IHM/écran),
+    // PRET (autorisé mais sortie inactive — phase d'attente du cycle).
     // Chaînes de même largeur (10 chars) pour éviter les résidus.
     let (ct, cc) = if out.compressor { ("COMP: ON  ", GR) }
         else if !state.compressor_allowed { ("COMP: BLOQ", RD) }
-        else { ("COMP: OFF ", DIM) };
+        else { ("COMP: PRET", YL) };
     let (ht, hc) = if out.high_voltage { ("HV: ON " , YL) } else { ("HV: OFF", DIM)   };
     txt(disp, ct, 4,   Y_CTRL2, &FONT_6X13, cc);
     txt(disp, ht, 140, Y_CTRL2, &FONT_6X13, hc);
@@ -213,24 +232,51 @@ pub fn draw<D: DrawTarget<Color = Rgb565>>(
     }
 }
 
+/// Cadre + fond commun des boutons.
+fn btn_frame<D: DrawTarget<Color = Rgb565>>(
+    disp: &mut D, x1: i32, x2: i32, bg: Rgb565, edge: Rgb565,
+) {
+    let bw = (x2 - x1 + 1) as u32;
+    let bh = (BTN_Y_BOT - BTN_Y_TOP + 1) as u32;
+    fill(disp, x1 as u32, BTN_Y_TOP as u32, bw, bh, bg);
+    fill(disp, x1 as u32, BTN_Y_TOP as u32, bw, 2, edge);
+    fill(disp, x1 as u32, (BTN_Y_BOT - 1) as u32, bw, 2, edge);
+    fill(disp, x1 as u32, BTN_Y_TOP as u32, 2, bh, edge);
+    fill(disp, (x2 - 1) as u32, BTN_Y_TOP as u32, 2, bh, edge);
+}
+
+/// Bouton cycle automatique. `active` = un cycle est en cours :
+/// - inactif → propose "START" (lance la séquence)
+/// - actif   → propose "STOP" (arrêt propre)
+pub fn draw_btn_cycle<D: DrawTarget<Color = Rgb565>>(disp: &mut D, active: bool) {
+    let (edge, l2) = if active { (RD, " STOP") } else { (GR, "START") };
+    btn_frame(disp, BTN_CYC_X1, BTN_CYC_X2, BTN_CYC, edge);
+    txt_on(disp, "CYCLE", BTN_CYC_X1 + 16, BTN_Y_TOP + 36, &FONT_9X18_BOLD, edge, BTN_CYC);
+    txt_on(disp, l2,      BTN_CYC_X1 + 23, BTN_Y_TOP + 60, &FONT_6X13,      edge, BTN_CYC);
+}
+
+/// Flash tactile du bouton cycle. `starting` = true si on vient de lancer.
+pub fn draw_btn_cycle_flash<D: DrawTarget<Color = Rgb565>>(disp: &mut D, starting: bool) {
+    let (bg, l2) = if starting { (GR, "START") } else { (RD, " STOP") };
+    let bw = (BTN_CYC_X2 - BTN_CYC_X1 + 1) as u32;
+    let bh = (BTN_Y_BOT  - BTN_Y_TOP  + 1) as u32;
+    fill(disp, BTN_CYC_X1 as u32, BTN_Y_TOP as u32, bw, bh, bg);
+    txt_on(disp, "CYCLE", BTN_CYC_X1 + 16, BTN_Y_TOP + 36, &FONT_9X18_BOLD, BG, bg);
+    txt_on(disp, l2,      BTN_CYC_X1 + 23, BTN_Y_TOP + 60, &FONT_6X13,      BG, bg);
+}
+
 /// Bouton compresseur — bascule. `allowed` = état ACTUEL de l'autorisation :
 /// - bloqué  → le bouton propose "MARCHE" (vert)
 /// - autorisé → le bouton propose "ARRET" (rouge)
 pub fn draw_btn_comp<D: DrawTarget<Color = Rgb565>>(disp: &mut D, allowed: bool) {
-    let bw = (BTN_STOP_X2 - BTN_STOP_X1 + 1) as u32;
-    let bh = (BTN_Y_BOT   - BTN_Y_TOP   + 1) as u32;
-    let (bg, edge, l1, l2) = if allowed {
-        (BTN_STOP, RD, " ARRET",  "COMPRESSEUR")
+    let (bg, edge, l1) = if allowed {
+        (BTN_STOP, RD, " ARRET")
     } else {
-        (BTN_GO,   GR, " MARCHE", "COMPRESSEUR")
+        (BTN_GO,   GR, "MARCHE")
     };
-    fill(disp, BTN_STOP_X1 as u32, BTN_Y_TOP as u32, bw, bh, bg);
-    fill(disp, BTN_STOP_X1 as u32, BTN_Y_TOP as u32, bw, 2, edge);
-    fill(disp, BTN_STOP_X1 as u32, (BTN_Y_BOT - 1) as u32, bw, 2, edge);
-    fill(disp, BTN_STOP_X1 as u32, BTN_Y_TOP as u32, 2, bh, edge);
-    fill(disp, (BTN_STOP_X2 - 1) as u32, BTN_Y_TOP as u32, 2, bh, edge);
-    txt_on(disp, l1, BTN_STOP_X1 + 4,  BTN_Y_TOP + 36, &FONT_9X18_BOLD, edge, bg);
-    txt_on(disp, l2, BTN_STOP_X1 + 22, BTN_Y_TOP + 60, &FONT_6X13,      edge, bg);
+    btn_frame(disp, BTN_STOP_X1, BTN_STOP_X2, bg, edge);
+    txt_on(disp, l1,     BTN_STOP_X1 + 11, BTN_Y_TOP + 36, &FONT_9X18_BOLD, edge, bg);
+    txt_on(disp, "COMP.", BTN_STOP_X1 + 23, BTN_Y_TOP + 60, &FONT_6X13,     edge, bg);
 }
 
 /// Feedback visuel : remplit le bouton en couleur pleine au moment du toucher.
@@ -238,32 +284,26 @@ pub fn draw_btn_comp<D: DrawTarget<Color = Rgb565>>(disp: &mut D, allowed: bool)
 pub fn draw_btn_comp_flash<D: DrawTarget<Color = Rgb565>>(disp: &mut D, new_allowed: bool) {
     let bw = (BTN_STOP_X2 - BTN_STOP_X1 + 1) as u32;
     let bh = (BTN_Y_BOT  - BTN_Y_TOP  + 1) as u32;
-    let (bg, l1) = if new_allowed { (GR, " MARCHE") } else { (RD, " ARRET") };
+    let (bg, l1) = if new_allowed { (GR, "MARCHE") } else { (RD, " ARRET") };
     fill(disp, BTN_STOP_X1 as u32, BTN_Y_TOP as u32, bw, bh, bg);
-    txt_on(disp, l1,            BTN_STOP_X1 + 4,  BTN_Y_TOP + 36, &FONT_9X18_BOLD, BG, bg);
-    txt_on(disp, "COMPRESSEUR", BTN_STOP_X1 + 22, BTN_Y_TOP + 60, &FONT_6X13,      BG, bg);
+    txt_on(disp, l1,      BTN_STOP_X1 + 11, BTN_Y_TOP + 36, &FONT_9X18_BOLD, BG, bg);
+    txt_on(disp, "COMP.", BTN_STOP_X1 + 23, BTN_Y_TOP + 60, &FONT_6X13,      BG, bg);
 }
 
 pub fn draw_btn_reset_flash<D: DrawTarget<Color = Rgb565>>(disp: &mut D) {
     let bw = (BTN_RST_X2 - BTN_RST_X1 + 1) as u32;
     let bh = (BTN_Y_BOT  - BTN_Y_TOP  + 1) as u32;
     fill(disp, BTN_RST_X1 as u32, BTN_Y_TOP as u32, bw, bh, CY);
-    txt_on(disp, " RESET",   BTN_RST_X1 + 8, BTN_Y_TOP + 36, &FONT_9X18_BOLD, BG, CY);
-    txt_on(disp, " SYSTEME", BTN_RST_X1 + 6, BTN_Y_TOP + 60, &FONT_6X13,      BG, CY);
+    txt_on(disp, " RESET",  BTN_RST_X1 + 11, BTN_Y_TOP + 36, &FONT_9X18_BOLD, BG, CY);
+    txt_on(disp, "SYSTEME", BTN_RST_X1 + 17, BTN_Y_TOP + 60, &FONT_6X13,      BG, CY);
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn btn_reset_normal<D: DrawTarget<Color = Rgb565>>(disp: &mut D) {
-    let bw = (BTN_RST_X2 - BTN_RST_X1 + 1) as u32;
-    let bh = (BTN_Y_BOT  - BTN_Y_TOP  + 1) as u32;
-    fill(disp, BTN_RST_X1 as u32, BTN_Y_TOP as u32, bw, bh, BTN_RST);
-    fill(disp, BTN_RST_X1 as u32, BTN_Y_TOP as u32, bw, 2, CY);
-    fill(disp, BTN_RST_X1 as u32, (BTN_Y_BOT - 1) as u32, bw, 2, CY);
-    fill(disp, BTN_RST_X1 as u32, BTN_Y_TOP as u32, 2, bh, CY);
-    fill(disp, (BTN_RST_X2 - 1) as u32, BTN_Y_TOP as u32, 2, bh, CY);
-    txt_on(disp, " RESET",   BTN_RST_X1 + 8, BTN_Y_TOP + 36, &FONT_9X18_BOLD, CY, BTN_RST);
-    txt_on(disp, " SYSTEME", BTN_RST_X1 + 6, BTN_Y_TOP + 60, &FONT_6X13,      CY, BTN_RST);
+    btn_frame(disp, BTN_RST_X1, BTN_RST_X2, BTN_RST, CY);
+    txt_on(disp, " RESET",  BTN_RST_X1 + 11, BTN_Y_TOP + 36, &FONT_9X18_BOLD, CY, BTN_RST);
+    txt_on(disp, "SYSTEME", BTN_RST_X1 + 17, BTN_Y_TOP + 60, &FONT_6X13,      CY, BTN_RST);
 }
 
 fn fmt_temp<const N: usize>(

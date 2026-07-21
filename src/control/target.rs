@@ -15,7 +15,10 @@ impl Default for TargetState {
     fn default() -> Self {
         Self {
             chamber_temp_c: TARGET_CHAMBER_TEMP,
-            isopropanol_temp_c: -20.0, // TODO: à déterminer expérimentalement
+            // TODO équipe : consigne à déterminer expérimentalement — et valider
+            // que ds3 (sortie évaporateur) est bien le bon capteur de référence
+            // pour le chauffage IPA (cf. revue des décisions de design).
+            isopropanol_temp_c: -20.0,
             high_voltage_enabled: false,
         }
     }
