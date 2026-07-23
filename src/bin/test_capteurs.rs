@@ -1,5 +1,5 @@
 //! Test combiné DS18B20 (1-Wire GP15) + BME280 (I²C GP4/GP5).
-//! Sortie via USB série (CDC ACM) — même moniteur qu'avant.
+//! Sortie via USB série (CDC ACM).
 //!
 //! Branchements :
 //!   DS18B20 : VCC→3V3, GND→GND, DATA→GP15, pull-up 4.7kΩ entre DATA et 3V3
@@ -39,7 +39,7 @@ use defmt_rtt as _;
 // Boot2 — obligatoire RP2040
 // ════════════════════════════════════════════════════════════════════════════
 
-#[link_section = ".boot2"]
+#[unsafe(link_section = ".boot2")]
 #[used]
 pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
