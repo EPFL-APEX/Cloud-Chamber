@@ -655,6 +655,8 @@ fn main() -> ! {
     let mut btn_shown_allowed = state.compressor_allowed;
     let mut btn_shown_cycle   = false;
     let mut last_safety_logged = false;
+    let mut disp_blink        = false; // clignotement bannière d'alerte (1 Hz)
+    let mut alert_was_active  = false;
 
     // Watchdog — si la boucle principale fige plus de 4 s, le RP2040 redémarre
     // et toutes les sorties (relais, HV, chauffage) repartent LOW (fail-safe).
@@ -923,8 +925,15 @@ fn main() -> ! {
         // Écran TFT — toutes les 500 ms
         if now_ms.saturating_sub(last_disp_ms) >= 500 {
             if let Some(d) = disp_opt.as_mut() {
+                disp_blink = !disp_blink;
+                let alert = controller.alert();
+                // L'alerte vient de disparaître → nettoyer la bannière
+                if alert.is_none() && alert_was_active {
+                    display::clear_alert_zone(d);
+                }
+                alert_was_active = alert.is_some();
                 display::draw(d, &state, &target, &last_output, rom_count,
-                              controller.phase_label());
+                              controller.phase_label(), alert, disp_blink);
                 // Redessine les boutons si leur état a changé ailleurs que par
                 // le tactile (commande USB, transition automatique de phase).
                 if btn_flash_until_ms == 0 && btn_shown_allowed != state.compressor_allowed {

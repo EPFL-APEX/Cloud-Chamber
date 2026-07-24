@@ -89,6 +89,16 @@ pub fn is_btn_reset(sx: i32, sy: i32) -> bool {
     sx >= BTN_RST_X1 && sx <= BTN_RST_X2 && sy >= BTN_Y_TOP
 }
 
+// Zone de la bannière d'alerte (entre les séparateurs y=22 et y=68).
+const ALERT_Y: u32 = 24;
+const ALERT_H: u32 = 43;
+
+/// Efface la zone de la bannière d'alerte (à appeler quand l'alerte disparaît,
+/// avant le draw() suivant — les textes normaux ne couvrent pas toute la zone).
+pub fn clear_alert_zone<D: DrawTarget<Color = Rgb565>>(disp: &mut D) {
+    fill(disp, 0, ALERT_Y, 240, ALERT_H, BG);
+}
+
 /// P_sat IPA (mmHg) — équation d'Antoine.
 fn p_sat_ipa(t_c: f32) -> f32 {
     libm::powf(10.0_f32, 8.118 - 1580.92 / (219.617 + t_c))
@@ -123,6 +133,8 @@ pub fn draw<D: DrawTarget<Color = Rgb565>>(
     out: &ControlOutput,
     rom_count: usize,
     phase_label: Option<&'static str>,
+    alert: Option<&'static str>,
+    blink: bool,
 ) {
     // ─── Header : SAFE/ERR + uptime ──────────────────────────────────────────
     if out.safety_override {
@@ -146,29 +158,38 @@ pub fn draw<D: DrawTarget<Color = Rgb565>>(
     };
     let t_amb = if state.bme280.valid { Some(state.bme280.temp_c) } else { None };
 
-    match (t_cold, t_amb) {
-        (Some(tc), Some(ta)) => {
-            let s = p_sat_ipa(ta) / p_sat_ipa(tc);
-            let ready = s >= 50.0;
-            let col = if ready { GR } else { YL };
-            // Les deux chaînes font 14 chars → même largeur, pas de résidu
-            txt(disp,
-                if ready { "CHAMBRE PRETE " } else { "EN PREPARATION" },
-                4, Y_READY, &FONT_9X18_BOLD, col);
-            let mut ss: String<18> = String::new();
-            write!(ss, "Sursat: x{:5.0}     ", s).ok();
-            txt(disp, ss.as_str(), 4, Y_SURSAT, &FONT_6X13, col);
+    if let Some(msg) = alert {
+        // ── Bannière d'erreur clignotante — couvre la zone PRETE/SURSAT ─────
+        // Alternance rouge plein / fond noir à chaque rafraîchissement (1 Hz).
+        let (bg_c, fg_c) = if blink { (RD, WH) } else { (BG, RD) };
+        fill(disp, 0, ALERT_Y, 240, ALERT_H, bg_c);
+        let x = (W - msg.len() as i32 * 9) / 2; // centré (FONT_9X18)
+        txt_on(disp, msg, x.max(0), Y_READY + 8, &FONT_9X18_BOLD, fg_c, bg_c);
+    } else {
+        match (t_cold, t_amb) {
+            (Some(tc), Some(ta)) => {
+                let s = p_sat_ipa(ta) / p_sat_ipa(tc);
+                let ready = s >= 50.0;
+                let col = if ready { GR } else { YL };
+                // Les deux chaînes font 14 chars → même largeur, pas de résidu
+                txt(disp,
+                    if ready { "CHAMBRE PRETE " } else { "EN PREPARATION" },
+                    4, Y_READY, &FONT_9X18_BOLD, col);
+                let mut ss: String<18> = String::new();
+                write!(ss, "Sursat: x{:5.0}     ", s).ok();
+                txt(disp, ss.as_str(), 4, Y_SURSAT, &FONT_6X13, col);
+            }
+            _ => {
+                txt(disp, "EN PREPARATION", 4, Y_READY,  &FONT_9X18_BOLD, DIM);
+                txt(disp, "Sursat: ---       ", 4, Y_SURSAT, &FONT_6X13, DIM);
+            }
         }
-        _ => {
-            txt(disp, "EN PREPARATION", 4, Y_READY,  &FONT_9X18_BOLD, DIM);
-            txt(disp, "Sursat: ---       ", 4, Y_SURSAT, &FONT_6X13, DIM);
-        }
-    }
 
-    // Cycle automatique actif → la phase remplace la ligne PRETE/PREPARATION.
-    // Libellés de 14 chars (SystemTask::label) → même largeur, pas de résidu.
-    if let Some(pl) = phase_label {
-        txt(disp, pl, 4, Y_READY, &FONT_9X18_BOLD, YL);
+        // Cycle automatique actif → la phase remplace la ligne PRETE/PREPARATION.
+        // Libellés de 14 chars (SystemTask::label) → même largeur, pas de résidu.
+        if let Some(pl) = phase_label {
+            txt(disp, pl, 4, Y_READY, &FONT_9X18_BOLD, YL);
+        }
     }
 
     // ─── Base chambre (ds4) — grande valeur ──────────────────────────────────

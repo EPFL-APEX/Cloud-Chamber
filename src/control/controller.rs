@@ -5,7 +5,7 @@ use crate::config::{
 use crate::data::SystemState;
 use crate::logic::{cooling::CoolingPhase, history::MeasurementHistory,
                    stopping::StoppingPhase, PhaseCtx, SystemTask};
-use crate::security_loop::{monitor::SecurityMonitor, safety::SafetyConfig};
+use crate::security_loop::{monitor::SecurityMonitor, safety::{SafetyCause, SafetyConfig}};
 use super::output::ControlOutput;
 use super::target::TargetState;
 
@@ -44,6 +44,9 @@ pub struct Controller {
     phase_entered_ms: u64,
     /// Disjoncteur logiciel (chemin tick()).
     monitor: SecurityMonitor,
+    /// Message d'alerte pour le TFT (bannière clignotante). Persiste jusqu'à
+    /// acquittement (CYCLE 0 / réarmement) ou nouveau départ de cycle.
+    alert: Option<&'static str>,
 }
 
 impl Controller {
@@ -55,6 +58,7 @@ impl Controller {
             task: SystemTask::Idle,
             phase_entered_ms: 0,
             monitor: SecurityMonitor::new(SafetyConfig::default()),
+            alert: None,
         }
     }
 
@@ -64,11 +68,13 @@ impl Controller {
     pub fn phase_code(&self) -> u8 { self.task.code() }
     pub fn phase_label(&self) -> Option<&'static str> { self.task.label() }
     pub fn is_tripped(&self) -> bool { self.monitor.is_tripped() }
+    pub fn alert(&self) -> Option<&'static str> { self.alert }
 
     /// CYCLE 1 — lance la séquence de démarrage. Refusé hors Idle ou si le
     /// disjoncteur est verrouillé.
     pub fn request_start(&mut self, now_ms: u64) -> bool {
         if self.task == SystemTask::Idle && !self.monitor.is_tripped() {
+            self.alert = None; // nouveau cycle = acquittement
             self.enter(SystemTask::Cooling(CoolingPhase::SensorCheck), now_ms);
             true
         } else {
@@ -80,6 +86,7 @@ impl Controller {
     /// Réarme aussi le disjoncteur (reconnaissance opérateur).
     pub fn request_stop(&mut self, now_ms: u64) -> bool {
         self.monitor.reset();
+        self.alert = None; // acquittement opérateur
         match self.task {
             SystemTask::Idle | SystemTask::Stopping(_) => false,
             _ => {
@@ -113,6 +120,12 @@ impl Controller {
             if self.task != SystemTask::Idle {
                 self.enter(SystemTask::Idle, now_ms);
             }
+            self.alert = Some(match self.monitor.trip_cause {
+                Some(SafetyCause::CompressorOverheat) => "SURCHAUFFE COMPRESS.",
+                Some(SafetyCause::PressureHigh)
+                | Some(SafetyCause::PressureLow)      => "PRESSION HORS LIMITE",
+                None                                  => "SECURITE DECLENCHEE",
+            });
             state.compressor_allowed = false; // réarmement + MARCHE explicites requis
             self.iso_heating = false;
             return ControlOutput::emergency_stop();
@@ -134,12 +147,25 @@ impl Controller {
         };
         let next = self.task.react_to(&ctx);
         if next != self.task {
-            let back_to_idle = next == SystemTask::Idle;
+            let back_to_idle    = next == SystemTask::Idle;
+            let aborted_cooling = back_to_idle
+                && matches!(self.task, SystemTask::Cooling(_));
             self.enter(next, now_ms);
             if back_to_idle {
                 // Abandon de phase (timeout, capteurs) ou fin d'arrêt propre :
                 // on revient en manuel avec le compresseur BLOQUÉ.
                 state.compressor_allowed = false;
+                if aborted_cooling {
+                    // Cooling → Idle direct = abandon (l'arrêt normal passe
+                    // par Stopping). Cause : capteurs morts ou phase trop longue.
+                    self.alert = Some(
+                        if !state.temperatures[CHAMBER_TEMP_IDX].valid
+                            || !state.bme280.valid {
+                            "CAPTEURS ABSENTS"
+                        } else {
+                            "TIMEOUT PHASE"
+                        });
+                }
             }
         }
 

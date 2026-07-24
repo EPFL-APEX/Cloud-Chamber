@@ -141,7 +141,7 @@ fn main() -> ! {
         state.bme280.humidity_pct = 45.0;
         state.uptime_s            = 42;
 
-        display::draw(d, &state, &target, &output, 3, None);
+        display::draw(d, &state, &target, &output, 3, None, None, false);
 
         usb_write(&timer, &mut usb_dev, &mut serial, b"SCREEN OK - layout affiche\r\n");
     } else {

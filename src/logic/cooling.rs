@@ -10,6 +10,11 @@ use crate::config::{
 
 use super::{PhaseCtx, SystemTask};
 
+/// Perte de capteur pendant un cycle : au-delà de ce délai sans lecture valide
+/// de la base chambre, la phase est abandonnée (plutôt que d'attendre le
+/// timeout long de la phase, aveugle).
+const SENSOR_LOSS_MS: u64 = 10_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoolingPhase {
     SensorCheck,
@@ -26,6 +31,16 @@ impl CoolingPhase {
 
         let chamber = ctx.state.temperatures[CHAMBER_TEMP_IDX];
         let chamber_t = if chamber.valid { Some(chamber.value) } else { None };
+
+        // Perte prolongée de la base chambre en plein cycle → abandon rapide
+        // (toutes les phases après SensorCheck dépendent de ds4).
+        if self != SensorCheck {
+            let lost = ctx.hist.latest_temp(CHAMBER_TEMP_IDX)
+                .map_or(true, |s| ctx.now_ms.saturating_sub(s.t_ms) > SENSOR_LOSS_MS);
+            if lost && chamber_t.is_none() {
+                return SystemTask::Idle; // signalé comme perte capteur par le Controller
+            }
+        }
 
         match self {
             // Tous les capteurs nécessaires répondent avant de démarrer.

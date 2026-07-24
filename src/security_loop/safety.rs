@@ -47,6 +47,17 @@ impl Default for SafetyConfig {
     }
 }
 
+/// Cause du niveau de sévérité retourné (pour l'affichage opérateur).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SafetyCause {
+    /// T° sortie compresseur au-dessus du seuil.
+    CompressorOverheat,
+    /// Pression HP trop haute.
+    PressureHigh,
+    /// Pression BP trop basse.
+    PressureLow,
+}
+
 /// Niveau d'une valeur par rapport à ses seuils hauts.
 fn check_high(value: f32, warn: f32, alarm: f32) -> Severity {
     if value > alarm { Severity::Alarm }
@@ -61,25 +72,29 @@ fn check_low(value: f32, warn: f32, alarm: f32) -> Severity {
     else { Severity::Normal }
 }
 
-/// Évalue la sévérité globale à partir de l'état capteurs.
+/// Évalue la sévérité globale et sa cause dominante.
 /// Les capteurs invalides sont ignorés (pas de faux positif au débranchement —
 /// le retrait d'un capteur de sécurité est traité par le Controller).
-pub fn evaluate_safety(state: &SystemState, config: &SafetyConfig) -> Severity {
-    let mut sev = Severity::Normal;
+pub fn evaluate_safety(state: &SystemState, config: &SafetyConfig)
+    -> (Severity, Option<SafetyCause>)
+{
+    let mut worst_sev   = Severity::Normal;
+    let mut worst_cause = None;
 
     let t_comp = &state.temperatures[COMPRESSOR_OUT_IDX];
     if t_comp.valid {
-        sev = sev.max(check_high(t_comp.value,
-                                 config.temp_compressor_warn,
-                                 config.temp_compressor_alarm));
+        let s = check_high(t_comp.value,
+                           config.temp_compressor_warn,
+                           config.temp_compressor_alarm);
+        if s > worst_sev { worst_sev = s; worst_cause = Some(SafetyCause::CompressorOverheat); }
     }
     if state.pressure_hp.valid {
-        sev = sev.max(check_high(state.pressure_hp.pressure,
-                                 config.hp_warn, config.hp_alarm));
+        let s = check_high(state.pressure_hp.pressure, config.hp_warn, config.hp_alarm);
+        if s > worst_sev { worst_sev = s; worst_cause = Some(SafetyCause::PressureHigh); }
     }
     if state.pressure_bp.valid {
-        sev = sev.max(check_low(state.pressure_bp.pressure,
-                                config.bp_warn_low, config.bp_alarm_low));
+        let s = check_low(state.pressure_bp.pressure, config.bp_warn_low, config.bp_alarm_low);
+        if s > worst_sev { worst_sev = s; worst_cause = Some(SafetyCause::PressureLow); }
     }
-    sev
+    (worst_sev, worst_cause)
 }

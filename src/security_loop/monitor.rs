@@ -4,7 +4,7 @@
 //! Le déménagement sur Core1 devient un simple déplacement d'appel.
 
 use crate::data::SystemState;
-use super::safety::{evaluate_safety, SafetyConfig, Severity};
+use super::safety::{evaluate_safety, SafetyCause, SafetyConfig, Severity};
 
 /// Nombre de cycles consécutifs en Alarm avant déclenchement (anti-parasite,
 /// ~300 ms à 10 Hz — même valeur que l'ancien safety_triggered).
@@ -17,22 +17,33 @@ pub struct SecurityMonitor {
     /// réarmement explicite (CYCLE 0 ou reset système).
     tripped: bool,
     pub last_severity: Severity,
+    /// Cause du dernier déclenchement (conservée tant que le trip est actif).
+    pub trip_cause: Option<SafetyCause>,
 }
 
 impl SecurityMonitor {
     pub fn new(config: SafetyConfig) -> Self {
-        Self { config, alarm_cycles: 0, tripped: false, last_severity: Severity::Normal }
+        Self {
+            config,
+            alarm_cycles: 0,
+            tripped: false,
+            last_severity: Severity::Normal,
+            trip_cause: None,
+        }
     }
 
     /// À appeler à chaque cycle de contrôle. Retourne `true` si le système
     /// est sûr (pas de trip verrouillé).
     pub fn check(&mut self, state: &SystemState) -> bool {
-        let sev = evaluate_safety(state, &self.config);
+        let (sev, cause) = evaluate_safety(state, &self.config);
         self.last_severity = sev;
 
         if sev == Severity::Alarm {
             self.alarm_cycles = self.alarm_cycles.saturating_add(1);
             if self.alarm_cycles >= TRIP_CYCLES {
+                if !self.tripped {
+                    self.trip_cause = cause;
+                }
                 self.tripped = true;
             }
         } else {
@@ -51,5 +62,6 @@ impl SecurityMonitor {
     pub fn reset(&mut self) {
         self.tripped = false;
         self.alarm_cycles = 0;
+        self.trip_cause = None;
     }
 }
