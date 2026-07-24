@@ -56,6 +56,17 @@ pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 // Slot 0..N = ordre de découverte — publié via USB pour identification.
 const OW_MASK: u32 = 1 << 15; // GP15 — cf. config::PIN_ONEWIRE
 
+// ── Garde anti-blocage du bus I²C ────────────────────────────────────────────
+// Un BME280 câblé mais NON alimenté écrase SDA/SCL via ses diodes de
+// protection ESD : le driver I²C bloquant (sans timeout) gèlerait la boucle,
+// et un gel pendant bme.init() au boot précède l'armement du watchdog.
+// On ne lance donc une transaction que si les deux lignes sont au repos (HIGH).
+#[inline(always)]
+fn i2c_bus_idle() -> bool {
+    const I2C_MASK: u32 = (1 << 4) | (1 << 5); // GP4 = SDA, GP5 = SCL
+    unsafe { (&*pac::SIO::ptr()).gpio_in().read().bits() & I2C_MASK == I2C_MASK }
+}
+
 // BME280 delay via cortex cycles
 struct CortexDelay;
 impl DelayNs for CortexDelay {
@@ -549,7 +560,9 @@ fn main() -> ! {
     let mut bme    = Bme280Driver::new(i2c);
     let mut bme_ok = false;
     for _ in 0..3u8 {
-        if bme.init().is_ok() { bme_ok = true; break; }
+        // i2c_bus_idle() d'abord : un BME câblé mais non alimenté écrase le
+        // bus, et init() gèlerait ici AVANT l'armement du watchdog.
+        if i2c_bus_idle() && bme.init().is_ok() { bme_ok = true; break; }
         keepalive(&timer, 500, &mut usb_dev, &mut serial);
     }
 
@@ -818,25 +831,37 @@ fn main() -> ! {
         // sans reset (l'init reconfigure les registres du capteur).
         if now_ms.saturating_sub(last_bme_ms) >= 500 {
             if bme_ok {
-                match bme.measure(&mut CortexDelay) {
-                    Ok((t, p, h)) => {
-                        state.bme280.temp_c = t; state.bme280.pressure_hpa = p;
-                        state.bme280.humidity_pct = h; state.bme280.valid = true;
-                        bme_fail = 0;
+                if !i2c_bus_idle() {
+                    // Bus écrasé (BME câblé mais alim coupée) : ne PAS entrer
+                    // dans le driver bloquant — comptabiliser comme échec.
+                    state.bme280.valid = false;
+                    bme_fail = bme_fail.saturating_add(1);
+                    if bme_fail >= 4 {
+                        bme_ok = false;
+                        usb_write(&timer, &mut usb_dev, &mut serial,
+                                  b"WARN BME280 perdu - bus I2C ecrase (alim coupee ?)\r\n");
                     }
-                    Err(_) => {
-                        state.bme280.valid = false;
-                        bme_fail = bme_fail.saturating_add(1);
-                        if bme_fail >= 4 {
-                            bme_ok = false;
-                            usb_write(&timer, &mut usb_dev, &mut serial,
-                                      b"WARN BME280 perdu - re-init auto active\r\n");
+                } else {
+                    match bme.measure(&mut CortexDelay) {
+                        Ok((t, p, h)) => {
+                            state.bme280.temp_c = t; state.bme280.pressure_hpa = p;
+                            state.bme280.humidity_pct = h; state.bme280.valid = true;
+                            bme_fail = 0;
+                        }
+                        Err(_) => {
+                            state.bme280.valid = false;
+                            bme_fail = bme_fail.saturating_add(1);
+                            if bme_fail >= 4 {
+                                bme_ok = false;
+                                usb_write(&timer, &mut usb_dev, &mut serial,
+                                          b"WARN BME280 perdu - re-init auto active\r\n");
+                            }
                         }
                     }
                 }
             } else if now_ms.saturating_sub(last_bme_init_ms) >= 5_000 {
                 last_bme_init_ms = now_ms;
-                if bme.init().is_ok() {
+                if i2c_bus_idle() && bme.init().is_ok() {
                     bme_ok   = true;
                     bme_fail = 0;
                     usb_write(&timer, &mut usb_dev, &mut serial,
