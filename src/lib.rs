@@ -1,28 +1,19 @@
-#![no_std]
-// Pendant le développement, beaucoup de symboles de la lib ne sont pas encore
-// utilisés dans les binaires de test. 
-#![allow(dead_code)]
+//! Bibliothèque Cloud Chamber — réexporte tous les modules publics.
+//!
+//! Ce fichier transforme le projet en crate mixte (lib + bin).
+//! Les exemples et tests d'intégration importent via `cloud_chamber::`.
+//!
+//! # `#![no_std]`
+//!
+//! La lib est `no_std` pour que les modules embarqués compilent sans std.
+//! En mode test (`cargo test`), `cfg_attr` désactive `no_std` pour que
+//! les tests s'exécutent sur desktop avec accès à la bibliothèque standard.
 
-/// Configuration centrale (broches, adresses, seuils, timings).
+#![cfg_attr(not(test), no_std)]
+
+pub mod cloud_chamber_hal;
 pub mod config;
-
-/// Structures de données partagées entre les coeurs.
-pub mod data;
-
-/// Drivers capteurs + traits (DS18B20, BME280, ABP2).
-pub mod sensors;
-
-/// Logique de contrôle : TargetState, ControlOutput, PID, planificateur de mesures.
-pub mod control;
-
-/// Machine à états (SystemTask, phases Cooling/Stopping, historique de mesures).
+pub mod drivers;
 pub mod logic;
-
-/// Structures partagées (RingBuffer) — arborescence de la branche phases.
 pub mod shared;
-
-/// Boucle de sécurité (seuils deux niveaux, disjoncteur logiciel).
-pub mod security_loop;
-
-/// Affichage TFT ILI9341 (KMRTM28028-SPI).
-pub mod display;
+pub mod ui;

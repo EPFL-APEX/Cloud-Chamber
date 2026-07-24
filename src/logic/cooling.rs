@@ -1,14 +1,7 @@
-//! Séquence de démarrage (refroidissement) — mêmes phases que la branche
-//! add-phase-transition-logic, transitions implémentées (les todo!() de la
-//! branche cible sont remplacés par les conditions réelles).
+//! All of the logic that goes into cooling the chamber is implemented here
 
-use crate::config::{
-    CHAMBER_TEMP_IDX, FINAL_CHECK_MS, FINAL_CHECK_TIMEOUT_MS, HV_STABILISE_TIMEOUT_MS,
-    IPA_CIRCULATION_MS, PRECOOL_TARGET_C, PRECOOL_TIMEOUT_MS, SATURATION_TARGET_C,
-    SATURATION_TIMEOUT_MS, SENSOR_CHECK_TIMEOUT_MS, STABLE_TOLERANCE_C, STABLE_WINDOW_MS,
-};
+use crate::{logic::probing::{MeasurementHistory, ProbingPlan}, shared::data::SystemTask};
 
-use super::{PhaseCtx, SystemTask};
 
 /// Perte de capteur pendant un cycle : au-delà de ce délai sans lecture valide
 /// de la base chambre, la phase est abandonnée (plutôt que d'attendre le
@@ -100,6 +93,28 @@ impl CoolingPhase {
                     SystemTask::Cooling(self)
                 }
             }
+        }
+    }
+}
+    pub fn create_probing_plan(&self, prob_hist: &MeasurementHistory) -> ProbingPlan {
+        match self {
+            Self::SensorCheck => todo!(),
+            Self::PreCoolingThePlate => todo!(),
+            Self::StartingIpaCirculation => todo!(),
+            Self::SaturatingAirWithIpa => todo!(),
+            Self::HighVoltage => todo!(),
+            Self::FinalCheckBeforeStabilising => todo!(),
+        }
+    }
+
+    pub fn react_to(self, current_state: &MeasurementHistory) -> SystemTask {
+        match self {
+            Self::SensorCheck => todo!(),
+            Self::PreCoolingThePlate => todo!(),
+            Self::StartingIpaCirculation => todo!(),
+            Self::SaturatingAirWithIpa => todo!(),
+            Self::HighVoltage => todo!(),
+            Self::FinalCheckBeforeStabilising => todo!(),
         }
     }
 }
