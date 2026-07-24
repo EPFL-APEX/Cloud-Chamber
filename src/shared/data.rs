@@ -7,62 +7,25 @@
 //! les interruptions sont désactivées sur le cœur courant, ce qui garantit
 //! l'atomicité de la lecture ou de l'écriture.
 //!
-//! # Pattern `Mutex<RefCell<T>>`
+//! # Convergence des branches
 //!
-//! Ce pattern permet de muter un `static` en bare-metal :
+//! `SystemTask` vit ici (emplacement canonique de la branche équipe). Ses
+//! transitions (`react_to`), codes et libellés sont implémentés dans
+//! `logic/` — validés sur matériel (tests A–D).
 //!
-//! - [`critical_section::Mutex`] protège l'accès via des sections critiques.
-//!   Sa méthode `borrow(cs)` retourne `&T`, valide uniquement pendant la
-//!   section critique (le lifetime `'cs` le garantit au niveau des types).
-//!
-//! - [`core::cell::RefCell<T>`] ajoute la mutabilité intérieure : depuis une
-//!   `&RefCell<T>`, on peut obtenir une `&mut T` via `borrow_mut()`.
-//!   C'est nécessaire car Rust n'autorise pas `&mut T` depuis un `static`.
+//! `SensorSnapshot`/`SharedState`/`SHARED` (types `Measurement<Unit>` de la
+//! branche équipe) seront réactivés avec le module `cloud_chamber_hal`
+//! (cf. lib.rs, plan de convergence) quand Core1 exécutera la SecurityLoop.
+//! La version complète est conservée dans l'historique git (branche
+//! merge-Kynan-Thomas, src/shared/data.rs). D'ici là, l'état capteurs Core0
+//! vit dans `crate::data::SystemState`, inchangé.
 
-use core::cell::RefCell;
-use critical_section::Mutex;
+use crate::logic::{cooling::CoolingPhase, stopping::StoppingPhase};
 
-use crate::{
-    cloud_chamber_hal::sensors::Measurement,
-    cloud_chamber_hal::units::{Celsius, HectoPascal, Volt},
-    config::{
-        NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER,
-    }, logic::{
-        cooling::CoolingPhase,
-        stopping::StoppingPhase,
-    }
-};
-
-/// Instantané des dernières mesures de tous les capteurs.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SensorSnapshot {
-    /// Températures mesurées, indexées par numéro de capteur.
-    pub temps: [Option<Measurement<Celsius>>; NUMBER_OF_TEMP_SENSOR],
-    /// Pressions mesurées.
-    pub press: [Option<Measurement<HectoPascal>>; NUMBER_OF_PRESSURE_SENSOR],
-    /// Tensions mesurées.
-    pub volts: [Option<Measurement<Volt>>; NUMBER_OF_VOLTMETER],
-    /// `true` si la chambre est physiquement fermée (capteur de fermeture).
-    pub is_closed: bool,
-}
-
-impl SensorSnapshot {
-    pub fn are_all_none(&self) -> bool {
-        self.temps.iter().all(Option::is_none)
-            && self.press.iter().all(Option::is_none)
-            && self.volts.iter().all(Option::is_none)
-    }
-
-    pub fn are_all_some(&self) -> bool {
-        self.temps.iter().all(Option::is_some)
-            && self.press.iter().all(Option::is_some)
-            && self.volts.iter().all(Option::is_some)
-    }
-}
-
-/// État global de la machine.
+/// État global de la machine — mêmes variantes que la branche équipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemTask {
+    /// Mode manuel : COMP/HV pilotés par l'opérateur.
     Idle,
     Cooling(CoolingPhase),
     Stabilising,
@@ -72,67 +35,5 @@ pub enum SystemTask {
 impl Default for SystemTask {
     fn default() -> Self {
         SystemTask::Idle
-    }
-}
-
-/// Données échangées entre Core1 (producteur) et Core0 (consommateur).
-pub struct SharedState {
-    pub snapshot: SensorSnapshot,
-    pub system_state: SystemTask,
-    /// Mis à `true` par Core1 quand de nouvelles données sont disponibles.
-    pub new_data: bool,
-}
-
-// ─── Point de partage global ─────────────────────────────────────────────────
-/// Static partagé entre Core0 et Core1.
-///
-/// Toujours accéder via `critical_section::with(|cs| { SHARED.borrow(cs)... })`.
-pub static SHARED: Mutex<RefCell<SharedState>> = Mutex::new(RefCell::new(SharedState {
-    snapshot: SensorSnapshot { 
-            temps: [None; NUMBER_OF_TEMP_SENSOR],
-            press: [None; NUMBER_OF_PRESSURE_SENSOR],
-            volts: [None; NUMBER_OF_VOLTMETER],
-            is_closed: false 
-    },
-    system_state: SystemTask::Idle,
-    new_data: false,
-}));
-
-
-// ─── Tests ───────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn system_task_default_is_idle() {
-        assert_eq!(SystemTask::default(), SystemTask::Idle);
-    }
-
-    #[test]
-    fn sensor_snapshot_default_is_none() {
-        let s = SensorSnapshot::default();
-        for &t in &s.temps { assert!(t.is_none()); }
-        for &p in &s.press { assert!(p.is_none()); }
-        for &v in &s.volts { assert!(v.is_none()); }
-        assert!(!s.is_closed);
-    }
-
-    #[test]
-    fn system_state_variants_are_distinct() {
-        assert_ne!(SystemTask::Idle, SystemTask::Stabilising);
-        assert_ne!(SystemTask::Idle, SystemTask::Cooling(CoolingPhase::Todo));
-        assert_ne!(
-            SystemTask::Cooling(CoolingPhase::SensorCheck),
-            SystemTask::Stopping(StoppingPhase::Todo)
-        );
-    }
-
-    #[test]
-    fn snapshot_is_copy() {
-        let a = SensorSnapshot::default();
-        let b = a; // Copy — `a` reste valide après cette ligne
-        assert_eq!(a.is_closed, b.is_closed);
     }
 }

@@ -1,7 +1,18 @@
-//! All of the logic that goes into cooling the chamber is implemented here
+//! Séquence de démarrage (refroidissement) — mêmes phases que la branche
+//! équipe, transitions implémentées et validées sur matériel (les todo!()
+//! de la branche d'origine sont remplacés par les conditions réelles).
+//!
+//! NOTE convergence : `create_probing_plan` (choix des capteurs à sonder par
+//! phase) appartient à logic/probing.rs de la branche équipe, non compilé
+//! pour l'instant — la boucle d'acquisition actuelle sonde tout à 1 Hz.
 
-use crate::{logic::probing::{MeasurementHistory, ProbingPlan}, shared::data::SystemTask};
+use crate::config::{
+    CHAMBER_TEMP_IDX, FINAL_CHECK_MS, FINAL_CHECK_TIMEOUT_MS, HV_STABILISE_TIMEOUT_MS,
+    IPA_CIRCULATION_MS, PRECOOL_TARGET_C, PRECOOL_TIMEOUT_MS, SATURATION_TARGET_C,
+    SATURATION_TIMEOUT_MS, SENSOR_CHECK_TIMEOUT_MS, STABLE_TOLERANCE_C, STABLE_WINDOW_MS,
+};
 
+use super::{PhaseCtx, SystemTask};
 
 /// Perte de capteur pendant un cycle : au-delà de ce délai sans lecture valide
 /// de la base chambre, la phase est abandonnée (plutôt que d'attendre le
@@ -50,7 +61,7 @@ impl CoolingPhase {
             // Compresseur ON, on attend que la base passe sous PRECOOL_TARGET_C.
             PreCoolingThePlate => match chamber_t {
                 Some(t) if t <= PRECOOL_TARGET_C => SystemTask::Cooling(StartingIpaCirculation),
-                _ if ctx.elapsed_ms > PRECOOL_TIMEOUT_MS => SystemTask::Idle, // n'atteint pas la cible
+                _ if ctx.elapsed_ms > PRECOOL_TIMEOUT_MS => SystemTask::Idle,
                 _ => SystemTask::Cooling(self),
             },
 
@@ -93,28 +104,6 @@ impl CoolingPhase {
                     SystemTask::Cooling(self)
                 }
             }
-        }
-    }
-}
-    pub fn create_probing_plan(&self, prob_hist: &MeasurementHistory) -> ProbingPlan {
-        match self {
-            Self::SensorCheck => todo!(),
-            Self::PreCoolingThePlate => todo!(),
-            Self::StartingIpaCirculation => todo!(),
-            Self::SaturatingAirWithIpa => todo!(),
-            Self::HighVoltage => todo!(),
-            Self::FinalCheckBeforeStabilising => todo!(),
-        }
-    }
-
-    pub fn react_to(self, current_state: &MeasurementHistory) -> SystemTask {
-        match self {
-            Self::SensorCheck => todo!(),
-            Self::PreCoolingThePlate => todo!(),
-            Self::StartingIpaCirculation => todo!(),
-            Self::SaturatingAirWithIpa => todo!(),
-            Self::HighVoltage => todo!(),
-            Self::FinalCheckBeforeStabilising => todo!(),
         }
     }
 }
