@@ -1,7 +1,7 @@
 [package]
 name = "cloud-chamber-firmware"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 build = "build.rs"
 # Binaires déclarés explicitement : les binaires de test de la branche équipe
 # (test_breaker, test_closure, ...) restent dans src/bin/ mais dépendent des
