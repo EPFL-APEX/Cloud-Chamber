@@ -1,15 +1,28 @@
-# Configuration cargo — cible RP2040 (Pico W).
+# Configuration cargo — cible par défaut RP2040 (Pico W).
 #
 # ⚠️ PRÉREQUIS : flip-link doit être installé sur chaque poste de dev :
 #     cargo install flip-link
 # (protection anti-débordement de pile, idée reprise du template de la
 # branche équipe — le débordement provoque un HardFault net au lieu de
 # corrompre silencieusement les variables en RAM. Coût runtime : zéro.)
+#
+# ── Multi-cible (review PR #20) ──────────────────────────────────────────────
+# La cible RP2350 est conservée ici pour garder le code modulaire, comme
+# demandé. Elle est déclarée mais pas active : `[build] target` reste le
+# RP2040, seul matériel validé aujourd'hui. Pour construire pour l'autre
+# puce on passe --target explicitement (alias plus bas), plutôt que de faire
+# réécrire ce fichier par build.rs : cargo lit cette configuration AVANT
+# d'exécuter les build scripts, donc une réécriture n'a jamais d'effet sur
+# le build en cours, seulement sur le suivant.
 
 [build]
 target = "thumbv6m-none-eabi"
 
+# ── RP2040 (Cortex-M0+) — cible validée sur matériel ─────────────────────────
 [target.thumbv6m-none-eabi]
+# Flash par glisser-déposer UF2 (BOOTSEL) : aucune sonde de debug requise.
+# Pour flasher avec une sonde SWD à la place :
+#   runner = "probe-rs run --chip RP2040 --protocol swd"
 runner = "elf2uf2-rs"
 rustflags = [
     "-C", "linker=flip-link",
@@ -17,3 +30,26 @@ rustflags = [
     "-C", "link-arg=-Tlink.x",
     "-C", "link-arg=-Tdefmt.x",
 ]
+
+# ── RP2350 (Cortex-M33, hard-float) — déclarée, pas encore utilisée ──────────
+# Construire pour cette cible nécessitera d'abord de réintroduire rp235x-hal
+# (cf. Cargo.toml) : le code actuel dépend de rp2040-hal 0.10.
+[target.thumbv8m.main-none-eabihf]
+rustflags = [
+    "-C", "link-arg=--nmagic",
+    "-C", "link-arg=-Tlink.x",
+    "-C", "link-arg=-Tdefmt.x",
+    "-C", "target-cpu=cortex-m33",
+]
+
+[env]
+DEFMT_LOG = "debug"
+
+[alias]
+# Construction explicite pour l'une ou l'autre puce, sans toucher à ce fichier.
+build-rp2040 = "build --target thumbv6m-none-eabi"
+build-rp2350 = "build --target thumbv8m.main-none-eabihf"
+# Tests unitaires sur la machine de dev : la cible par défaut ci-dessus est
+# une puce sans std, il faut donc forcer la cible hôte. Adapter le triplet à
+# la toolchain locale (x86_64-unknown-linux-gnu, aarch64-apple-darwin, ...).
+test-host = "test --target x86_64-pc-windows-msvc --lib"
