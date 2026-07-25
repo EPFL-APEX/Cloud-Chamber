@@ -112,3 +112,6 @@ $RECYCLE.BIN/
 
 # End of https://www.toptal.com/developers/gitignore/api/rust,visualstudiocode,macos,windows,linux
 data/
+
+# Binaires de flash — review PR #20 : seules les sources sont versionnees
+*.uf2
