@@ -1,16 +1,36 @@
-/// Driver DS18B20 via protocole 1-Wire implémenté directement (sans crate externe).
-///
-/// Timing calibré pour RP2040 @ 125 MHz avec TimerDelay :
-///   Slot lecture  : bas 2µs → relâche → attend 8µs → sample à ~10µs (< 15µs max)
-///   Slot écriture 1 : bas 6µs, haut 64µs
-///   Slot écriture 0 : bas 60µs, haut 10µs
-///   Reset : bas 480µs → relâche → attend 70µs → sample → attend 410µs
-///
-/// Compatibilité clones : si SEARCH ROM échoue (clone sans ROM search),
-/// repli automatique sur SKIP ROM pour bus mono-capteur.
+//! Driver DS18B20 via protocole 1-Wire implémenté directement (sans crate externe).
+//!
+//! # Historique de convergence
+//!
+//! Deux implémentations coexistaient :
+//! - une version RP2040-only à accès registre SIO direct, seule utilisée en
+//!   production car elle respecte l'open-drain strict et tient la fenêtre de
+//!   lecture (~10µs) sur les clones DS18B20 testés sur matériel ;
+//! - une version générique `embedded-hal` (`InputPin`/`OutputPin`), plus
+//!   portable mais qui pousse activement un niveau haut via `set_high()`,
+//!   ce qui n'est PAS de l'open-drain à moins que la broche soit déjà
+//!   configurée comme telle en amont (et qui ne tenait pas la fenêtre de
+//!   lecture sur les clones du montage).
+//!
+//! Ce fichier fusionne les deux : la structure (Resolution, erreurs typées,
+//! SKIP ROM fallback, ow_reset_long, BatchSensor/DeferredBatchSensor) vient
+//! de la version générique. Le contact avec le bus passe par [`OpenDrainPin`],
+//! un trait maison qui ne modélise que "tirer bas" / "relâcher" — jamais
+//! "pousser haut" — implémenté en accès registre direct pour RP2040 et
+//! RP2350 (cfg `rp2040`/`rp2350` posés par `build.rs`).
+//!
+//! Timing calibré pour RP2040/RP2350 avec DelayNs :
+//!   Slot lecture    : bas 2µs → relâche → attend 8µs → sample à ~10µs (< 15µs max)
+//!   Slot écriture 1 : bas 6µs, haut 64µs
+//!   Slot écriture 0 : bas 60µs, haut 10µs
+//!   Reset           : bas 480µs → relâche → attend 70µs → sample → attend 410µs
+//!   Reset prolongé  : bas 800µs (récupération des clones bloqués après un
+//!                     SEARCH ROM incomplet)
+//!
+//! Compatibilité clones : si SEARCH ROM échoue mais qu'un capteur répond au
+//! reset, repli automatique sur SKIP ROM pour bus mono-capteur.
 
 use embedded_hal::delay::DelayNs;
-use embedded_hal::digital::{InputPin, OutputPin};
 use heapless::Vec;
 
 use crate::cloud_chamber_hal::sensors::{BatchSensor, DeferredBatchSensor, Measurement};
@@ -25,6 +45,104 @@ const CMD_SKIP_ROM:      u8 = 0xCC;
 const CMD_CONVERT_T:     u8 = 0x44;
 const CMD_READ_SCRATCH:  u8 = 0xBE;
 const CMD_WRITE_SCRATCH: u8 = 0x4E;
+
+// ════════════════════════════════════════════════════════════════════════════
+// Abstraction open-drain — le cœur de la fusion
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Abstraction minimale d'une ligne 1-Wire en open-drain strict.
+///
+/// Contrairement à `embedded_hal::digital::OutputPin`, cette trait ne pousse
+/// JAMAIS activement un niveau haut : [`release`](OpenDrainPin::release) met
+/// la broche en haute impédance et laisse la résistance de tirage externe
+/// (pull-up ~4.7 kΩ) remonter la ligne. C'est le contrat que le 1-Wire exige :
+/// un maître qui forcerait le niveau haut provoquerait des collisions bus
+/// dès qu'un esclave (ou un autre maître) tire la ligne à 0 en même temps.
+pub trait OpenDrainPin {
+    /// Active la sortie, niveau figé à 0 : tire la ligne bas.
+    fn drive_low(&mut self);
+    /// Désactive la sortie (haute impédance / entrée) : relâche la ligne.
+    fn release(&mut self);
+    /// État actuel de la ligne, lu quelle que soit la direction courante.
+    fn is_low(&self) -> bool;
+}
+
+// ── Adaptateur RP2040 ──────────────────────────────────────────────────────
+#[cfg(rp2040)]
+pub mod rp2040_adapter {
+    use super::OpenDrainPin;
+    use rp2040_hal::pac;
+
+    /// Broche 1-Wire pilotée par accès direct au registre `gpio_oe` du SIO.
+    ///
+    /// `mask` est le masque de bit du GPIO (ex. `1 << 15` pour GP15). Le GPIO
+    /// doit avoir été configuré au préalable en sortie niveau bas puis remis
+    /// en haute impédance (séquence d'init côté appelant), exactement comme
+    /// pour un usage direct de `pac::SIO`.
+    pub struct Rp2040OpenDrain {
+        mask: u32,
+    }
+
+    impl Rp2040OpenDrain {
+        pub fn new(mask: u32) -> Self {
+            Self { mask }
+        }
+    }
+
+    impl OpenDrainPin for Rp2040OpenDrain {
+        fn drive_low(&mut self) {
+            unsafe {
+                (*pac::SIO::ptr()).gpio_oe_set().write(|w| w.bits(self.mask));
+            }
+        }
+        fn release(&mut self) {
+            unsafe {
+                (*pac::SIO::ptr()).gpio_oe_clr().write(|w| w.bits(self.mask));
+            }
+        }
+        fn is_low(&self) -> bool {
+            unsafe { (*pac::SIO::ptr()).gpio_in().read().bits() & self.mask == 0 }
+        }
+    }
+}
+
+// ── Adaptateur RP2350 ──────────────────────────────────────────────────────
+#[cfg(rp2350)]
+pub mod rp2350_adapter {
+    use super::OpenDrainPin;
+    use rp235x_hal::pac;
+
+    /// Équivalent RP2350 de [`super::rp2040_adapter::Rp2040OpenDrain`].
+    ///
+    /// Le bloc SIO du RP2350 conserve les mêmes champs `gpio_oe_set` /
+    /// `gpio_oe_clr` / `gpio_in` que le RP2040 pour le premier banc de GPIO ;
+    /// à réviser si un GPIO du banc étendu QSPI est utilisé un jour ici.
+    pub struct Rp2350OpenDrain {
+        mask: u32,
+    }
+
+    impl Rp2350OpenDrain {
+        pub fn new(mask: u32) -> Self {
+            Self { mask }
+        }
+    }
+
+    impl OpenDrainPin for Rp2350OpenDrain {
+        fn drive_low(&mut self) {
+            unsafe {
+                (*pac::SIO::ptr()).gpio_oe_set().write(|w| w.bits(self.mask));
+            }
+        }
+        fn release(&mut self) {
+            unsafe {
+                (*pac::SIO::ptr()).gpio_oe_clr().write(|w| w.bits(self.mask));
+            }
+        }
+        fn is_low(&self) -> bool {
+            unsafe { (*pac::SIO::ptr()).gpio_in().read().bits() & self.mask == 0 }
+        }
+    }
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Résolution
@@ -110,34 +228,34 @@ pub enum Ds18b20Error {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Primitives 1-Wire
+// Primitives 1-Wire — génériques sur OpenDrainPin, plus sur InputPin+OutputPin
 // ════════════════════════════════════════════════════════════════════════════
 
 fn ow_reset<P, D>(pin: &mut P, delay: &mut D) -> bool
-where P: InputPin + OutputPin, D: DelayNs,
+where P: OpenDrainPin, D: DelayNs,
 {
-    pin.set_high().ok();
+    pin.release();
     delay.delay_us(5);
-    pin.set_low().ok();
+    pin.drive_low();
     delay.delay_us(480);
-    pin.set_high().ok();
+    pin.release();
     delay.delay_us(70);
-    let presence = pin.is_low().unwrap_or(false);
+    let presence = pin.is_low();
     delay.delay_us(410);
     presence
 }
 
 fn ow_write_bit<P, D>(pin: &mut P, delay: &mut D, bit: bool)
-where P: OutputPin, D: DelayNs,
+where P: OpenDrainPin, D: DelayNs,
 {
-    pin.set_low().ok();
+    pin.drive_low();
     if bit {
         delay.delay_us(6);
-        pin.set_high().ok();
+        pin.release();
         delay.delay_us(64);
     } else {
         delay.delay_us(60);
-        pin.set_high().ok();
+        pin.release();
         delay.delay_us(10);
     }
 }
@@ -145,38 +263,38 @@ where P: OutputPin, D: DelayNs,
 /// Reset prolongé (800µs) pour forcer les clones à sortir d'un état bloqué
 /// (ex. après une séquence SEARCH ROM incomplète).
 fn ow_reset_long<P, D>(pin: &mut P, delay: &mut D)
-where P: InputPin + OutputPin, D: DelayNs,
+where P: OpenDrainPin, D: DelayNs,
 {
-    pin.set_high().ok();
+    pin.release();
     delay.delay_us(5);
-    pin.set_low().ok();
+    pin.drive_low();
     delay.delay_us(800); // 800µs au lieu de 480µs → force la sortie de tout état interne
-    pin.set_high().ok();
+    pin.release();
     delay.delay_us(500); // Attente de récupération allongée
 }
 
 /// Sample à ~10µs depuis le début du slot.
 /// Le DS18B20 tient la ligne basse MAX 15µs pour un bit '0' → on est dans la fenêtre.
 fn ow_read_bit<P, D>(pin: &mut P, delay: &mut D) -> bool
-where P: InputPin + OutputPin, D: DelayNs,
+where P: OpenDrainPin, D: DelayNs,
 {
-    pin.set_low().ok();
+    pin.drive_low();
     delay.delay_us(2);
-    pin.set_high().ok();
+    pin.release();
     delay.delay_us(8);
-    let bit = pin.is_high().unwrap_or(true);
+    let bit = !pin.is_low();
     delay.delay_us(50);
     bit
 }
 
 fn ow_write_byte<P, D>(pin: &mut P, delay: &mut D, byte: u8)
-where P: OutputPin, D: DelayNs,
+where P: OpenDrainPin, D: DelayNs,
 {
     for i in 0..8 { ow_write_bit(pin, delay, (byte >> i) & 1 != 0); }
 }
 
 fn ow_read_byte<P, D>(pin: &mut P, delay: &mut D) -> u8
-where P: InputPin + OutputPin, D: DelayNs,
+where P: OpenDrainPin, D: DelayNs,
 {
     let mut byte = 0u8;
     for i in 0..8 { if ow_read_bit(pin, delay) { byte |= 1 << i; } }
@@ -210,7 +328,7 @@ fn search_step<P, D>(
     last_discrepancy:  &mut u8,
     last_device_flag:  &mut bool,
 ) -> bool
-where P: InputPin + OutputPin, D: DelayNs,
+where P: OpenDrainPin, D: DelayNs,
 {
     if *last_device_flag { return false; }
     if !ow_reset(pin, delay) {
@@ -275,7 +393,7 @@ pub struct Ds18b20Bus<P> {
     sensors: Vec<RomCode, NUMBER_OF_TEMP_SENSOR>,
 }
 
-impl<P: InputPin + OutputPin> Ds18b20Bus<P> {
+impl<P: OpenDrainPin> Ds18b20Bus<P> {
     pub fn new(pin: P) -> Self {
         Self { pin, sensors: Vec::new() }
     }
@@ -409,7 +527,7 @@ pub struct Ds18b20Sensors<P, D, C> {
     resolution: Resolution,
 }
 
-impl<P: InputPin + OutputPin, D: DelayNs, C: MonotonicTimer> Ds18b20Sensors<P, D, C> {
+impl<P: OpenDrainPin, D: DelayNs, C: MonotonicTimer> Ds18b20Sensors<P, D, C> {
     /// Crée le wrapper et configure la résolution de tous les capteurs déjà
     /// découverts via `Ds18b20Bus::discover()`.
     pub fn new(
@@ -431,8 +549,8 @@ impl<P: InputPin + OutputPin, D: DelayNs, C: MonotonicTimer> Ds18b20Sensors<P, D
     }
 }
 
-impl<P: InputPin + OutputPin, D: DelayNs, C: MonotonicTimer>
-    BatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR> for Ds18b20Sensors<P, D, C>
+impl<P: OpenDrainPin, D: DelayNs, C: MonotonicTimer>
+BatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR> for Ds18b20Sensors<P, D, C>
 {
     type Error = Ds18b20Error;
 
@@ -445,8 +563,8 @@ impl<P: InputPin + OutputPin, D: DelayNs, C: MonotonicTimer>
     }
 }
 
-impl<P: InputPin + OutputPin, D: DelayNs, C: MonotonicTimer>
-    DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR> for Ds18b20Sensors<P, D, C>
+impl<P: OpenDrainPin, D: DelayNs, C: MonotonicTimer>
+DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR> for Ds18b20Sensors<P, D, C>
 {
     fn start_conversion(&mut self) -> Result<(), Self::Error> {
         self.bus.start_conversion_broadcast(&mut self.delay)

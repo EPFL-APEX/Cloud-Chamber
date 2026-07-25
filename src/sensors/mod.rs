@@ -4,7 +4,6 @@
 /// les traits définissent les interfaces, les structs concrètes les implémentent.
 
 pub mod ds18b20;
-pub mod onewire;
 pub mod bme280;
 pub mod abp2;
 
