@@ -53,3 +53,4 @@ build-rp2350 = "build --target thumbv8m.main-none-eabihf"
 # une puce sans std, il faut donc forcer la cible hôte. Adapter le triplet à
 # la toolchain locale (x86_64-unknown-linux-gnu, aarch64-apple-darwin, ...).
 test-host = "test --target x86_64-pc-windows-msvc --lib"
+test-host-linux = "test --target x86_64-unknown-linux-gnu --lib"

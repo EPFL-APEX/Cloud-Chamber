@@ -1,12 +1,8 @@
 [package]
-name = "cloud-chamber-firmware"
-version = "0.1.0"
 edition = "2024"
-build = "build.rs"
-# Binaires déclarés explicitement : les binaires de test de la branche équipe
-# (test_breaker, test_closure, ...) restent dans src/bin/ mais dépendent des
-# modules cloud_chamber_hal/drivers pas encore réactivés — ils seront ajoutés
-# ici au fur et à mesure de la convergence.
+name = "Cloud-Chamber"
+version = "0.1.0"
+
 autobins = false
 
 [lib]
@@ -32,50 +28,76 @@ path = "src/bin/test_display.rs"
 name = "test_screen"
 path = "src/bin/test_screen.rs"
 
+license = "MIT or Apache-2.0"
+
+[build-dependencies]
+regex = "1.13.0"
+
+[features]
+charts = ["dep:embedded-charts"]
+
 [dependencies]
-# HAL RP2040 — Rust stable, pas d'Embassy
-rp2040-hal    = { version = "0.10", features = ["rt", "critical-section-impl"] }
-rp2040-boot2  = "0.3"
-
-# 1-Wire / DS18B20 (même crate que le projet partenaire)
-onewire = "0.4"
-
-# USB CDC série sans Embassy
-usb-device  = "0.3"
-usbd-serial = "0.2"
-
-# Traits HAL embarqués (bloquants)
-embedded-hal = "1.0"
-
-# Cortex-M runtime
-cortex-m    = { version = "0.7" }
+cortex-m = "0.7"
 cortex-m-rt = "0.7"
-
-# Synchronisation no_std (remplace embassy_sync)
+embedded-hal = "1.0"
+embedded-time = "0.12.1"
+defmt = "1.1"
+defmt-rtt = "1.3"
+# Partage de données inter-cœurs sans allocation heap
 critical-section = "1.1"
-
-# Utilitaires
-heapless   = "0.8"
-defmt      = "0.3"
-defmt-rtt  = "0.4"
-panic-halt = "0.2"
-
-mipidsi           = "0.9"
+heapless = "0.9"
+# Bibliothèque de rendu graphique embarqué (no_std, trait DrawTarget)
 embedded-graphics = "0.8"
+embedded-charts = { version = "0.3.0", default-features = false, features = ["floating-point", "animations", "color-support"], optional = true}
+tinybmp = "0.7.0"
+ili9341 = "0.6"
+
+# Données
+num_enum = { version = "0.7", default-features = false }
+
+
+#Kynan dep
+mipidsi           = "0.9"
 embedded-hal-bus  = "0.2"
 portable-atomic   = { version = "1", features = ["critical-section"] }
 libm              = "0.2"
 
-# ── Dépendances de la branche équipe, à réintroduire avec leurs modules ──────
-# (cloud_chamber_hal / drivers / ui — cf. lib.rs, plan de convergence)
-# embedded-time = "0.12.1"
-# embedded-charts = { version = "0.3.0", default-features = false, optional = true }
-# tinybmp = "0.7.0"
-# ili9341 = "0.6"
-# num_enum = { version = "0.7", default-features = false }
-# rp235x-hal (RP2350) : à réintroduire avec le build.rs multi-cibles
+# USB CDC série sans Embassy
+usb-device  = "0.3"
+usbd-serial = "0.2"
+panic-halt = { version = "1.0.0" }
+
+[dev-dependencies]
+# Simulation de l'afficheur ILI9341 sur desktop pour tester l'UI sans matériel.
+# default-features = false → pas besoin de SDL2 pour les tests unitaires.
+# Pour lancer l'exemple avec fenêtre SDL2 : activer la feature "with-sdl"
+embedded-graphics-simulator = { version = "0.8", default-features = false }
+
+# Fournit une implémentation de critical_section basée sur std::sync::Mutex
+# pour les builds sur desktop (cargo test, cargo run --example).
+# Sur les cibles embarquées, cette entrée est ignorée (cfg non satisfait).
+[target.'cfg(not(any(target_arch = "arm", target_arch = "riscv32")))'.dev-dependencies]
+critical-section = { version = "1.1", features = ["std"] }
+
+[target.'cfg( target_arch = "arm" )'.dependencies]
+panic-probe = { version = "1", features = ["print-defmt"] }
+
+[target.'cfg( target_arch = "riscv32" )'.dependencies]
+
+[target.thumbv6m-none-eabi.dependencies]
+rp2040-boot2 = "0.3"
+rp2040-hal = { version = "0.12", features = ["rt", "critical-section-impl"] }
+usb-device = "0.3"
+usbd-serial = "0.2"
+
+[target.riscv32imac-unknown-none-elf.dependencies]
+rp235x-hal = { version = "0.4", features = ["rt", "critical-section-impl"] }
+
+[target."thumbv8m.main-none-eabihf".dependencies]
+rp235x-hal = { version = "0.4", features = ["rt", "critical-section-impl"] }
 
 [profile.release]
 debug     = 2
 lto       = true
 opt-level = "s"
+
