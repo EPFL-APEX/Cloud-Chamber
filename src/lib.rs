@@ -3,6 +3,9 @@
 // utilisés dans les binaires de test.
 #![allow(dead_code)]
 
+/// Liaison série USB avec l'hôte : transport, commandes, télémétrie.
+pub mod comm;
+
 /// Configuration centrale (broches, adresses, seuils, timings, phases).
 pub mod config;
 

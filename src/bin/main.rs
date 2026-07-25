@@ -26,16 +26,15 @@ use embedded_hal::delay::DelayNs;
 use usb_device::{class_prelude::*, prelude::*};
 use usbd_serial::SerialPort;
 
-/// Port série USB avec buffers dédiés — RX 128 o, TX 512 o (cf. new_with_store).
-type Serial<'a> = SerialPort<'a, hal::usb::UsbBus, [u8; 128], [u8; 512]>;
 use heapless::String;
 
 use cloud_chamber_firmware::{
+    comm::{handle_command, keepalive, publish_state, usb_write},
     control::{controller::Controller, output::ControlOutput, target::TargetState},
     data::SystemState,
     logic::history::MeasurementHistory,
-    sensors::bme280::Bme280Driver,
-    ui::screen_driver,
+    sensors::{bme280::Bme280Driver, onewire::{self, OwSearch}},
+    ui::{screen_driver, touch},
 };
 
 use mipidsi::{Builder, interface::SpiInterface, models::ILI9341Rgb565,
@@ -73,380 +72,7 @@ impl DelayNs for CortexDelay {
     fn delay_ns(&mut self, ns: u32) { cortex_m::asm::delay(ns / 32 + 1); }
 }
 
-// ── Fonctions 1-Wire ──────────────────────────────────────────────────────────
-#[inline(always)]
-fn ow_wait(timer: &hal::Timer, us: u64) {
-    let end = timer.get_counter().ticks() + us;
-    while timer.get_counter().ticks() < end { cortex_m::asm::nop(); }
-}
 
-fn ow_reset(timer: &hal::Timer, mask: u32) -> bool {
-    unsafe {
-        let sio = &*pac::SIO::ptr();
-        sio.gpio_oe_clr().write(|w| w.bits(mask)); ow_wait(timer, 5);
-        sio.gpio_oe_set().write(|w| w.bits(mask)); ow_wait(timer, 480);
-        sio.gpio_oe_clr().write(|w| w.bits(mask)); ow_wait(timer, 70);
-        let presence = sio.gpio_in().read().bits() & mask == 0;
-        ow_wait(timer, 410);
-        presence
-    }
-}
-
-// Briques bit-level (base pour SEARCH ROM)
-fn ow_write_bit(timer: &hal::Timer, mask: u32, bit: bool) {
-    unsafe {
-        let sio = &*pac::SIO::ptr();
-        sio.gpio_oe_set().write(|w| w.bits(mask));
-        if bit {
-            ow_wait(timer, 6);
-            sio.gpio_oe_clr().write(|w| w.bits(mask));
-            ow_wait(timer, 64);
-        } else {
-            ow_wait(timer, 60);
-            sio.gpio_oe_clr().write(|w| w.bits(mask));
-            ow_wait(timer, 10);
-        }
-    }
-}
-
-fn ow_read_bit(timer: &hal::Timer, mask: u32) -> bool {
-    unsafe {
-        let sio = &*pac::SIO::ptr();
-        sio.gpio_oe_set().write(|w| w.bits(mask)); ow_wait(timer, 2);
-        sio.gpio_oe_clr().write(|w| w.bits(mask)); ow_wait(timer, 8);
-        let bit = sio.gpio_in().read().bits() & mask != 0;
-        ow_wait(timer, 50);
-        bit
-    }
-}
-
-fn ow_write_byte(timer: &hal::Timer, mask: u32, byte: u8) {
-    for i in 0..8u32 { ow_write_bit(timer, mask, (byte >> i) & 1 == 1); }
-}
-
-fn ow_read_byte(timer: &hal::Timer, mask: u32) -> u8 {
-    let mut b = 0u8;
-    for i in 0..8u32 { if ow_read_bit(timer, mask) { b |= 1 << i; } }
-    b
-}
-
-// CRC-8 Dallas / Maxim (polynôme réfléchi 0x8C) — utilisé pour ROM et scratchpad
-fn crc8(data: &[u8]) -> u8 {
-    let mut c = 0u8;
-    for &b in data {
-        let mut x = b;
-        for _ in 0..8 { let m=(c^x)&1; c>>=1; if m!=0{c^=0x8C;} x>>=1; }
-    }
-    c
-}
-
-// ── SEARCH ROM — algorithme Dallas AN187 ─────────────────────────────────────
-struct OwSearch { last_discrepancy: u8, last_device_flag: bool, rom: [u8; 8] }
-
-impl OwSearch {
-    const fn new() -> Self {
-        Self { last_discrepancy: 0, last_device_flag: false, rom: [0u8; 8] }
-    }
-
-    fn next(&mut self, timer: &hal::Timer, mask: u32) -> Option<[u8; 8]> {
-        if self.last_device_flag { return None; }
-        if !ow_reset(timer, mask) {
-            self.last_discrepancy = 0;
-            self.last_device_flag = false;
-            return None;
-        }
-        ow_write_byte(timer, mask, 0xF0); // SEARCH ROM
-
-        let mut last_zero = 0u8;
-        let mut bit_number = 1u8;
-        for byte_idx in 0..8usize {
-            for bit_shift in 0..8u8 {
-                let id_bit  = ow_read_bit(timer, mask);
-                let cmp_bit = ow_read_bit(timer, mask);
-                if id_bit && cmp_bit { return None; } // erreur bus
-
-                let dir = if id_bit != cmp_bit {
-                    id_bit
-                } else {
-                    // discordance : suivre le chemin précédent ou choisir 0
-                    if bit_number < self.last_discrepancy {
-                        (self.rom[byte_idx] >> bit_shift) & 1 == 1
-                    } else {
-                        bit_number == self.last_discrepancy
-                    }
-                };
-
-                if !id_bit && !cmp_bit && !dir { last_zero = bit_number; }
-                if dir { self.rom[byte_idx] |= 1 << bit_shift; }
-                else   { self.rom[byte_idx] &= !(1 << bit_shift); }
-                ow_write_bit(timer, mask, dir);
-                bit_number += 1;
-            }
-        }
-        self.last_discrepancy = last_zero;
-        self.last_device_flag = last_zero == 0;
-        Some(self.rom)
-    }
-}
-
-// ── USB ───────────────────────────────────────────────────────────────────────
-// Écriture bloquante bornée : le buffer TX de usbd-serial (128 o) est plus petit
-// qu'une ligne STATE (~140 o), il faut donc poller pour le drainer entre deux
-// écritures partielles. Le deadline de 10 ms évite de bloquer la boucle de
-// contrôle si l'hôte ne lit pas (terminal fermé).
-fn usb_write(
-    timer:   &hal::Timer,
-    usb_dev: &mut UsbDevice<hal::usb::UsbBus>,
-    serial:  &mut Serial<'_>,
-    data:    &[u8],
-) {
-    let deadline = timer.get_counter().ticks() + 10_000;
-    let mut pos = 0;
-    while pos < data.len() {
-        match serial.write(&data[pos..]) {
-            Ok(n) => pos += n,
-            Err(UsbError::WouldBlock) => {
-                usb_dev.poll(&mut [serial]);
-                if timer.get_counter().ticks() >= deadline { break; }
-            }
-            Err(_) => break,
-        }
-    }
-}
-
-fn keepalive(timer: &hal::Timer, ms: u64,
-             usb_dev: &mut UsbDevice<hal::usb::UsbBus>,
-             serial:  &mut Serial<'_>) {
-    let end = timer.get_counter().ticks() + ms * 1_000;
-    while timer.get_counter().ticks() < end { usb_dev.poll(&mut [serial]); }
-}
-
-// ── Parsing float no_std ──────────────────────────────────────────────────────
-fn parse_f32(s: &str) -> Option<f32> {
-    let s = s.trim();
-    let (neg, s) = if s.starts_with('-') { (true, &s[1..]) } else { (false, s) };
-    let mut int_p: f32 = 0.0;
-    let mut frac_p: f32 = 0.0;
-    let mut frac_div: f32 = 1.0;
-    let mut in_frac = false;
-    if s.is_empty() { return None; }
-    for c in s.chars() {
-        match c {
-            '0'..='9' => {
-                let d = (c as u8 - b'0') as f32;
-                if in_frac { frac_div *= 10.0; frac_p += d / frac_div; }
-                else { int_p = int_p * 10.0 + d; }
-            }
-            '.' => { if in_frac { return None; } in_frac = true; }
-            _ => return None,
-        }
-    }
-    let v = int_p + frac_p;
-    Some(if neg { -v } else { v })
-}
-
-// ── Parser de commandes ───────────────────────────────────────────────────────
-fn handle_command(
-    cmd:     &str,
-    target:  &mut TargetState,
-    state:   &mut SystemState,
-    ctrl:    &mut Controller,
-    timer:   &hal::Timer,
-    usb_dev: &mut UsbDevice<hal::usb::UsbBus>,
-    serial:  &mut Serial<'_>,
-) {
-    let cmd  = cmd.trim();
-    let (name, rest) = cmd.split_once(' ').unwrap_or((cmd, ""));
-    let rest = rest.trim();
-    let now_ms = timer.get_counter().ticks() / 1_000;
-
-    match name {
-        "CYCLE" => match rest {
-            "1" => {
-                // Le cycle automatique implique l'autorisation compresseur.
-                state.compressor_allowed = true;
-                if ctrl.request_start(now_ms) {
-                    usb_write(timer, usb_dev, serial, b"OK CYCLE=1\r\n");
-                } else if ctrl.is_tripped() {
-                    usb_write(timer, usb_dev, serial,
-                        b"ERR CYCLE refuse - disjoncteur verrouille (CYCLE 0 pour rearmer)\r\n");
-                } else if ctrl.phase_code() >= 8 {
-                    usb_write(timer, usb_dev, serial,
-                        b"ERR CYCLE refuse - arret en cours (equilibrage anti court-cycle, ~60 s)\r\n");
-                } else {
-                    usb_write(timer, usb_dev, serial,
-                        b"ERR CYCLE refuse - cycle deja en cours\r\n");
-                }
-            }
-            "0" => {
-                if ctrl.request_stop(now_ms) {
-                    usb_write(timer, usb_dev, serial, b"OK CYCLE=0\r\n");
-                } else {
-                    usb_write(timer, usb_dev, serial, b"OK CYCLE=0 (deja inactif)\r\n");
-                }
-            }
-            _ => usb_write(timer, usb_dev, serial, b"ERR CYCLE needs 0 or 1\r\n"),
-        },
-        "TARGET" => match parse_f32(rest) {
-            Some(v) => {
-                target.chamber_temp_c = v;
-                let mut r: String<32> = String::new();
-                let neg = v < 0.0; let abs = if neg { -v } else { v };
-                let _ = write!(r, "OK TARGET={}{}.{}\r\n",
-                    if neg {"-"} else {""}, abs as i32, ((abs % 1.0)*10.0) as u32);
-                usb_write(timer, usb_dev, serial,r.as_bytes());
-            }
-            None => usb_write(timer, usb_dev, serial,b"ERR TARGET needs a float\r\n"),
-        },
-        "HV" => match rest {
-            "1" => { target.high_voltage_enabled = true;  usb_write(timer, usb_dev, serial,b"OK HV=1\r\n"); }
-            "0" => { target.high_voltage_enabled = false; usb_write(timer, usb_dev, serial,b"OK HV=0\r\n"); }
-            _   => usb_write(timer, usb_dev, serial,b"ERR HV needs 0 or 1\r\n"),
-        },
-        "COMP" => match rest {
-            "1" => { state.compressor_allowed = true;  usb_write(timer, usb_dev, serial,b"OK COMP=1\r\n"); }
-            "0" => { state.compressor_allowed = false; usb_write(timer, usb_dev, serial,b"OK COMP=0\r\n"); }
-            _   => usb_write(timer, usb_dev, serial,b"ERR COMP needs 0 or 1\r\n"),
-        },
-        _ => usb_write(timer, usb_dev, serial,b"ERR unknown command\r\n"),
-    }
-}
-
-// ── Publication d'état ────────────────────────────────────────────────────────
-fn publish_state(
-    timer:    &hal::Timer,
-    usb_dev:  &mut UsbDevice<hal::usb::UsbBus>,
-    serial:   &mut Serial<'_>,
-    state:    &SystemState,
-    output:   &ControlOutput,
-    target:   &TargetState,
-    phase:    u8,
-    uptime_s: u64,
-) {
-    let mut msg: String<320> = String::new();
-    let _ = write!(msg, "STATE ");
-
-    for i in 0..5usize {
-        let ds = &state.temperatures[i];
-        if ds.valid {
-            let neg = ds.value < 0.0; let abs = if neg { -ds.value } else { ds.value };
-            let _ = write!(msg, "ds{}={}{}.{:02} ", i, if neg {"-"} else {""}, abs as i32, ((abs%1.0)*100.0) as u32);
-        } else {
-            let _ = write!(msg, "ds{}=-- ", i);
-        }
-    }
-
-    let bme = &state.bme280;
-    if bme.valid {
-        let tn = bme.temp_c < 0.0; let ta = if tn { -bme.temp_c } else { bme.temp_c };
-        let _ = write!(msg, "bt={}{}.{:02} bp={}.{} bh={}.{} ",
-            if tn {"-"} else {""}, ta as i32, ((ta%1.0)*100.0) as u32,
-            bme.pressure_hpa as u32, ((bme.pressure_hpa%1.0)*10.0) as u32,
-            bme.humidity_pct as u32, ((bme.humidity_pct%1.0)*10.0) as u32);
-    } else {
-        let _ = write!(msg, "bt=-- bp=-- bh=-- ");
-    }
-
-    let t = target.chamber_temp_c;
-    let tn = t < 0.0; let ta = if tn { -t } else { t };
-    let _ = write!(msg, "tg={}{}.{} co={} ca={} hv={} ph={} iso={}.{:02} sf={} up={}\r\n",
-        if tn {"-"} else {""}, ta as i32, ((ta%1.0)*10.0) as u32,
-        output.compressor as u8,
-        state.compressor_allowed as u8,
-        output.high_voltage as u8,
-        phase,
-        output.isopropanol_heater_duty as i32,
-        ((output.isopropanol_heater_duty%1.0)*100.0) as u32,
-        output.safety_override as u8,
-        uptime_s);
-
-    usb_write(timer, usb_dev, serial,msg.as_bytes());
-}
-
-// ── XPT2046 bit-bang ──────────────────────────────────────────────────────────
-// DCLK max du XPT2046 = 2 MHz : l'ADC SAR convertit PENDANT les clocks de
-// lecture. Bit-bangé sans délai, le RP2040 dépasse cette limite → conversions
-// fausses (X/Y ≈ 0 constants alors que Z1 semble plausible). On force ~500 kHz.
-#[inline(always)]
-fn xpt_tick() { cortex_m::asm::delay(125); } // ~1 µs @125 MHz → DCLK ≈ 500 kHz
-
-// Envoie une commande 8 bits et lit 16 bits de réponse.
-// Retourne les 12 bits de données : (val >> 3) & 0x0FFF (protocole XPT2046).
-fn xpt2046_read(
-    clk:  &mut impl embedded_hal::digital::OutputPin,
-    din:  &mut impl embedded_hal::digital::OutputPin,
-    dout: &mut impl embedded_hal::digital::InputPin,
-    cmd:  u8,
-) -> u16 {
-    for i in (0..8u8).rev() {
-        if (cmd >> i) & 1 == 1 { din.set_high().ok(); } else { din.set_low().ok(); }
-        xpt_tick();
-        clk.set_high().ok();
-        xpt_tick();
-        clk.set_low().ok();
-    }
-    din.set_low().ok();
-    let mut val = 0u16;
-    for _ in 0..16u8 {
-        clk.set_high().ok();
-        xpt_tick();
-        val = (val << 1) | dout.is_high().unwrap_or(false) as u16;
-        clk.set_low().ok();
-        xpt_tick();
-    }
-    (val >> 3) & 0x0FFF
-}
-
-// Lecture d'un canal avec temps d'établissement : la 1re conversion après le
-// changement de drivers du panneau est jetée, puis moyenne de 2 lectures.
-fn xpt2046_read_ch(
-    clk:  &mut impl embedded_hal::digital::OutputPin,
-    din:  &mut impl embedded_hal::digital::OutputPin,
-    dout: &mut impl embedded_hal::digital::InputPin,
-    cmd:  u8,
-) -> u16 {
-    let _ = xpt2046_read(clk, din, dout, cmd); // dummy : polarise le panneau
-    let a  = xpt2046_read(clk, din, dout, cmd);
-    let b  = xpt2046_read(clk, din, dout, cmd);
-    (a + b) / 2
-}
-
-// Lit Z1, X, Y bruts — pour diagnostic uniquement.
-fn touch_raw(
-    clk:  &mut impl embedded_hal::digital::OutputPin,
-    din:  &mut impl embedded_hal::digital::OutputPin,
-    dout: &mut impl embedded_hal::digital::InputPin,
-    cs:   &mut impl embedded_hal::digital::OutputPin,
-) -> (u16, u16, u16) {
-    cs.set_low().ok();
-    let z1 = xpt2046_read(clk, din, dout, 0xB1);
-    let x  = xpt2046_read_ch(clk, din, dout, 0xD1);
-    let y  = xpt2046_read_ch(clk, din, dout, 0x91);
-    xpt2046_read(clk, din, dout, 0x00);
-    cs.set_high().ok();
-    (z1, x, y)
-}
-
-// Lit X et Y si l'écran est touché (Z1 > 50), sinon None.
-fn touch_read(
-    clk:  &mut impl embedded_hal::digital::OutputPin,
-    din:  &mut impl embedded_hal::digital::OutputPin,
-    dout: &mut impl embedded_hal::digital::InputPin,
-    cs:   &mut impl embedded_hal::digital::OutputPin,
-) -> Option<(u16, u16)> {
-    cs.set_low().ok();
-    let z1 = xpt2046_read(clk, din, dout, 0xB1); // canal pression Z1
-    if z1 < 50 {
-        cs.set_high().ok();
-        return None;
-    }
-    let x = xpt2046_read_ch(clk, din, dout, 0xD1); // canal X
-    let y = xpt2046_read_ch(clk, din, dout, 0x91); // canal Y
-    xpt2046_read(clk, din, dout, 0x00);            // mise en veille
-    cs.set_high().ok();
-    if x < 100 || x > 3950 || y < 100 || y > 3950 { return None; }
-    Some((x, y))
-}
 
 // ── Point d'entrée ────────────────────────────────────────────────────────────
 #[hal::entry]
@@ -515,12 +141,12 @@ fn main() -> ! {
         sio.gpio_oe_clr().write(|w| w.bits(OW_MASK)); // high-Z = idle open-drain
     }
     // Configurer résolution 12-bit sur tous (SKIP ROM = broadcast)
-    if ow_reset(&timer, OW_MASK) {
-        ow_write_byte(&timer, OW_MASK, 0xCC); // SKIP ROM
-        ow_write_byte(&timer, OW_MASK, 0x4E); // WRITE SCRATCHPAD
-        ow_write_byte(&timer, OW_MASK, 0x55); // TH
-        ow_write_byte(&timer, OW_MASK, 0x05); // TL
-        ow_write_byte(&timer, OW_MASK, 0x7F); // 12-bit (0.0625 °C, conversion 750 ms)
+    if onewire::ow_reset(&timer, OW_MASK) {
+        onewire::ow_write_byte(&timer, OW_MASK, 0xCC); // SKIP ROM
+        onewire::ow_write_byte(&timer, OW_MASK, 0x4E); // WRITE SCRATCHPAD
+        onewire::ow_write_byte(&timer, OW_MASK, 0x55); // TH
+        onewire::ow_write_byte(&timer, OW_MASK, 0x05); // TL
+        onewire::ow_write_byte(&timer, OW_MASK, 0x7F); // 12-bit (0.0625 °C, conversion 750 ms)
     }
     // ROM codes découverts après USB ready (section plus bas)
     let mut rom_codes = [[0u8; 8]; 5];
@@ -532,14 +158,14 @@ fn main() -> ! {
         const SDA: u32 = 1 << 4; const SCL: u32 = 1 << 5;
         sio.gpio_out_set().write(|w| w.bits(SDA | SCL));
         sio.gpio_oe_set().write(|w|  w.bits(SDA | SCL));
-        ow_wait(&timer, 10);
+        onewire::ow_wait(&timer, 10);
         for _ in 0..9u8 {
-            sio.gpio_out_clr().write(|w| w.bits(SCL)); ow_wait(&timer, 5);
-            sio.gpio_out_set().write(|w| w.bits(SCL)); ow_wait(&timer, 5);
+            sio.gpio_out_clr().write(|w| w.bits(SCL)); onewire::ow_wait(&timer, 5);
+            sio.gpio_out_set().write(|w| w.bits(SCL)); onewire::ow_wait(&timer, 5);
         }
-        sio.gpio_out_clr().write(|w| w.bits(SDA)); ow_wait(&timer, 5);
-        sio.gpio_out_set().write(|w| w.bits(SDA)); ow_wait(&timer, 10);
-        sio.gpio_oe_clr().write(|w| w.bits(SDA | SCL)); ow_wait(&timer, 100);
+        sio.gpio_out_clr().write(|w| w.bits(SDA)); onewire::ow_wait(&timer, 5);
+        sio.gpio_out_set().write(|w| w.bits(SDA)); onewire::ow_wait(&timer, 10);
+        sio.gpio_oe_clr().write(|w| w.bits(SDA | SCL)); onewire::ow_wait(&timer, 100);
     }
 
     use rp2040_hal::fugit::RateExtU32;
@@ -579,7 +205,7 @@ fn main() -> ! {
 
     // Diagnostic : état du bus au repos (doit être HIGH grâce au pull-up)
     unsafe { (&*pac::SIO::ptr()).gpio_oe_clr().write(|w| w.bits(OW_MASK)); }
-    ow_wait(&timer, 500);
+    onewire::ow_wait(&timer, 500);
     let bus_idle_high = unsafe { (&*pac::SIO::ptr()).gpio_in().read().bits() & OW_MASK != 0 };
     usb_write(&timer, &mut usb_dev, &mut serial,if bus_idle_high {
         b"INFO 1W idle HIGH (pull-up OK)\r\n"
@@ -588,18 +214,18 @@ fn main() -> ! {
     });
 
     // Diagnostic : READ ROM (commande 0x33 — valide uniquement si 1 capteur)
-    if bus_idle_high && ow_reset(&timer, OW_MASK) {
-        ow_write_byte(&timer, OW_MASK, 0x33); // READ ROM
+    if bus_idle_high && onewire::ow_reset(&timer, OW_MASK) {
+        onewire::ow_write_byte(&timer, OW_MASK, 0x33); // READ ROM
         let mut rr = [0u8; 8];
-        for b in rr.iter_mut() { *b = ow_read_byte(&timer, OW_MASK); }
+        for b in rr.iter_mut() { *b = onewire::ow_read_byte(&timer, OW_MASK); }
         let mut s: String<80> = String::new();
         let _ = write!(s, "INFO READ_ROM {:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X} crc={}\r\n",
-            rr[0],rr[1],rr[2],rr[3],rr[4],rr[5],rr[6],rr[7], crc8(&rr));
+            rr[0],rr[1],rr[2],rr[3],rr[4],rr[5],rr[6],rr[7], onewire::crc8(&rr));
         usb_write(&timer, &mut usb_dev, &mut serial,s.as_bytes());
     }
 
     // SEARCH ROM ici — USB connecté, diagnostics visibles dans le terminal
-    if bus_idle_high && ow_reset(&timer, OW_MASK) {
+    if bus_idle_high && onewire::ow_reset(&timer, OW_MASK) {
         usb_write(&timer, &mut usb_dev, &mut serial,b"INFO 1W presence OK\r\n");
         for _pass in 0..3u8 {
             let mut searcher  = OwSearch::new();
@@ -608,7 +234,7 @@ fn main() -> ! {
             loop {
                 keepalive(&timer, 1, &mut usb_dev, &mut serial);
                 match searcher.next(&timer, OW_MASK) {
-                    Some(rom) if crc8(&rom) == 0 => {
+                    Some(rom) if onewire::crc8(&rom) == 0 => {
                         pass_roms[pass_count] = rom;
                         pass_count += 1;
                         if pass_count >= 5 { break; }
@@ -716,7 +342,7 @@ fn main() -> ! {
             last_touch_ms = now_ms;
 
             // ── Diagnostic brut — retirer quand la calibration est validée ──────
-            let (z1, rx_raw, ry_raw) = touch_raw(&mut t_clk, &mut t_din, &mut t_do, &mut t_cs);
+            let (z1, rx_raw, ry_raw) = touch::touch_raw(&mut t_clk, &mut t_din, &mut t_do, &mut t_cs);
             if z1 > 500 {
                 let (sx, sy) = screen_driver::touch_to_screen(rx_raw, ry_raw);
                 let mut dbg: String<64> = String::new();
@@ -726,7 +352,7 @@ fn main() -> ! {
             }
             // ────────────────────────────────────────────────────────────────────
 
-            match touch_read(&mut t_clk, &mut t_din, &mut t_do, &mut t_cs) {
+            match touch::touch_read(&mut t_clk, &mut t_din, &mut t_do, &mut t_cs) {
                 Some((rx, ry)) if !touch_down => {
                     touch_down = true;
                     let (sx, sy) = screen_driver::touch_to_screen(rx, ry);
@@ -786,9 +412,9 @@ fn main() -> ! {
 
         // DS18B20 — Phase 1 : lancer la conversion (non-bloquant), 1 Hz
         if !ds_reading_phase && now_ms.saturating_sub(last_ds_start_ms) >= 1_000 {
-            if ow_reset(&timer, OW_MASK) {
-                ow_write_byte(&timer, OW_MASK, 0xCC); // SKIP ROM
-                ow_write_byte(&timer, OW_MASK, 0x44); // CONVERT T
+            if onewire::ow_reset(&timer, OW_MASK) {
+                onewire::ow_write_byte(&timer, OW_MASK, 0xCC); // SKIP ROM
+                onewire::ow_write_byte(&timer, OW_MASK, 0x44); // CONVERT T
             }
             ds_reading_phase  = true;
             last_ds_start_ms  = now_ms;
@@ -807,13 +433,13 @@ fn main() -> ! {
                 let rom = rom_codes[idx];
                 let mut val: Option<f32> = None;
                 'retry: for _ in 0..2u8 {
-                    if !ow_reset(&timer, OW_MASK) { break 'retry; }
-                    ow_write_byte(&timer, OW_MASK, 0x55); // MATCH ROM
-                    for &b in &rom { ow_write_byte(&timer, OW_MASK, b); }
-                    ow_write_byte(&timer, OW_MASK, 0xBE); // READ SCRATCHPAD
+                    if !onewire::ow_reset(&timer, OW_MASK) { break 'retry; }
+                    onewire::ow_write_byte(&timer, OW_MASK, 0x55); // MATCH ROM
+                    for &b in &rom { onewire::ow_write_byte(&timer, OW_MASK, b); }
+                    onewire::ow_write_byte(&timer, OW_MASK, 0xBE); // READ SCRATCHPAD
                     let mut sp = [0u8; 9];
-                    for b in sp.iter_mut() { *b = ow_read_byte(&timer, OW_MASK); }
-                    if crc8(&sp) == 0 {
+                    for b in sp.iter_mut() { *b = onewire::ow_read_byte(&timer, OW_MASK); }
+                    if onewire::crc8(&sp) == 0 {
                         let raw = (sp[0] as u16) | ((sp[1] as u16) << 8);
                         val = Some(raw as i16 as f32 / 16.0);
                         break 'retry;
@@ -884,7 +510,7 @@ fn main() -> ! {
             loop {
                 usb_dev.poll(&mut [&mut serial]);
                 match searcher.next(&timer, OW_MASK) {
-                    Some(rom) if crc8(&rom) == 0 => {
+                    Some(rom) if onewire::crc8(&rom) == 0 => {
                         new_roms[new_count] = rom;
                         new_count += 1;
                         if new_count >= 5 { break; }

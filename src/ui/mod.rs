@@ -24,6 +24,7 @@
 //! rendu.
 
 pub mod screen_driver;
+pub mod touch;
 
 // pub mod navigator;
 // pub mod screens;
