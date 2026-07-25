@@ -25,6 +25,7 @@
 
 pub mod screen_driver;
 pub mod touch;
+pub mod widgets;
 
 // pub mod navigator;
 // pub mod screens;

@@ -3,18 +3,18 @@
 // Bouton gauche = bascule compresseur (MARCHE quand bloqué / ARRÊT quand autorisé),
 // bouton droit = reset système.
 
+//
+// Review PR #20 : ce fichier ne garde que l'ecran lui-meme (layout, rendu,
+// zones de boutons). Les primitives reutilisables sont dans `super::widgets`
+// et la calibration du panneau tactile dans `super::touch`.
+
 use core::fmt::Write as _;
 use heapless::String;
 
 use embedded_graphics::{
-    mono_font::{
-        ascii::{FONT_6X10, FONT_6X13, FONT_9X18_BOLD, FONT_10X20},
-        MonoFont, MonoTextStyleBuilder,
-    },
+    mono_font::ascii::{FONT_6X10, FONT_6X13, FONT_9X18_BOLD, FONT_10X20},
     pixelcolor::Rgb565,
     prelude::*,
-    primitives::{PrimitiveStyleBuilder, Rectangle},
-    text::{Baseline, Text},
 };
 
 use crate::{
@@ -22,20 +22,12 @@ use crate::{
     data::SystemState,
 };
 
-const W: i32 = 240;
+use super::widgets::{
+    fill, fmt_temp, txt, txt_on,
+    BG, BTN_CYC, BTN_GO, BTN_RST, BTN_STOP, CY, DIM, GR, RD, WH, YL,
+};
 
-// ── Palette ───────────────────────────────────────────────────────────────────
-const BG:       Rgb565 = Rgb565::BLACK;
-const WH:       Rgb565 = Rgb565::WHITE;
-const CY:       Rgb565 = Rgb565::CYAN;
-const GR:       Rgb565 = Rgb565::GREEN;
-const RD:       Rgb565 = Rgb565::RED;
-const YL:       Rgb565 = Rgb565::YELLOW;
-const DIM:      Rgb565 = Rgb565::new(8, 16, 8);
-const BTN_STOP: Rgb565 = Rgb565::new(18, 3, 3); // fond bouton ARRÊT (rouge sombre)
-const BTN_GO:   Rgb565 = Rgb565::new(2, 18, 2); // fond bouton MARCHE (vert sombre)
-const BTN_CYC:  Rgb565 = Rgb565::new(14, 28, 0); // fond bouton CYCLE (jaune sombre)
-const BTN_RST:  Rgb565 = Rgb565::new(3,  8, 18);
+const W: i32 = 240;
 
 // ── Layout vertical ───────────────────────────────────────────────────────────
 const Y_HDR:      i32 = 2;    // "CHAMBRE" + SAFE/ERR + uptime
@@ -59,23 +51,6 @@ pub const BTN_STOP_X1: i32 = 82;
 pub const BTN_STOP_X2: i32 = 158;
 pub const BTN_RST_X1:  i32 = 162;
 pub const BTN_RST_X2:  i32 = 238;
-
-// ── Calibration XPT2046 — ajuster selon le module ────────────────────────────
-// Si les boutons ne répondent pas correctement : vérifier que X/Y ne sont pas
-// inversés (swap raw_x/raw_y dans touch_to_screen) et ajuster MIN/MAX.
-pub const TOUCH_X_MIN: u16 = 300;
-pub const TOUCH_X_MAX: u16 = 3800;
-pub const TOUCH_Y_MIN: u16 = 300;
-pub const TOUCH_Y_MAX: u16 = 3700;
-
-/// Coordonnées brutes XPT2046 → pixels écran.
-pub fn touch_to_screen(raw_x: u16, raw_y: u16) -> (i32, i32) {
-    let sx = ((raw_x.saturating_sub(TOUCH_X_MIN) as i32).max(0) * 240)
-        / (TOUCH_X_MAX - TOUCH_X_MIN) as i32;
-    let sy = ((raw_y.saturating_sub(TOUCH_Y_MIN) as i32).max(0) * 320)
-        / (TOUCH_Y_MAX - TOUCH_Y_MIN) as i32;
-    (sx.min(239), sy.min(319))
-}
 
 pub fn is_btn_cycle(sx: i32, sy: i32) -> bool {
     sx >= BTN_CYC_X1 && sx <= BTN_CYC_X2 && sy >= BTN_Y_TOP
@@ -327,38 +302,3 @@ fn btn_reset_normal<D: DrawTarget<Color = Rgb565>>(disp: &mut D) {
     txt_on(disp, "SYSTEME", BTN_RST_X1 + 17, BTN_Y_TOP + 60, &FONT_6X13,      CY, BTN_RST);
 }
 
-fn fmt_temp<const N: usize>(
-    state: &SystemState, idx: usize, rom_count: usize,
-) -> (String<N>, Rgb565) {
-    let mut val: String<N> = String::new();
-    if idx < rom_count && state.temperatures[idx].valid {
-        let t = state.temperatures[idx].value;
-        write!(val, "{:+6.1}C ", t).ok();
-        (val, if t < -20.0 { CY } else if t > 80.0 { RD } else { WH })
-    } else {
-        write!(val, "  ---   ").ok();
-        (val, DIM)
-    }
-}
-
-fn fill<D: DrawTarget<Color = Rgb565>>(d: &mut D, x: u32, y: u32, w: u32, h: u32, col: Rgb565) {
-    Rectangle::new(Point::new(x as i32, y as i32), Size::new(w, h))
-        .into_styled(PrimitiveStyleBuilder::new().fill_color(col).build())
-        .draw(d).ok();
-}
-
-fn txt<D: DrawTarget<Color = Rgb565>>(
-    d: &mut D, s: &str, x: i32, y: i32, font: &MonoFont<'_>, fg: Rgb565,
-) {
-    txt_on(d, s, x, y, font, fg, BG);
-}
-
-/// Texte avec fond explicite — pour dessiner sur les boutons colorés
-/// sans laisser de rectangle noir derrière les caractères.
-fn txt_on<D: DrawTarget<Color = Rgb565>>(
-    d: &mut D, s: &str, x: i32, y: i32, font: &MonoFont<'_>, fg: Rgb565, bg: Rgb565,
-) {
-    let style = MonoTextStyleBuilder::new()
-        .font(font).text_color(fg).background_color(bg).build();
-    Text::with_baseline(s, Point::new(x, y), style, Baseline::Top).draw(d).ok();
-}

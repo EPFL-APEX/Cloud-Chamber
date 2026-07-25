@@ -1,7 +1,10 @@
 #![no_std]
-// Pendant le développement, beaucoup de symboles de la lib ne sont pas encore
-// utilisés dans les binaires de test.
-#![allow(dead_code)]
+// NOTE review PR #20 : le `#![allow(dead_code)]` global a été retiré. Il
+// masquait indistinctement le code réellement mort et le code simplement pas
+// encore branché, y compris dans les modules de production où un symbole
+// inutilisé signale souvent un vrai oubli. Les exceptions légitimes doivent
+// être annotées au cas par cas avec un `#[allow(dead_code)]` local et un
+// commentaire justifiant l'attente.
 
 /// Liaison série USB avec l'hôte : transport, commandes, télémétrie.
 pub mod comm;

@@ -100,3 +100,24 @@ pub fn touch_read(
     if x < RAW_MIN || x > RAW_MAX || y < RAW_MIN || y > RAW_MAX { return None; }
     Some((x, y))
 }
+
+// ── Calibration du panneau — ajuster selon le module ────────────────────────
+// Si les boutons ne repondent pas correctement : verifier que X/Y ne sont pas
+// inverses (swap raw_x/raw_y dans touch_to_screen) et ajuster MIN/MAX.
+//
+// Deplace depuis screen_driver.rs (review PR #20) : c'est de la calibration
+// de panneau, independante de ce qui est dessine a l'ecran.
+
+pub const TOUCH_X_MIN: u16 = 300;
+pub const TOUCH_X_MAX: u16 = 3800;
+pub const TOUCH_Y_MIN: u16 = 300;
+pub const TOUCH_Y_MAX: u16 = 3700;
+
+/// Coordonnées brutes XPT2046 → pixels écran (240×320, portrait).
+pub fn touch_to_screen(raw_x: u16, raw_y: u16) -> (i32, i32) {
+    let sx = ((raw_x.saturating_sub(TOUCH_X_MIN) as i32).max(0) * 240)
+        / (TOUCH_X_MAX - TOUCH_X_MIN) as i32;
+    let sy = ((raw_y.saturating_sub(TOUCH_Y_MIN) as i32).max(0) * 320)
+        / (TOUCH_Y_MAX - TOUCH_Y_MIN) as i32;
+    (sx.min(239), sy.min(319))
+}

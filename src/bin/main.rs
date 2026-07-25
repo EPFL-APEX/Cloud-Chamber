@@ -344,7 +344,7 @@ fn main() -> ! {
             // ── Diagnostic brut — retirer quand la calibration est validée ──────
             let (z1, rx_raw, ry_raw) = touch::touch_raw(&mut t_clk, &mut t_din, &mut t_do, &mut t_cs);
             if z1 > 500 {
-                let (sx, sy) = screen_driver::touch_to_screen(rx_raw, ry_raw);
+                let (sx, sy) = touch::touch_to_screen(rx_raw, ry_raw);
                 let mut dbg: String<64> = String::new();
                 let _ = write!(dbg, "TOUCH z1={} raw={},{} px={},{}\r\n",
                                z1, rx_raw, ry_raw, sx, sy);
@@ -355,7 +355,7 @@ fn main() -> ! {
             match touch::touch_read(&mut t_clk, &mut t_din, &mut t_do, &mut t_cs) {
                 Some((rx, ry)) if !touch_down => {
                     touch_down = true;
-                    let (sx, sy) = screen_driver::touch_to_screen(rx, ry);
+                    let (sx, sy) = touch::touch_to_screen(rx, ry);
                     if screen_driver::is_btn_cycle(sx, sy) {
                         if controller.phase_code() == 0 {
                             if controller.is_tripped() {
