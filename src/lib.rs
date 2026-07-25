@@ -15,8 +15,10 @@ pub mod sensors;
 /// Logique de contrôle : Controller (machine à états), TargetState, ControlOutput.
 pub mod control;
 
-/// Affichage TFT ILI9341 (KMRTM28028-SPI) + tactile.
-pub mod display;
+/// Interface utilisateur : rendu TFT ILI9341 (KMRTM28028-SPI) + tactile.
+/// Renommé depuis `display` suite à la review PR #20 — le module porte toute
+/// l'interaction utilisateur, pas seulement l'écran.
+pub mod ui;
 
 /// Machine à états (phases Cooling/Stopping, historique de mesures).
 pub mod logic;
@@ -32,7 +34,7 @@ pub mod shared;
 // Réactivation prévue par étapes du plan de convergence :
 //   1. cloud_chamber_hal (units, Measurement, traits Sensor/BatchSensor)
 //   2. drivers adaptés en wrappers autour des drivers éprouvés de sensors/
-//   3. ui (écrans/navigation) une fois branchée sur display
+//   3. ui::{screens, navigator, theme, interactions} une fois branchés sur
+//      ui::screen_driver (cf. src/ui/mod.rs et mod_equipe.rs.disabled)
 // pub mod cloud_chamber_hal;
 // pub mod drivers;
-// pub mod ui;

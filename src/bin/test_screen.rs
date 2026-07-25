@@ -23,7 +23,7 @@ use embedded_hal_bus::spi::ExclusiveDevice;
 use cloud_chamber_firmware::{
     control::{output::ControlOutput, target::TargetState},
     data::SystemState,
-    display,
+    ui::screen_driver,
 };
 
 use defmt_rtt as _;
@@ -121,7 +121,7 @@ fn main() -> ! {
         usb_write(&timer, &mut usb_dev, &mut serial, b"SCREEN OK - dessin du layout...\r\n");
 
         // Fond statique (labels, séparateurs) — compresseur bloqué, cycle inactif
-        display::draw_static(d, false, false);
+        screen_driver::draw_static(d, false, false);
 
         // Valeurs factices pour tester le rendu complet
         let mut state  = SystemState::new();
@@ -141,7 +141,7 @@ fn main() -> ! {
         state.bme280.humidity_pct = 45.0;
         state.uptime_s            = 42;
 
-        display::draw(d, &state, &target, &output, 3, None, None, false);
+        screen_driver::draw(d, &state, &target, &output, 3, None, None, false);
 
         usb_write(&timer, &mut usb_dev, &mut serial, b"SCREEN OK - layout affiche\r\n");
     } else {

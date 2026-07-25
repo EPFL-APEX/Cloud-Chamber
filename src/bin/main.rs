@@ -35,7 +35,7 @@ use cloud_chamber_firmware::{
     data::SystemState,
     logic::history::MeasurementHistory,
     sensors::bme280::Bme280Driver,
-    display,
+    ui::screen_driver,
 };
 
 use mipidsi::{Builder, interface::SpiInterface, models::ILI9341Rgb565,
@@ -658,7 +658,7 @@ fn main() -> ! {
         .init(&mut CortexDelay)
         .ok();
     if let Some(d) = disp_opt.as_mut() {
-        display::draw_static(d, state.compressor_allowed, false);
+        screen_driver::draw_static(d, state.compressor_allowed, false);
         usb_write(&timer, &mut usb_dev, &mut serial, b"INFO display ILI9341 OK\r\n");
     } else {
         usb_write(&timer, &mut usb_dev, &mut serial, b"WARN display init failed\r\n");
@@ -718,7 +718,7 @@ fn main() -> ! {
             // ── Diagnostic brut — retirer quand la calibration est validée ──────
             let (z1, rx_raw, ry_raw) = touch_raw(&mut t_clk, &mut t_din, &mut t_do, &mut t_cs);
             if z1 > 500 {
-                let (sx, sy) = display::touch_to_screen(rx_raw, ry_raw);
+                let (sx, sy) = screen_driver::touch_to_screen(rx_raw, ry_raw);
                 let mut dbg: String<64> = String::new();
                 let _ = write!(dbg, "TOUCH z1={} raw={},{} px={},{}\r\n",
                                z1, rx_raw, ry_raw, sx, sy);
@@ -729,8 +729,8 @@ fn main() -> ! {
             match touch_read(&mut t_clk, &mut t_din, &mut t_do, &mut t_cs) {
                 Some((rx, ry)) if !touch_down => {
                     touch_down = true;
-                    let (sx, sy) = display::touch_to_screen(rx, ry);
-                    if display::is_btn_cycle(sx, sy) {
+                    let (sx, sy) = screen_driver::touch_to_screen(rx, ry);
+                    if screen_driver::is_btn_cycle(sx, sy) {
                         if controller.phase_code() == 0 {
                             if controller.is_tripped() {
                                 // Disjoncteur verrouillé : 1er appui = réarmement
@@ -743,7 +743,7 @@ fn main() -> ! {
                                 state.compressor_allowed = true;
                                 if controller.request_start(now_ms) {
                                     if let Some(d) = disp_opt.as_mut() {
-                                        display::draw_btn_cycle_flash(d, true);
+                                        screen_driver::draw_btn_cycle_flash(d, true);
                                     }
                                     btn_flash_until_ms = now_ms + 250;
                                     usb_write(&timer, &mut usb_dev, &mut serial, b"CMD CYCLE touch=1\r\n");
@@ -753,27 +753,27 @@ fn main() -> ! {
                             // Cycle en cours → arrêt propre
                             controller.request_stop(now_ms);
                             if let Some(d) = disp_opt.as_mut() {
-                                display::draw_btn_cycle_flash(d, false);
+                                screen_driver::draw_btn_cycle_flash(d, false);
                             }
                             btn_flash_until_ms = now_ms + 250;
                             usb_write(&timer, &mut usb_dev, &mut serial, b"CMD CYCLE touch=0\r\n");
                         }
-                    } else if display::is_btn_comp(sx, sy) {
+                    } else if screen_driver::is_btn_comp(sx, sy) {
                         // Bascule autorisation compresseur (MARCHE ⇆ ARRÊT)
                         state.compressor_allowed = !state.compressor_allowed;
                         if !state.compressor_allowed {
                             target.high_voltage_enabled = false; // l'arrêt coupe aussi le HV
                         }
                         if let Some(d) = disp_opt.as_mut() {
-                            display::draw_btn_comp_flash(d, state.compressor_allowed);
+                            screen_driver::draw_btn_comp_flash(d, state.compressor_allowed);
                         }
                         btn_flash_until_ms = now_ms + 250;
                         usb_write(&timer, &mut usb_dev, &mut serial,
                             if state.compressor_allowed { b"CMD COMP touch=1\r\n" }
                             else                        { b"CMD COMP touch=0\r\n" });
-                    } else if display::is_btn_reset(sx, sy) {
+                    } else if screen_driver::is_btn_reset(sx, sy) {
                         if let Some(d) = disp_opt.as_mut() {
-                            display::draw_btn_reset_flash(d);
+                            screen_driver::draw_btn_reset_flash(d);
                         }
                         CortexDelay.delay_ms(200);
                         cortex_m::peripheral::SCB::sys_reset();
@@ -939,8 +939,8 @@ fn main() -> ! {
         // Flash tactile — restaure les boutons (dans leur nouvel état) après 250 ms
         if btn_flash_until_ms > 0 && now_ms >= btn_flash_until_ms {
             if let Some(d) = disp_opt.as_mut() {
-                display::draw_btn_comp(d, state.compressor_allowed);
-                display::draw_btn_cycle(d, controller.phase_code() != 0);
+                screen_driver::draw_btn_comp(d, state.compressor_allowed);
+                screen_driver::draw_btn_cycle(d, controller.phase_code() != 0);
             }
             btn_shown_allowed  = state.compressor_allowed;
             btn_shown_cycle    = controller.phase_code() != 0;
@@ -954,20 +954,20 @@ fn main() -> ! {
                 let alert = controller.alert();
                 // L'alerte vient de disparaître → nettoyer la bannière
                 if alert.is_none() && alert_was_active {
-                    display::clear_alert_zone(d);
+                    screen_driver::clear_alert_zone(d);
                 }
                 alert_was_active = alert.is_some();
-                display::draw(d, &state, &target, &last_output, rom_count,
+                screen_driver::draw(d, &state, &target, &last_output, rom_count,
                               controller.phase_label(), alert, disp_blink);
                 // Redessine les boutons si leur état a changé ailleurs que par
                 // le tactile (commande USB, transition automatique de phase).
                 if btn_flash_until_ms == 0 && btn_shown_allowed != state.compressor_allowed {
-                    display::draw_btn_comp(d, state.compressor_allowed);
+                    screen_driver::draw_btn_comp(d, state.compressor_allowed);
                     btn_shown_allowed = state.compressor_allowed;
                 }
                 let cyc_active = controller.phase_code() != 0;
                 if btn_flash_until_ms == 0 && btn_shown_cycle != cyc_active {
-                    display::draw_btn_cycle(d, cyc_active);
+                    screen_driver::draw_btn_cycle(d, cyc_active);
                     btn_shown_cycle = cyc_active;
                 }
             }
