@@ -12,7 +12,7 @@ use crate::config::{
     SATURATION_TIMEOUT_MS, SENSOR_CHECK_TIMEOUT_MS, STABLE_TOLERANCE_C, STABLE_WINDOW_MS,
 };
 
-use super::{PhaseCtx, SystemTask};
+use super::{PhaseContext, SystemTask};
 
 /// Perte de capteur pendant un cycle : au-delà de ce délai sans lecture valide
 /// de la base chambre, la phase est abandonnée (plutôt que d'attendre le
@@ -30,7 +30,7 @@ pub enum CoolingPhase {
 }
 
 impl CoolingPhase {
-    pub fn react_to(self, ctx: &PhaseCtx) -> SystemTask {
+    pub fn react_to(self, ctx: &PhaseContext) -> SystemTask {
         use CoolingPhase::*;
 
         let chamber = ctx.state.temperatures[CHAMBER_TEMP_IDX];
@@ -39,7 +39,7 @@ impl CoolingPhase {
         // Perte prolongée de la base chambre en plein cycle → abandon rapide
         // (toutes les phases après SensorCheck dépendent de ds4).
         if self != SensorCheck {
-            let lost = ctx.hist.latest_temp(CHAMBER_TEMP_IDX)
+            let lost = ctx.history.latest_temp(CHAMBER_TEMP_IDX)
                 .map_or(true, |s| ctx.now_ms.saturating_sub(s.t_ms) > SENSOR_LOSS_MS);
             if lost && chamber_t.is_none() {
                 return SystemTask::Idle; // signalé comme perte capteur par le Controller
@@ -83,8 +83,8 @@ impl CoolingPhase {
 
             // HV ON — on attend la stabilisation thermique de la base.
             HighVoltage => {
-                if ctx.hist.temp_stable(CHAMBER_TEMP_IDX, STABLE_WINDOW_MS,
-                                        STABLE_TOLERANCE_C, ctx.now_ms) {
+                if ctx.history.temp_stable(CHAMBER_TEMP_IDX, STABLE_WINDOW_MS,
+                                           STABLE_TOLERANCE_C, ctx.now_ms) {
                     SystemTask::Cooling(FinalCheckBeforeStabilising)
                 } else if ctx.elapsed_ms > HV_STABILISE_TIMEOUT_MS {
                     SystemTask::Idle

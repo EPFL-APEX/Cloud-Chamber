@@ -8,7 +8,7 @@
 
 use crate::config::{STOP_EQUALIZE_FALLBACK_MS, STOP_EQUALIZE_HP_MAX, STOP_HV_SETTLE_MS};
 
-use super::{PhaseCtx, SystemTask};
+use super::{PhaseContext, SystemTask};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoppingPhase {
@@ -21,7 +21,7 @@ pub enum StoppingPhase {
 }
 
 impl StoppingPhase {
-    pub fn react_to(self, ctx: &PhaseCtx) -> SystemTask {
+    pub fn react_to(self, ctx: &PhaseContext) -> SystemTask {
         use StoppingPhase::*;
         match self {
             CutHighVoltage => {

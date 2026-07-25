@@ -4,7 +4,7 @@ use crate::config::{
 };
 use crate::data::SystemState;
 use crate::logic::{cooling::CoolingPhase, history::MeasurementHistory,
-                   stopping::StoppingPhase, PhaseCtx, SystemTask};
+                   stopping::StoppingPhase, PhaseContext, SystemTask};
 use crate::security_loop::{monitor::SecurityMonitor, safety::{SafetyCause, SafetyConfig}};
 use super::output::ControlOutput;
 use super::target::TargetState;
@@ -109,9 +109,9 @@ impl Controller {
     /// manuel reprend toujours moteur coupé, jamais par surprise.
     pub fn tick(
         &mut self,
-        state:  &mut SystemState,
-        hist:   &MeasurementHistory,
-        target: &TargetState,
+        state:   &mut SystemState,
+        history: &MeasurementHistory,
+        target:  &TargetState,
         now_ms: u64,
         _dt_s:  f32, // conservé pour compat d'appel (plus de PID à intégrer)
     ) -> ControlOutput {
@@ -139,9 +139,9 @@ impl Controller {
         }
 
         // ── 3. Transitions de phase ──────────────────────────────────────────
-        let ctx = PhaseCtx {
+        let ctx = PhaseContext {
             state: &*state,
-            hist,
+            history,
             now_ms,
             elapsed_ms: now_ms.saturating_sub(self.phase_entered_ms),
         };
