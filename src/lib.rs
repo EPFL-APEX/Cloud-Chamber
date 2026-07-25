@@ -26,8 +26,8 @@ pub mod ui;
 /// Machine à états (phases Cooling/Stopping, historique de mesures).
 pub mod logic;
 
-/// Boucle de sécurité (seuils deux niveaux, disjoncteur logiciel).
-pub mod security_loop;
+/// Sécurité : seuils deux niveaux, disjoncteur logiciel (ex-`security_loop`).
+pub mod security;
 
 /// Structures partagées (RingBuffer, SystemTask) — arborescence branche équipe.
 pub mod shared;

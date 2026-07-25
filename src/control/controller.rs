@@ -5,7 +5,7 @@ use crate::config::{
 use crate::data::SystemState;
 use crate::logic::{cooling::CoolingPhase, history::MeasurementHistory,
                    stopping::StoppingPhase, PhaseContext, SystemTask};
-use crate::security_loop::{monitor::SecurityMonitor, safety::{SafetyCause, SafetyConfig}};
+use crate::security::{monitor::SecurityMonitor, safety::{SafetyCause, SafetyConfig}};
 use super::output::ControlOutput;
 use super::target::TargetState;
 

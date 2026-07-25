@@ -12,7 +12,7 @@
 //! (GPIO, SPI, ADC) dépendent du câblage physique de votre système.
 //! Remplacez les commentaires `TODO:` par les initialisations HAL réelles.
 
-use crate::security_loop::{
+use crate::security::{
     loop_runner::{CriticalSectionWriter, SecurityLoop},
     safety::SafetyConfig,
 };
