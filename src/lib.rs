@@ -1,11 +1,4 @@
-#![no_std]
-// NOTE review PR #20 : le `#![allow(dead_code)]` global a été retiré. Il
-// masquait indistinctement le code réellement mort et le code simplement pas
-// encore branché, y compris dans les modules de production où un symbole
-// inutilisé signale souvent un vrai oubli. Les exceptions légitimes doivent
-// être annotées au cas par cas avec un `#[allow(dead_code)]` local et un
-// commentaire justifiant l'attente.
-
+#![cfg_attr(not(test), no_std)]
 /// Liaison série USB avec l'hôte : transport, commandes, télémétrie.
 pub mod comm;
 

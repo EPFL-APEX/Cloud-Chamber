@@ -27,8 +27,8 @@ pub mod screen_driver;
 pub mod touch;
 pub mod widgets;
 
-// pub mod navigator;
-// pub mod screens;
-// pub mod theme;
-// mod utils;
-// pub mod interactions;
+pub mod navigator;
+pub mod screens;
+pub mod theme;
+mod utils;
+pub mod interactions;

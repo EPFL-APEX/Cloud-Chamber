@@ -190,6 +190,7 @@ mod tests {
     };
 
     use embedded_graphics_simulator::{SimulatorDisplay, OutputSettingsBuilder};
+    use std;
 
     fn make_display() -> SimulatorDisplay<Rgb565> {
         SimulatorDisplay::new(Size::new(320, 240))
