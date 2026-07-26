@@ -8,13 +8,13 @@
 //! La liste est statique (`MAIN_MENU_ITEMS`) — pas d'allocation heap.
 
 use embedded_graphics::{
-    Drawable, draw_target::DrawTarget, geometry::{OriginDimensions, Point, Size}, image::{Image, ImageDrawableExt}, mono_font::{MonoTextStyle, ascii::FONT_6X13}, pixelcolor::{Rgb565, Rgb888}, primitives::{Line, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle}, text::{Baseline, LineHeight, Text, TextStyle, TextStyleBuilder},
+    Drawable, draw_target::DrawTarget, geometry::{OriginDimensions, Point, Size}, image::Image, mono_font::{MonoTextStyle, ascii::FONT_6X13}, pixelcolor::Rgb565, primitives::{Line, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle}, text::{Baseline, LineHeight, Text, TextStyle, TextStyleBuilder},
 };
 
 use tinybmp::Bmp;
 use num_enum::{TryFromPrimitive, IntoPrimitive};
 
-use crate::ui::{interactions::{Click, Rotary}, navigator::Screen::MainMenu, theme, utils};
+use crate::ui::{interactions::{Click, Rotary}, theme, utils};
 
 /// Entrées du menu principal.
 #[repr(u8)]
@@ -66,9 +66,9 @@ impl MainMenuScreen {
     {
 
         // BACKGROUND
-        display.clear(theme::BACKGROUND_COLOR);
-        
-        
+        let _ = display.clear(theme::BACKGROUND_COLOR);
+
+
         // STRUCTURE UI
         const SCREEN_SIZE:(u32, u32) = (320, 240);
 
@@ -85,7 +85,7 @@ impl MainMenuScreen {
                 Size { width: SCREEN_SIZE.0 + 2, height: 29 }
             );
 
-        TOP_UI_BACKGROUND.into_styled(TOP_UI_STYLE).draw(display);
+        let _ = TOP_UI_BACKGROUND.into_styled(TOP_UI_STYLE).draw(display);
 
 
         const TITLE_STYLE:TextStyle = TextStyleBuilder::new()
@@ -100,7 +100,7 @@ impl MainMenuScreen {
         TITLE_STYLE
         );
 
-        TOP_LEFT_TITLE.draw(display );
+        let _ = TOP_LEFT_TITLE.draw(display);
 
 
         // BOTTOM BAND
@@ -111,13 +111,13 @@ impl MainMenuScreen {
                     Size { width: SCREEN_SIZE.0 + 2, height: BOTTOM_UI_HEIGHT + 1}
             );
 
-        BOTTOM_UI_BACKGROUND.into_styled(TOP_UI_STYLE).draw(display);
+        let _ = BOTTOM_UI_BACKGROUND.into_styled(TOP_UI_STYLE).draw(display);
 
 
         const SEPARATION_STEP_SIZE:i32 = 80;
         const SEPARATION_STARTING_COORDS:(i32, i32) = (80, 208);
         const SEPARATION_HEIGHT:i32 = 32;
-        
+
         const SEPARATION_STYLE:PrimitiveStyle<Rgb565> = PrimitiveStyleBuilder::new()
             .stroke_width(1)
             .stroke_color(theme::ACCENT_COLOR)
@@ -138,14 +138,14 @@ impl MainMenuScreen {
         let stats_icons = utils::Icons::new(Bmp::<Rgb565>::from_slice(stats_icons_data).unwrap(), Size::new(18, 18)).unwrap();
 
         const STATS_ICON_STARTING_COORDS:(i32, i32) = (6, 216);
-        
+
         for i in 0..4 {
             let icon = stats_icons.get(i).unwrap();
 
             let icon_x = STATS_ICON_STARTING_COORDS.0 + i as i32 * SEPARATION_STEP_SIZE;
             let icon_y = STATS_ICON_STARTING_COORDS.1;
 
-            Image::new(&icon, Point::new(icon_x, icon_y))
+            let _ = Image::new(&icon, Point::new(icon_x, icon_y))
                 .draw(display);
         }
 
@@ -166,7 +166,7 @@ impl MainMenuScreen {
                 let icon_x = ICON_STARTING_COORDS.0 + j as i32 * ICON_STEP_SIZE.0;
                 let icon_y = ICON_STARTING_COORDS.1 + i as i32 * ICON_STEP_SIZE.1;
 
-                Image::new(&icon, Point::new(icon_x, icon_y))
+                let _ = Image::new(&icon, Point::new(icon_x, icon_y))
                 .draw(display);
             }
         }
@@ -190,7 +190,6 @@ mod tests {
     };
 
     use embedded_graphics_simulator::{SimulatorDisplay, OutputSettingsBuilder};
-    use std;
 
     fn make_display() -> SimulatorDisplay<Rgb565> {
         SimulatorDisplay::new(Size::new(320, 240))

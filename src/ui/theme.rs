@@ -6,7 +6,7 @@
 //! de `embedded-graphics`. Ce trait doit être en scope pour utiliser ces
 //! constantes de couleur, même si le type `Rgb565` est déjà importé.
 
-use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
+use embedded_graphics::pixelcolor::Rgb565;
 
 // ─── Couleurs principales ─────────────────────────────────────────────────────
 
