@@ -102,6 +102,11 @@ runner = "${PICOTOOL_PATH} load -u -v -x -t elf"
 DEFMT_LOG = "debug"
 
 [alias]
-# Run unit tests on the host (the default target is the embedded chip which has no std).
+# Construction explicite pour l'une ou l'autre puce, sans toucher à ce fichier.
+build-rp2040 = "build --target thumbv6m-none-eabi"
+build-rp2350 = "build --target thumbv8m.main-none-eabihf"
+# Tests unitaires sur la machine de dev : la cible par défaut ci-dessus est
+# une puce sans std, il faut donc forcer la cible hôte. Adapter le triplet à
+# la toolchain locale (x86_64-unknown-linux-gnu, aarch64-apple-darwin, ...).
 test-host = "test --target x86_64-pc-windows-msvc --lib"
-test-ui = "test --target x86_64-pc-windows-msvc --lib ui::screens"
+test-host-linux = "test --target x86_64-unknown-linux-gnu --lib"
