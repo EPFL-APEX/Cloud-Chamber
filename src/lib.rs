@@ -35,5 +35,5 @@ pub mod shared;
 //   2. drivers adaptés en wrappers autour des drivers éprouvés de sensors/
 //   3. ui::{screens, navigator, theme, interactions} une fois branchés sur
 //      ui::screen_driver (cf. src/ui/mod.rs et mod_equipe.rs.disabled)
-// pub mod cloud_chamber_hal;
-// pub mod drivers;
+pub mod cloud_chamber_hal;
+pub mod drivers;

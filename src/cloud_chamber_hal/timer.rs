@@ -29,13 +29,16 @@ pub trait WatchdogFeed {
     fn feed(&mut self);
 }
 
+
+type Ticks = u32;
+
 #[derive(Debug, Clone, Copy)]
 pub struct Instant {
-    time:u32
+    time:Ticks
 }
 
 impl Instant {
-    pub fn new(time: u32) -> Self {
+    pub fn new(time: Ticks) -> Self {
         Self { time }
     }
     pub fn is_newer_than(&self, other: &Instant) -> bool {
@@ -63,13 +66,13 @@ impl Duration {
 #[cfg(all(rp2040, target_arch = "arm"))]
 impl MonotonicTimer for rp2040_hal::Timer {
     fn get_counter_us(&self) -> Instant {
-        self.get_counter().ticks()
+        Instant::new(self.get_counter().ticks() as Ticks)
     }
 }
 
 #[cfg(all(rp2350, any(target_arch = "arm", target_arch = "riscv32")))]
 impl MonotonicTimer for rp235x_hal::Timer<rp235x_hal::timer::CopyableTimer0> {
     fn get_counter_us(&self) -> Instant {
-        self.get_counter().ticks()
+        Instant::new(self.get_counter().ticks() as Ticks)
     }
 }
