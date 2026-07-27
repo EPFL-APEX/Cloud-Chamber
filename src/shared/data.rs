@@ -122,10 +122,10 @@ mod tests {
     #[test]
     fn system_state_variants_are_distinct() {
         assert_ne!(SystemTask::Idle, SystemTask::Stabilising);
-        assert_ne!(SystemTask::Idle, SystemTask::Cooling(CoolingPhase::Todo));
+        assert_ne!(SystemTask::Idle, SystemTask::Cooling(CoolingPhase::SensorCheck));
         assert_ne!(
             SystemTask::Cooling(CoolingPhase::SensorCheck),
-            SystemTask::Stopping(StoppingPhase::Todo)
+            SystemTask::Stopping(StoppingPhase::CutHighVoltage)
         );
     }
 

@@ -47,9 +47,12 @@ impl SystemTask {
 
 #[derive(Debug)]
 pub struct MeasurementHistory {
-    temps: [RingBuffer<Measurement<Celsius>, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_TEMP_SENSOR],
-    press: [RingBuffer<Measurement<HectoPascal>, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_PRESSURE_SENSOR],
-    volts: [RingBuffer<Measurement<Volt>, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_VOLTMETER],
+    // pub(crate) : indexation directe depuis logic::cooling/logic::stopping
+    // via les constantes d'index de cloud_chamber_hal::config (pas
+    // d'accesseurs par capteur, cf. décisions de conception de logic/).
+    pub temps: [RingBuffer<Measurement<Celsius>, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_TEMP_SENSOR],
+    pub press: [RingBuffer<Measurement<HectoPascal>, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_PRESSURE_SENSOR],
+    pub volts: [RingBuffer<Measurement<Volt>, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_VOLTMETER],
 }
 
 impl MeasurementHistory {
@@ -71,6 +74,40 @@ impl MeasurementHistory {
         push_if_newer(&mut self.temps, &latest_measurement.temps);
         push_if_newer(&mut self.press, &latest_measurement.press);
         push_if_newer(&mut self.volts, &latest_measurement.volts);
+    }
+
+    /// `true` si la température `idx` est restée dans une bande de
+    /// `tolerance` sur les `window_ms` précédant son échantillon le plus
+    /// récent, avec une couverture de données suffisante (≥ 80% des
+    /// échantillons attendus). Pas de paramètre `now` externe : la
+    /// référence temporelle est l'échantillon le plus récent lui-même, pour
+    /// rester appelable depuis `logic::cooling` sans lui donner accès à
+    /// l'horloge.
+    pub fn temp_stable(&self, idx: usize, window_ms: u64, tolerance: f32) -> bool {
+        if idx >= NUMBER_OF_TEMP_SENSOR {
+            return false;
+        }
+        let Ok(newest) = self.temps[idx].get(0) else { return false };
+        if newest.value.0.is_nan() {
+            return false;
+        }
+        let cutoff_ms = newest.time.as_millis().saturating_sub(window_ms);
+
+        let mut n: usize = 0;
+        let mut min = f32::INFINITY;
+        let mut max = f32::NEG_INFINITY;
+        for i in 0..CONTROL_LOOP_HISTORY_SIZE {
+            let Ok(m) = self.temps[idx].get(i) else { break };
+            if m.value.0.is_nan() || m.time.as_millis() < cutoff_ms {
+                break;
+            }
+            min = min.min(m.value.0);
+            max = max.max(m.value.0);
+            n += 1;
+        }
+
+        let expected = (window_ms / 1_000) as usize;
+        n >= expected.saturating_mul(4) / 5 && n >= 2 && (max - min) <= tolerance
     }
 }
 

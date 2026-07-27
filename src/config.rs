@@ -4,7 +4,7 @@
 // ─── Capteurs ──────────────────────────────────────
 
 pub const NUMBER_OF_TEMP_SENSOR: usize = 5;
-pub const NUMBER_OF_PRESSURE_SENSOR: usize = 1;
+pub const NUMBER_OF_PRESSURE_SENSOR: usize = 2;
 pub const NUMBER_OF_VOLTMETER: usize = 3;
 pub const NUMBER_OF_AMPMETER: usize = 1;
 
@@ -53,4 +53,47 @@ pub const TARGET_CHAMBER_TEMP: f32        = -40.0;
 
 
 // ─── Contol loop options ──────────────────────────────────────────────────────────────
-pub const CONTROL_LOOP_HISTORY_SIZE:usize = 10;
+// 90 échantillons : à ~1 échantillon/s (cadence DS18B20, conversion ~800ms),
+// couvre une fenêtre de stabilité de 60s (STABLE_WINDOW_MS) avec de la marge.
+// Une valeur de 10 ici (comme précédemment) empêche `temp_stable` de jamais
+// atteindre la couverture de 80% requise sur une fenêtre de 60s — bug trouvé
+// en écrivant `MeasurementHistory::temp_stable` (cf. logic/probing.rs).
+pub const CONTROL_LOOP_HISTORY_SIZE:usize = 90;
+
+
+// ─── Séquence de refroidissement (logic::cooling) ──────────────────────────────
+// Valeurs initiales, à calibrer sur la chambre réelle.
+
+/// PreCoolingThePlate → StartingIpaCirculation quand ds4 ≤ ce seuil.
+pub const PRECOOL_TARGET_C: f32 = -20.0;
+/// SaturatingAirWithIpa → HighVoltage quand ds4 ≤ ce seuil.
+pub const SATURATION_TARGET_C: f32 = -35.0;
+/// Fenêtre de stabilité pour valider la phase HighVoltage.
+pub const STABLE_WINDOW_MS: u64 = 60_000;
+/// Tolérance de variation de ds4 sur la fenêtre de stabilité.
+pub const STABLE_TOLERANCE_C: f32 = 1.0;
+/// Durée de circulation IPA (pas de capteur dédié — temporisation).
+pub const IPA_CIRCULATION_MS: u64 = 120_000;
+
+// Timeouts d'abandon (phase trop longue → retour Idle), gérés par l'appelant.
+pub const SENSOR_CHECK_TIMEOUT_MS: u64 = 30_000;
+pub const PRECOOL_TIMEOUT_MS:      u64 = 45 * 60_000;
+pub const SATURATION_TIMEOUT_MS:   u64 = 30 * 60_000;
+pub const HV_STABILISE_TIMEOUT_MS: u64 = 15 * 60_000;
+pub const FINAL_CHECK_TIMEOUT_MS:  u64 = 30_000;
+
+/// Perte de capteur pendant un cycle : au-delà de ce délai sans lecture
+/// valide de la base chambre, la phase est abandonnée (plutôt que d'attendre
+/// le timeout long de la phase, aveugle).
+pub const SENSOR_LOSS_MS: u64 = 10_000;
+
+// ─── Séquence d'arrêt (logic::stopping) ────────────────────────────────────────
+
+/// Délai après coupure HV avant de couper le compresseur.
+pub const STOP_HV_SETTLE_MS: u64 = 2_000;
+/// Délai après coupure compresseur avant d'attendre l'équilibrage pression.
+pub const STOP_COMPRESSOR_SETTLE_MS: u64 = 500;
+/// HP considérée équilibrée sous ce seuil (bar) — si capteur présent.
+pub const STOP_EQUALIZE_HP_MAX: f32 = 2.0;
+/// Sans capteur HP : temporisation d'équilibrage (anti court-cycle).
+pub const STOP_EQUALIZE_FALLBACK_MS: u64 = 60_000;

@@ -27,3 +27,6 @@ pub mod actuators;
 pub mod timer;
 
 pub mod units;
+
+/// Indices des capteurs dans les tableaux `SensorSnapshot`/`MeasurementHistory`.
+pub mod config;
