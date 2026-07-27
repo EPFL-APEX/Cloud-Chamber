@@ -30,6 +30,7 @@ use crate::{
     }, logic::{
         cooling::CoolingPhase,
         stopping::StoppingPhase,
+        security::SafetyCause,
     }
 };
 
@@ -67,6 +68,7 @@ pub enum SystemTask {
     Cooling(CoolingPhase),
     Stabilising,
     Stopping(StoppingPhase),
+    Tripped(SafetyCause),
 }
 
 impl Default for SystemTask {

@@ -92,18 +92,20 @@ fn get_current_task() -> SystemTask {
 
 impl SystemTask {
     pub fn react_to(self, history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
+        use SystemTask::*;
         match self {
             // Mode manuel pas encore codé (cf. plan de réconciliation) —
             // tout coupé par défaut plutôt qu'un todo!() qui paniquerait.
-            SystemTask::Idle => (
+            Idle => (
                 SystemTask::Idle,
                 ActuatorPlan { compressor: false, iso_heater: false, high_voltage: false },
             ),
-            SystemTask::Cooling(phase) => phase.react_to(history),
+            Cooling(phase) => phase.react_to(history),
             // Régime permanent après la séquence de refroidissement : on
             // maintient les sorties de fin de FinalCheckBeforeStabilising.
-            SystemTask::Stabilising => todo!(),
-            SystemTask::Stopping(phase) => phase.react_to(history),
+            Stabilising => todo!(),
+            Stopping(phase) => phase.react_to(history),
+            Tripped(cause) => todo!(),
         }
     }
 }

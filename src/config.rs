@@ -46,6 +46,13 @@ pub const TEMP_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
 
 // ─── Seuils de sécurité ───────────────────────────────────────────────────────
 
+/// TODO CALIBRAGE : 14.0 bar est au-dessus de la plage du capteur ABP2 HP
+/// (0-12 bar, cf. `HP_PRESSURE_MAX`) — ce seuil ne peut physiquement jamais
+/// être atteint tel quel, l'alarme HP ne se déclenchera donc jamais en
+/// pratique. Bug trouvé pendant l'audit de logic/security.rs, présent sur
+/// les deux lignées d'origine. Valeur volontairement pas corrigée ici :
+/// il faut la vraie limite mécanique du circuit frigorifique, pas une
+/// valeur devinée sur un seuil de sécurité.
 pub const SAFETY_HP_MAX: f32              = 14.0;
 pub const SAFETY_TEMP_COMPRESSOR_MAX: f32 = 120.0;
 pub const SAFETY_BP_MIN: f32              = 0.15;

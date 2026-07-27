@@ -3,3 +3,4 @@ pub mod probing;
 pub mod cooling;
 pub mod stopping;
 mod actuators;
+pub mod security;
