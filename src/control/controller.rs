@@ -218,7 +218,19 @@ impl Controller {
             // L'interlock opérateur (bouton ARRÊT / COMP 0) bloque toujours.
             compressor: comp && state.compressor_allowed,
             isopropanol_heater_duty: iso_duty,
-            high_voltage: hv,
+            // Interlock thermique : la haute tension ne s'active jamais sur une
+            // chambre trop chaude, quelle que soit la phase. Un seul point de
+            // contrôle plutôt qu'une vérification répartie par phase.
+            //
+            // Rétabli après la review PR #20 : le verrou existait (commit
+            // 29d1733, « haut voltage : active seulement si chambre <= target
+            // + 5C ») mais `chamber_ready` n'était plus appelé nulle part
+            // depuis le merge — le retrait du `allow(dead_code)` global l'a
+            // révélé.
+            //
+            // Fail-safe : `chamber_ready` renvoie `false` si la sonde base
+            // chambre est absente ou invalide, donc pas de HV à l'aveugle.
+            high_voltage: hv && self.chamber_ready(state, target),
             safety_override: false,
         }
     }
