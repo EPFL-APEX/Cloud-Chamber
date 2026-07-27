@@ -2,3 +2,4 @@
 
 pub mod menu;
 pub mod temp;
+pub mod stats;

@@ -14,3 +14,11 @@ pub const BACKGROUND_COLOR:Rgb565 = Rgb565::new(0, 5, 4);
 pub const BACKGROUND_COLOR_DARKER:Rgb565 = Rgb565::new(1, 4, 3);
 pub const ACCENT_COLOR:Rgb565 = Rgb565::new(1, 9, 8);
 pub const HIGHLIGHT_COLOR: Rgb565 = Rgb565::new(1, 29, 23);
+
+// ─── Couleurs d'état (écrans de mesures) ──────────────────────────────────────
+
+pub const TEXT_COLOR: Rgb565 = Rgb565::WHITE;
+pub const DIM_COLOR: Rgb565 = Rgb565::new(10, 20, 10);
+pub const SUCCESS_COLOR: Rgb565 = Rgb565::GREEN;
+pub const WARNING_COLOR: Rgb565 = Rgb565::YELLOW;
+pub const DANGER_COLOR: Rgb565 = Rgb565::RED;

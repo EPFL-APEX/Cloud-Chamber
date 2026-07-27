@@ -17,6 +17,7 @@ pub enum Screen {
     Idle,
     MainMenu,
     Settings,
+    Stats,
 }
 
 /// Événement de navigation produit par l'encodeur ou d'autres entrées.
