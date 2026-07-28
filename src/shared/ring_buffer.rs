@@ -17,7 +17,14 @@
 //! - `Default` : le buffer est initialisé avec des valeurs "zéro" avant
 //!   la première écriture (ex: `0.0` pour `f32`, `false` pour `bool`).
 
-use crate::shared::error::{Error, Result};
+/// Erreur d'accès au buffer — locale à ce module, pas un type d'erreur
+/// partagé : rien d'autre dans le projet n'a besoin de ce cas d'échec.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Error {
+    IndexOutOfBounds { index: usize, len: usize },
+}
+
+pub type Result<T> = core::result::Result<T, Error>;
 
 /// Buffer circulaire à taille fixe.
 ///
