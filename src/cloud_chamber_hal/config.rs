@@ -1,12 +1,26 @@
-//! Indices des capteurs dans les tableaux `SensorSnapshot`/`MeasurementHistory`.
+//! Forme des tableaux `SensorSnapshot`/`MeasurementHistory`/`Sensors` :
+//! combien de capteurs de chaque catégorie, et quel index correspond à quel
+//! rôle physique.
 //!
-//! Ces constantes vivent ici plutôt que dans `config.rs` : elles décrivent la
-//! forme des tableaux que `cloud_chamber_hal::sensors` définit (quel index
-//! correspond à quel rôle physique), pas des réglages d'installation.
+//! Ces constantes vivent ici plutôt que dans `crate::config` : elles
+//! décrivent la forme de l'abstraction générique que `cloud_chamber_hal`
+//! définit, pas le câblage concret (broches GPIO, adresses I²C — ça reste
+//! dans `crate::config`, question différente de bring-up matériel) ni les
+//! réglages de contrôle (seuils de sécurité, timing de phase — `crate::config`
+//! aussi pour l'instant, chantier `logic/` séparé).
 //!
 //! ATTENTION : les slots `ds0..ds4` suivent l'ordre de découverte SEARCH ROM
 //! du bus 1-Wire, pas un ordre physique fixe — à vérifier au boot (lignes
 //! INFO ds{i}) avant de faire confiance à ces valeurs sur un nouveau montage.
+
+/// Nombre de sondes de température (DS18B20 sur le bus 1-Wire).
+pub const NUMBER_OF_TEMP_SENSOR: usize = 5;
+/// Nombre de capteurs de pression (2 ABP2 distincts : basse + haute pression).
+pub const NUMBER_OF_PRESSURE_SENSOR: usize = 2;
+/// Nombre de voltmètres.
+pub const NUMBER_OF_VOLTMETER: usize = 3;
+/// Nombre d'ampèremètres.
+pub const NUMBER_OF_AMPMETER: usize = 1;
 
 /// Index de la sonde base-chambre (ds4) — cible du refroidissement.
 pub const CHAMBER_TEMP_IDX: usize = 4;

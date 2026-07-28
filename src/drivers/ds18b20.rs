@@ -33,10 +33,11 @@
 use embedded_hal::delay::DelayNs;
 use heapless::Vec;
 
-use crate::cloud_chamber_hal::sensors::{BatchSensor, DeferredBatchSensor, Measurement};
+use crate::cloud_chamber_hal::sensors::{BatchSensor, DeferredBatchSensor};
+use crate::cloud_chamber_hal::measurement::Measurement;
 use crate::cloud_chamber_hal::timer::{Duration, MonotonicTimer};
 use crate::cloud_chamber_hal::units::Celsius;
-use crate::config::NUMBER_OF_TEMP_SENSOR;
+use crate::cloud_chamber_hal::config::NUMBER_OF_TEMP_SENSOR;
 
 const DS18B20_FAMILY:    u8 = 0x28;
 const CMD_SEARCH_ROM:    u8 = 0xF0;

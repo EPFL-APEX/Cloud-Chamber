@@ -23,9 +23,9 @@ use core::cell::RefCell;
 use critical_section::Mutex;
 
 use crate::{
-    cloud_chamber_hal::sensors::Measurement,
+    cloud_chamber_hal::measurement::Measurement,
     cloud_chamber_hal::units::{Celsius, HectoPascal, Volt},
-    config::{
+    cloud_chamber_hal::config::{
         NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER,
     }, logic::{
         cooling::CoolingPhase,

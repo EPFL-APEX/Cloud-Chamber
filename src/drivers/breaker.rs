@@ -6,7 +6,7 @@
 //! (active-haute) soit ouvrir (active-basse) le circuit. Le paramètre
 //! `active_high` permet de gérer les deux cas sans dupliquer la logique.
 
-use crate::cloud_chamber_hal::actuators::BreakerActuator;
+use crate::cloud_chamber_hal::actuators::BinaryActuator;
 use embedded_hal::digital::OutputPin;
 
 /// Disjoncteur contrôlé par une sortie GPIO.
@@ -38,23 +38,27 @@ impl<Pin: OutputPin> GpioBreaker<Pin> {
     }
 }
 
-impl<Pin: OutputPin> BreakerActuator for GpioBreaker<Pin> {
+impl<Pin: OutputPin> BinaryActuator for GpioBreaker<Pin> {
     type Error = Pin::Error;
 
-    fn trip(&mut self) -> Result<(), Self::Error> {
+    fn turn_on(&mut self) -> Result<(), Self::Error> {
         self.set_output(true)?;
         self.tripped = true;
         Ok(())
     }
 
-    fn reset(&mut self) -> Result<(), Self::Error> {
+    fn turn_off(&mut self) -> Result<(), Self::Error> {
         self.set_output(false)?;
         self.tripped = false;
         Ok(())
     }
+}
 
-    fn is_tripped(&self) -> Result<bool, Self::Error> {
-        Ok(self.tripped)
+impl<Pin: OutputPin> GpioBreaker<Pin> {
+    /// État courant — diagnostic uniquement, pas dans `BinaryActuator`
+    /// (le trait générique ne porte pas de méthode de lecture d'état).
+    pub fn is_tripped(&self) -> bool {
+        self.tripped
     }
 }
 
@@ -83,37 +87,37 @@ mod tests {
     }
 
     #[test]
-    fn trip_sets_tripped_state() {
+    fn turn_on_sets_tripped_state() {
         let mut breaker = GpioBreaker::new(MockPin::new(), true);
-        breaker.trip().unwrap();
-        assert!(breaker.is_tripped().unwrap());
+        breaker.turn_on().unwrap();
+        assert!(breaker.is_tripped());
     }
 
     #[test]
-    fn reset_clears_tripped_state() {
+    fn turn_off_clears_tripped_state() {
         let mut breaker = GpioBreaker::new(MockPin::new(), true);
-        breaker.trip().unwrap();
-        breaker.reset().unwrap();
-        assert!(!breaker.is_tripped().unwrap());
+        breaker.turn_on().unwrap();
+        breaker.turn_off().unwrap();
+        assert!(!breaker.is_tripped());
     }
 
     #[test]
-    fn active_high_trip_drives_pin_high() {
+    fn active_high_turn_on_drives_pin_high() {
         let mut breaker = GpioBreaker::new(MockPin::new(), true);
-        breaker.trip().unwrap();
+        breaker.turn_on().unwrap();
         assert!(breaker.pin.state);
     }
 
     #[test]
-    fn active_low_trip_drives_pin_low() {
+    fn active_low_turn_on_drives_pin_low() {
         let mut breaker = GpioBreaker::new(MockPin::new(), false);
-        breaker.trip().unwrap();
+        breaker.turn_on().unwrap();
         assert!(!breaker.pin.state);
     }
 
     #[test]
     fn initial_state_is_not_tripped() {
         let breaker = GpioBreaker::new(MockPin::new(), true);
-        assert!(!breaker.is_tripped().unwrap());
+        assert!(!breaker.is_tripped());
     }
 }

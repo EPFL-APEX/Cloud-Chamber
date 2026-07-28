@@ -9,7 +9,7 @@
 
 use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
 use crate::config::{PRECOOL_TARGET_C, SATURATION_TARGET_C, STABLE_WINDOW_MS, STABLE_TOLERANCE_C};
-use crate::logic::control_loop::ActuatorPlan;
+use crate::logic::actuators::ActuatorPlan;
 use crate::logic::probing::{MeasurementHistory, ProbingPlan};
 use crate::shared::data::SystemTask;
 

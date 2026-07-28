@@ -1,6 +1,7 @@
 //! Driver capteur de fermeture via GPIO.
 
-use crate::cloud_chamber_hal::sensors::{Sensor, Measurement};
+use crate::cloud_chamber_hal::sensors::Sensor;
+use crate::cloud_chamber_hal::measurement::Measurement;
 use crate::cloud_chamber_hal::timer::MonotonicTimer;
 use embedded_hal::digital::InputPin;
 

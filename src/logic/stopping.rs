@@ -9,7 +9,7 @@
 
 use crate::cloud_chamber_hal::config::HP_PRESSURE_IDX;
 use crate::config::STOP_EQUALIZE_HP_MAX;
-use crate::logic::control_loop::ActuatorPlan;
+use crate::logic::actuators::ActuatorPlan;
 use crate::logic::probing::{MeasurementHistory, ProbingPlan};
 use crate::shared::data::SystemTask;
 

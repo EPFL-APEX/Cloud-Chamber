@@ -1,12 +1,9 @@
 /// Configuration centrale du système.
 /// Modifier ces constantes pour adapter le firmware à votre installation.
-
-// ─── Capteurs ──────────────────────────────────────
-
-pub const NUMBER_OF_TEMP_SENSOR: usize = 5;
-pub const NUMBER_OF_PRESSURE_SENSOR: usize = 2;
-pub const NUMBER_OF_VOLTMETER: usize = 3;
-pub const NUMBER_OF_AMPMETER: usize = 1;
+// Nombre de capteurs par catégorie (NUMBER_OF_TEMP_SENSOR, etc.) : déplacé
+// vers `cloud_chamber_hal::config` — décrit la forme de l'abstraction
+// générique `Sensors`/`SensorSnapshot`, pas un réglage d'installation.
+use crate::cloud_chamber_hal::config::NUMBER_OF_TEMP_SENSOR;
 
 // ─── Broches GPIO (numéros GP du RP2040/RP2350) ───────────────────────────────
 
@@ -31,7 +28,6 @@ pub const BP_PRESSURE_MAX: f32 = 1.0;
 pub const HP_PRESSURE_MIN: f32 = 0.0;
 pub const HP_PRESSURE_MAX: f32 = 12.0;
 
-
 // ─── Labels des capteurs de température ──────────────────────────────────────
 
 pub const TEMP_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
@@ -42,8 +38,6 @@ pub const TEMP_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
     "base_chambre",
 ];
 
-
-
 // ─── Seuils de sécurité ───────────────────────────────────────────────────────
 
 /// TODO CALIBRAGE : 14.0 bar est au-dessus de la plage du capteur ABP2 HP
@@ -53,11 +47,10 @@ pub const TEMP_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
 /// les deux lignées d'origine. Valeur volontairement pas corrigée ici :
 /// il faut la vraie limite mécanique du circuit frigorifique, pas une
 /// valeur devinée sur un seuil de sécurité.
-pub const SAFETY_HP_MAX: f32              = 14.0;
+pub const SAFETY_HP_MAX: f32 = 14.0;
 pub const SAFETY_TEMP_COMPRESSOR_MAX: f32 = 120.0;
-pub const SAFETY_BP_MIN: f32              = 0.15;
-pub const TARGET_CHAMBER_TEMP: f32        = -40.0;
-
+pub const SAFETY_BP_MIN: f32 = 0.15;
+pub const TARGET_CHAMBER_TEMP: f32 = -40.0;
 
 // ─── Contol loop options ──────────────────────────────────────────────────────────────
 // 90 échantillons : à ~1 échantillon/s (cadence DS18B20, conversion ~800ms),
@@ -65,8 +58,7 @@ pub const TARGET_CHAMBER_TEMP: f32        = -40.0;
 // Une valeur de 10 ici (comme précédemment) empêche `temp_stable` de jamais
 // atteindre la couverture de 80% requise sur une fenêtre de 60s — bug trouvé
 // en écrivant `MeasurementHistory::temp_stable` (cf. logic/probing.rs).
-pub const CONTROL_LOOP_HISTORY_SIZE:usize = 90;
-
+pub const CONTROL_LOOP_HISTORY_SIZE: usize = 90;
 
 // ─── Séquence de refroidissement (logic::cooling) ──────────────────────────────
 // Valeurs initiales, à calibrer sur la chambre réelle.
@@ -84,10 +76,10 @@ pub const IPA_CIRCULATION_MS: u64 = 120_000;
 
 // Timeouts d'abandon (phase trop longue → retour Idle), gérés par l'appelant.
 pub const SENSOR_CHECK_TIMEOUT_MS: u64 = 30_000;
-pub const PRECOOL_TIMEOUT_MS:      u64 = 45 * 60_000;
-pub const SATURATION_TIMEOUT_MS:   u64 = 30 * 60_000;
+pub const PRECOOL_TIMEOUT_MS: u64 = 45 * 60_000;
+pub const SATURATION_TIMEOUT_MS: u64 = 30 * 60_000;
 pub const HV_STABILISE_TIMEOUT_MS: u64 = 15 * 60_000;
-pub const FINAL_CHECK_TIMEOUT_MS:  u64 = 30_000;
+pub const FINAL_CHECK_TIMEOUT_MS: u64 = 30_000;
 
 /// Perte de capteur pendant un cycle : au-delà de ce délai sans lecture
 /// valide de la base chambre, la phase est abandonnée (plutôt que d'attendre

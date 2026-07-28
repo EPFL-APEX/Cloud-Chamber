@@ -1,7 +1,7 @@
 ///
 
 use crate::{
-    cloud_chamber_hal::{sensors::Measurement, units::Celsius},
+    cloud_chamber_hal::{measurement::Measurement, units::Celsius},
     shared::ring_buffer::RingBuffer,
 };
 

@@ -31,33 +31,12 @@
 
 use core::fmt::Debug;
 
-use crate::{
-    cloud_chamber_hal::{timer::{Instant, Duration}, units::{Celsius, HectoPascal, Volt}},
-    config::{NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER}
+use crate::cloud_chamber_hal::{
+    config::{NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER},
+    measurement::Measurement,
+    timer::Duration,
+    units::{Celsius, HectoPascal, Volt},
 };
-
-/// Mesure horodatée dans l'unité physique `Unit`.
-#[derive(Clone, Copy, Debug)]
-pub struct Measurement<Unit> {
-    pub time: Instant,
-    pub value: Unit,
-}
-
-impl<Unit> Measurement<Unit> {
-    pub fn new(time: Instant, value: Unit) -> Self {
-        Self { time, value }
-    }
-
-    /// `true` si cette mesure est plus récente que `other`.
-    pub fn is_newer_than(&self, other: &Self) -> bool {
-        self.time.is_newer_than(&other.time)
-    }
-
-    /// `true` si cette mesure est plus ancienne que `other`.
-    pub fn is_older_than(&self, other: &Self) -> bool {
-        other.time.is_newer_than(&self.time)
-    }
-}
 
 /// Capteur retournant une mesure unique de type `T` (ex: `Measurement<Celsius>`).
 pub trait Sensor<T> {

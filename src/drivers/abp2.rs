@@ -17,7 +17,8 @@
 /// ```
 
 use embedded_hal::i2c::I2c as I2cTrait;
-use crate::cloud_chamber_hal::sensors::{Sensor, Measurement};
+use crate::cloud_chamber_hal::sensors::Sensor;
+use crate::cloud_chamber_hal::measurement::Measurement;
 use crate::cloud_chamber_hal::timer::MonotonicTimer;
 use crate::cloud_chamber_hal::units::HectoPascal;
 

@@ -17,10 +17,14 @@
 //! n'importe quel type `T` qui implémente le trait requis. Cela permet de
 //! changer le matériel (ex: type de capteur) sans modifier la logique métier.
 
+/// Mesure horodatée — forme commune à toutes les lectures de capteur.
+pub mod measurement;
+
 /// Traits pour les capteurs de mesure (température, tension, courant, fermeture).
 pub mod sensors;
 
-/// Traits pour les actionneurs de sécurité (disjoncteur).
+/// Traits pour les actionneurs (tout-ou-rien, sortie continue) et leur
+/// regroupement générique.
 pub mod actuators;
 
 /// Traits pour le timer monotonique et le watchdog.

@@ -40,7 +40,8 @@
 //! enregistrer le périphérique dans un `static`. Chaque [`AdcPin`] y accède
 //! ensuite via une section critique, garantissant un accès exclusif.
 
-use crate::cloud_chamber_hal::sensors::{Sensor, Measurement};
+use crate::cloud_chamber_hal::sensors::Sensor;
+use crate::cloud_chamber_hal::measurement::Measurement;
 use crate::cloud_chamber_hal::timer::MonotonicTimer;
 use crate::cloud_chamber_hal::units::{Ampere, Volt};
 

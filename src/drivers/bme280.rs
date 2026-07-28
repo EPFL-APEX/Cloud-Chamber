@@ -11,7 +11,8 @@
 
 use embedded_hal::i2c::I2c as I2cTrait;
 use embedded_hal::delay::DelayNs;
-use crate::cloud_chamber_hal::sensors::{Sensor, DeferredSensor, Measurement};
+use crate::cloud_chamber_hal::sensors::{Sensor, DeferredSensor};
+use crate::cloud_chamber_hal::measurement::Measurement;
 use crate::cloud_chamber_hal::timer::{Duration, MonotonicTimer};
 use crate::cloud_chamber_hal::units::Celsius;
 

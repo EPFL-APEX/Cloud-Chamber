@@ -6,7 +6,7 @@ use crate::{cloud_chamber_hal::sensors::Sensors,
     shared::data::{SHARED, SensorSnapshot, SystemTask},
 };
 use super::probing::MeasurementHistory;
-use super::actuators::ActuatorPlan;
+use crate::logic::actuators::ActuatorPlan;
 
 use defmt::panic;
 
