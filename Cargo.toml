@@ -14,6 +14,10 @@ regex = "1.13"
 
 [features]
 charts = ["dep:embedded-charts"]
+# Active la fenêtre SDL2 de embedded-graphics-simulator pour le test
+# interactif `main_menu_live` (src/ui/screens/menu.rs) — nécessite SDL2
+# installé sur la machine de compilation.
+live-menu-test = ["embedded-graphics-simulator/with-sdl"]
 
 [dependencies]
 cortex-m = "0.7"
@@ -49,7 +53,7 @@ panic-halt = { version = "1.0.0" }
 [dev-dependencies]
 # Simulation de l'afficheur ILI9341 sur desktop pour tester l'UI sans matériel.
 # default-features = false → pas besoin de SDL2 pour les tests unitaires.
-# Pour lancer l'exemple avec fenêtre SDL2 : activer la feature "with-sdl"
+# Pour la fenêtre SDL2 live : activer la feature du projet "live-menu-test"
 embedded-graphics-simulator = { version = "0.8", default-features = false }
 
 # Fournit une implémentation de critical_section basée sur std::sync::Mutex

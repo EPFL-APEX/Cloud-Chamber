@@ -235,6 +235,45 @@ mod tests {
     //    todo!()
     //}
 
+    /// Fenêtre SDL2 interactive : flèches gauche/droite pour naviguer,
+    /// Entrée/Espace pour cliquer, fermer la fenêtre pour quitter.
+    ///
+    /// `cargo test --features live-menu-test main_menu_live` (nécessite
+    /// SDL2 installé et un affichage). `click()` est encore `todo!()` à ce
+    /// stade du repo — Entrée/Espace paniqueront tant qu'il n'est pas
+    /// implémenté, ce qui reste acceptable pour un test manuel.
+    #[cfg(feature = "live-menu-test")]
+    #[test]
+    fn main_menu_live() {
+        use embedded_graphics_simulator::{SimulatorEvent, Window, sdl2::Keycode};
+
+        let mut display = make_display();
+        let mut menu = MainMenuScreen::new();
+        menu.draw(&mut display).unwrap();
+
+        let output_settings = OutputSettingsBuilder::new().scale(2).build();
+        let mut window = Window::new("Cloud Chamber - menu (live)", &output_settings);
+
+        'running: loop {
+            window.update(&display);
+            for event in window.events() {
+                match event {
+                    SimulatorEvent::Quit => break 'running,
+                    SimulatorEvent::KeyDown { keycode, .. } => {
+                        match keycode {
+                            Keycode::Right | Keycode::Down => menu.right_turn(),
+                            Keycode::Left | Keycode::Up => menu.left_turn(),
+                            Keycode::Return | Keycode::Space => menu.click(),
+                            _ => continue,
+                        }
+                        menu.draw(&mut display).unwrap();
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     #[test]
     fn main_menu_screenshot() -> Result<(), core::convert::Infallible> {
         let mut display = SimulatorDisplay::<Rgb565>::new(Size::new(320, 240));
