@@ -12,8 +12,5 @@
 /// Structures de données échangées entre les deux cœurs.
 pub mod data;
 
-/// Types d'erreurs génériques réutilisés dans tout le projet.
-pub mod error;
-
 /// Buffer circulaire générique pour l'historique des mesures.
 pub mod ring_buffer;

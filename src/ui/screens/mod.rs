@@ -1,4 +1,5 @@
 //! Écrans complets de l'interface utilisateur.
 
 pub mod menu;
-pub mod status;
+pub mod temp;
+pub mod stats;

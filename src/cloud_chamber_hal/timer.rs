@@ -17,7 +17,7 @@ pub trait MonotonicTimer {
     /// Retourne le temps écoulé depuis le démarrage, en µs.
     ///
     /// La valeur est monotone : elle ne décroît jamais.
-    fn get_counter_us(&self) -> u64;
+    fn get_counter_us(&self) -> Instant;
 }
 
 /// Alimentation (« nourrissage ») du watchdog matériel.
@@ -29,18 +29,61 @@ pub trait WatchdogFeed {
     fn feed(&mut self);
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Instant {
+    time:u32
+}
+
+impl Instant {
+    pub fn new(time: u32) -> Self {
+        Self { time }
+    }
+    pub fn is_newer_than(&self, other: &Instant) -> bool {
+        self.time > other.time
+    }
+
+    /// Valeur en millisecondes (le compteur brut est en µs, cf.
+    /// `MonotonicTimer::get_counter_us`).
+    ///
+    /// ATTENTION : `time` est un `u32` de µs, qui déborde après environ
+    /// 71 minutes (2^32 µs). Les timeouts de phase (`PRECOOL_TIMEOUT_MS` va
+    /// jusqu'à 45 min à lui seul) s'approchent dangereusement de cette
+    /// limite sur une session de refroidissement complète. Ce n'est pas
+    /// corrigé ici (changer `time` en `u64`, ou stocker directement des ms,
+    /// touche aux impls `MonotonicTimer` matériel non vérifiables depuis ce
+    /// poste de dev) — à traiter avant tout usage réel prolongé.
+    pub fn as_millis(&self) -> u64 {
+        (self.time as u64) / 1_000
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
+pub struct Duration {
+    duration:u32
+}
+
+impl Duration {
+    pub fn new(duration: u32) -> Self {
+        Self { duration }
+    }
+
+    pub fn as_millis(self) -> u32 {
+        self.duration
+    }
+}
+
 // ─── Implémentations concrètes (matériel ARM uniquement) ─────────────────────
 
 #[cfg(all(rp2040, target_arch = "arm"))]
 impl MonotonicTimer for rp2040_hal::Timer {
-    fn get_counter_us(&self) -> u64 {
+    fn get_counter_us(&self) -> Instant {
         self.get_counter().ticks()
     }
 }
 
 #[cfg(all(rp2350, any(target_arch = "arm", target_arch = "riscv32")))]
 impl MonotonicTimer for rp235x_hal::Timer<rp235x_hal::timer::CopyableTimer0> {
-    fn get_counter_us(&self) -> u64 {
+    fn get_counter_us(&self) -> Instant {
         self.get_counter().ticks()
     }
 }

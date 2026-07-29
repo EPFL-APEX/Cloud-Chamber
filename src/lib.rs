@@ -14,6 +14,12 @@
 pub mod cloud_chamber_hal;
 pub mod config;
 pub mod drivers;
-pub mod security_loop;
+pub mod logic;
 pub mod shared;
 pub mod ui;
+
+/// Liaison série USB avec l'hôte (debug / scripts d'acquisition). Désactivé
+/// par défaut (feature `usb-comm`) — pas toujours branché en usage réel, et
+/// dépend de `rp2040-hal` (RP2040 uniquement, cf. Cargo.toml).
+#[cfg(feature = "usb-comm")]
+pub mod comm;

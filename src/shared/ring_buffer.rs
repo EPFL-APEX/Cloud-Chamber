@@ -17,12 +17,20 @@
 //! - `Default` : le buffer est initialisé avec des valeurs "zéro" avant
 //!   la première écriture (ex: `0.0` pour `f32`, `false` pour `bool`).
 
-use crate::shared::error::{Error, Result};
+/// Erreur d'accès au buffer — locale à ce module, pas un type d'erreur
+/// partagé : rien d'autre dans le projet n'a besoin de ce cas d'échec.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Error {
+    IndexOutOfBounds { index: usize, len: usize },
+}
+
+pub type Result<T> = core::result::Result<T, Error>;
 
 /// Buffer circulaire à taille fixe.
 ///
 /// Les nouvelles valeurs écrasent les plus anciennes quand le buffer est plein.
 /// `get(0)` retourne toujours la valeur la plus récente.
+#[derive(Debug)]
 pub struct RingBuffer<T: Copy, const N: usize> {
     data: [T; N],
     write_index: usize,
@@ -34,6 +42,17 @@ impl<T: Copy + Default, const N: usize> RingBuffer<T, N> {
     pub fn new() -> Self {
         Self {
             data: [T::default(); N],
+            write_index: 0,
+            is_full: false,
+        }
+    }
+}
+
+impl<T: Copy, const N: usize> RingBuffer<T, N> {
+
+    pub fn filled(value:T) -> Self {
+        Self {
+            data: [value; N],
             write_index: 0,
             is_full: false,
         }

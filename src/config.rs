@@ -1,5 +1,9 @@
 /// Configuration centrale du système.
 /// Modifier ces constantes pour adapter le firmware à votre installation.
+// Nombre de capteurs par catégorie (NUMBER_OF_TEMP_SENSOR, etc.) : déplacé
+// vers `cloud_chamber_hal::config` — décrit la forme de l'abstraction
+// générique `Sensors`/`SensorSnapshot`, pas un réglage d'installation.
+use crate::cloud_chamber_hal::config::NUMBER_OF_TEMP_SENSOR;
 
 // ─── Broches GPIO (numéros GP du RP2040/RP2350) ───────────────────────────────
 
@@ -24,22 +28,9 @@ pub const BP_PRESSURE_MAX: f32 = 1.0;
 pub const HP_PRESSURE_MIN: f32 = 0.0;
 pub const HP_PRESSURE_MAX: f32 = 12.0;
 
-// ─── Seuils de sécurité ───────────────────────────────────────────────────────
-
-pub const SAFETY_HP_MAX: f32              = 14.0;
-pub const SAFETY_TEMP_COMPRESSOR_MAX: f32 = 120.0;
-pub const SAFETY_BP_MIN: f32              = 0.15;
-pub const TARGET_CHAMBER_TEMP: f32        = -40.0;
-
-// ─── Timing (ms) ──────────────────────────────────────────────────────────────
-
-pub const CRITICAL_READ_INTERVAL_MS:     u64 = 500;
-pub const NON_CRITICAL_READ_INTERVAL_MS: u64 = 2000;
-pub const DATA_PUBLISH_INTERVAL_MS:      u64 = 1000;
-
 // ─── Labels des capteurs de température ──────────────────────────────────────
 
-pub const TEMP_LABELS: [&str; 5] = [
+pub const TEMP_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
     "sortie_compresseur",
     "sortie_condenseur",
     "entree_evaporateur",
@@ -47,8 +38,61 @@ pub const TEMP_LABELS: [&str; 5] = [
     "base_chambre",
 ];
 
-/// Index des capteurs de température critiques (utilisé par le driver DS18B20).
-pub const CRITICAL_TEMP_INDICES: [usize; 1] = [0];
+// ─── Seuils de sécurité ───────────────────────────────────────────────────────
 
-/// Index des capteurs de température non-critiques.
-pub const NON_CRITICAL_TEMP_INDICES: [usize; 4] = [1, 2, 3, 4];
+/// TODO CALIBRAGE : 14.0 bar est au-dessus de la plage du capteur ABP2 HP
+/// (0-12 bar, cf. `HP_PRESSURE_MAX`) — ce seuil ne peut physiquement jamais
+/// être atteint tel quel, l'alarme HP ne se déclenchera donc jamais en
+/// pratique. Bug trouvé pendant l'audit de logic/security.rs, présent sur
+/// les deux lignées d'origine. Valeur volontairement pas corrigée ici :
+/// il faut la vraie limite mécanique du circuit frigorifique, pas une
+/// valeur devinée sur un seuil de sécurité.
+pub const SAFETY_HP_MAX: f32 = 14.0;
+pub const SAFETY_TEMP_COMPRESSOR_MAX: f32 = 120.0;
+pub const SAFETY_BP_MIN: f32 = 0.15;
+pub const TARGET_CHAMBER_TEMP: f32 = -40.0;
+
+// ─── Contol loop options ──────────────────────────────────────────────────────────────
+// 90 échantillons : à ~1 échantillon/s (cadence DS18B20, conversion ~800ms),
+// couvre une fenêtre de stabilité de 60s (STABLE_WINDOW_MS) avec de la marge.
+// Une valeur de 10 ici (comme précédemment) empêche `temp_stable` de jamais
+// atteindre la couverture de 80% requise sur une fenêtre de 60s — bug trouvé
+// en écrivant `MeasurementHistory::temp_stable` (cf. logic/probing.rs).
+pub const CONTROL_LOOP_HISTORY_SIZE: usize = 90;
+
+// ─── Séquence de refroidissement (logic::cooling) ──────────────────────────────
+// Valeurs initiales, à calibrer sur la chambre réelle.
+
+/// PreCoolingThePlate → StartingIpaCirculation quand ds4 ≤ ce seuil.
+pub const PRECOOL_TARGET_C: f32 = -20.0;
+/// SaturatingAirWithIpa → HighVoltage quand ds4 ≤ ce seuil.
+pub const SATURATION_TARGET_C: f32 = -35.0;
+/// Fenêtre de stabilité pour valider la phase HighVoltage.
+pub const STABLE_WINDOW_MS: u64 = 60_000;
+/// Tolérance de variation de ds4 sur la fenêtre de stabilité.
+pub const STABLE_TOLERANCE_C: f32 = 1.0;
+/// Durée de circulation IPA (pas de capteur dédié — temporisation).
+pub const IPA_CIRCULATION_MS: u64 = 120_000;
+
+// Timeouts d'abandon (phase trop longue → retour Idle), gérés par l'appelant.
+pub const SENSOR_CHECK_TIMEOUT_MS: u64 = 30_000;
+pub const PRECOOL_TIMEOUT_MS: u64 = 45 * 60_000;
+pub const SATURATION_TIMEOUT_MS: u64 = 30 * 60_000;
+pub const HV_STABILISE_TIMEOUT_MS: u64 = 15 * 60_000;
+pub const FINAL_CHECK_TIMEOUT_MS: u64 = 30_000;
+
+/// Perte de capteur pendant un cycle : au-delà de ce délai sans lecture
+/// valide de la base chambre, la phase est abandonnée (plutôt que d'attendre
+/// le timeout long de la phase, aveugle).
+pub const SENSOR_LOSS_MS: u64 = 10_000;
+
+// ─── Séquence d'arrêt (logic::stopping) ────────────────────────────────────────
+
+/// Délai après coupure HV avant de couper le compresseur.
+pub const STOP_HV_SETTLE_MS: u64 = 2_000;
+/// Délai après coupure compresseur avant d'attendre l'équilibrage pression.
+pub const STOP_COMPRESSOR_SETTLE_MS: u64 = 500;
+/// HP considérée équilibrée sous ce seuil (bar) — si capteur présent.
+pub const STOP_EQUALIZE_HP_MAX: f32 = 2.0;
+/// Sans capteur HP : temporisation d'équilibrage (anti court-cycle).
+pub const STOP_EQUALIZE_FALLBACK_MS: u64 = 60_000;

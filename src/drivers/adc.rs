@@ -40,7 +40,10 @@
 //! enregistrer le périphérique dans un `static`. Chaque [`AdcPin`] y accède
 //! ensuite via une section critique, garantissant un accès exclusif.
 
-use crate::cloud_chamber_hal::sensors::{CurrentSensor, VoltageSensor};
+use crate::cloud_chamber_hal::sensors::Sensor;
+use crate::cloud_chamber_hal::measurement::Measurement;
+use crate::cloud_chamber_hal::timer::MonotonicTimer;
+use crate::cloud_chamber_hal::units::{Ampere, Volt};
 
 /// Tension de référence de l'ADC, câblée sur AVDD (RP2040/RP2350).
 const ADC_VREF: f32 = 3.3;
@@ -150,23 +153,25 @@ impl<P: hal::adc::AdcChannel + hal::gpio::AnyPin> AdcChannel for AdcPin<P> {
 ///
 /// Facteur du circuit de conditionnement **uniquement** — les constantes ADC
 /// (Vref 3,3 V et résolution 12 bits) sont déjà intégrées dans la conversion.
-pub struct AdcVoltageSensor<C: AdcChannel> {
+pub struct AdcVoltageSensor<C: AdcChannel, Clk> {
     channel: C,
     gain: f32,
+    clock: Clk,
 }
 
-impl<C: AdcChannel> AdcVoltageSensor<C> {
-    pub fn new(channel: C, gain: f32) -> Self {
-        Self { channel, gain }
+impl<C: AdcChannel, Clk: MonotonicTimer> AdcVoltageSensor<C, Clk> {
+    pub fn new(channel: C, gain: f32, clock: Clk) -> Self {
+        Self { channel, gain, clock }
     }
 }
 
-impl<C: AdcChannel> VoltageSensor for AdcVoltageSensor<C> {
+impl<C: AdcChannel, Clk: MonotonicTimer> Sensor<Measurement<Volt>> for AdcVoltageSensor<C, Clk> {
     type Error = core::convert::Infallible;
 
-    fn read_voltage(&mut self) -> Result<f32, Self::Error> {
+    fn read(&mut self) -> Result<Measurement<Volt>, Self::Error> {
         let raw = self.channel.read_raw();
-        Ok(raw as f32 / ADC_MAX * ADC_VREF * self.gain)
+        let value = raw as f32 / ADC_MAX * ADC_VREF * self.gain;
+        Ok(Measurement::new(self.clock.get_counter_us(), Volt(value)))
     }
 }
 
@@ -178,23 +183,25 @@ impl<C: AdcChannel> VoltageSensor for AdcVoltageSensor<C> {
 /// Exemples :
 /// - Shunt 100 mΩ, ampli gain = 1 → `gain = 1.0 / 0.1`
 /// - Shunt 10 mΩ, ampli ×100 → `gain = 1.0 / (0.01 * 100.0)`
-pub struct AdcCurrentSensor<C: AdcChannel> {
+pub struct AdcCurrentSensor<C: AdcChannel, Clk> {
     channel: C,
     gain: f32,
+    clock: Clk,
 }
 
-impl<C: AdcChannel> AdcCurrentSensor<C> {
-    pub fn new(channel: C, gain: f32) -> Self {
-        Self { channel, gain }
+impl<C: AdcChannel, Clk: MonotonicTimer> AdcCurrentSensor<C, Clk> {
+    pub fn new(channel: C, gain: f32, clock: Clk) -> Self {
+        Self { channel, gain, clock }
     }
 }
 
-impl<C: AdcChannel> CurrentSensor for AdcCurrentSensor<C> {
+impl<C: AdcChannel, Clk: MonotonicTimer> Sensor<Measurement<Ampere>> for AdcCurrentSensor<C, Clk> {
     type Error = core::convert::Infallible;
 
-    fn read_amperes(&mut self) -> Result<f32, Self::Error> {
+    fn read(&mut self) -> Result<Measurement<Ampere>, Self::Error> {
         let raw = self.channel.read_raw();
-        Ok(raw as f32 / ADC_MAX * ADC_VREF * self.gain)
+        let value = raw as f32 / ADC_MAX * ADC_VREF * self.gain;
+        Ok(Measurement::new(self.clock.get_counter_us(), Ampere(value)))
     }
 }
 
@@ -211,24 +218,33 @@ mod tests {
         fn read_raw(&mut self) -> u16 { 2048 }
     }
 
+    /// Horloge mock retournant toujours l'instant zéro.
+    struct MockClock;
+
+    impl MonotonicTimer for MockClock {
+        fn get_counter_us(&self) -> crate::cloud_chamber_hal::timer::Instant {
+            crate::cloud_chamber_hal::timer::Instant::new(0)
+        }
+    }
+
     #[test]
     fn voltage_sensor_returns_positive_value() {
-        let mut sensor = AdcVoltageSensor::new(MockChannel, 3.0);
-        let v = sensor.read_voltage().unwrap();
+        let mut sensor = AdcVoltageSensor::new(MockChannel, 3.0, MockClock);
+        let v = sensor.read().unwrap().value.0;
         assert!(v > 0.0, "tension doit être positive");
     }
 
     #[test]
     fn current_sensor_returns_positive_value() {
-        let mut sensor = AdcCurrentSensor::new(MockChannel, 3.0);
-        let a = sensor.read_amperes().unwrap();
+        let mut sensor = AdcCurrentSensor::new(MockChannel, 3.0, MockClock);
+        let a = sensor.read().unwrap().value.0;
         assert!(a > 0.0, "courant doit être positif");
     }
 
     #[test]
     fn voltage_midscale_is_reasonable() {
-        let mut sensor = AdcVoltageSensor::new(MockChannel, 11.0);
-        let v = sensor.read_voltage().unwrap();
+        let mut sensor = AdcVoltageSensor::new(MockChannel, 11.0, MockClock);
+        let v = sensor.read().unwrap().value.0;
         // 2048/4095 × 3,3 × 11 ≈ 18,17 V
         assert!(v > 17.0 && v < 19.0);
     }
