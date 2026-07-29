@@ -67,8 +67,8 @@ impl MainMenuScreen {
 
         // BACKGROUND
         display.clear(theme::BACKGROUND_COLOR);
-        
-        
+
+
         // STRUCTURE UI
         const SCREEN_SIZE:(u32, u32) = (320, 240);
 
@@ -117,7 +117,7 @@ impl MainMenuScreen {
         const SEPARATION_STEP_SIZE:i32 = 80;
         const SEPARATION_STARTING_COORDS:(i32, i32) = (80, 208);
         const SEPARATION_HEIGHT:i32 = 32;
-        
+
         const SEPARATION_STYLE:PrimitiveStyle<Rgb565> = PrimitiveStyleBuilder::new()
             .stroke_width(1)
             .stroke_color(theme::ACCENT_COLOR)
@@ -138,7 +138,7 @@ impl MainMenuScreen {
         let stats_icons = utils::Icons::new(Bmp::<Rgb565>::from_slice(stats_icons_data).unwrap(), Size::new(18, 18)).unwrap();
 
         const STATS_ICON_STARTING_COORDS:(i32, i32) = (6, 216);
-        
+
         for i in 0..4 {
             let icon = stats_icons.get(i).unwrap();
 
