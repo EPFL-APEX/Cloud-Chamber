@@ -16,6 +16,11 @@ use super::usb::{Serial, usb_write};
 
 /// Parseur de flottant minimal (évite de tirer une crate de parsing float
 /// complète pour un protocole texte simple).
+///
+/// Pas encore appelé : réservé pour `TARGET`, pas encore implémenté (cf.
+/// `handle_command` — dépend d'une consigne opérateur qui n'existe pas
+/// encore sur cette branche).
+#[allow(dead_code)]
 pub fn parse_f32(s: &str) -> Option<f32> {
     let s = s.trim();
     let (neg, s) = if s.starts_with('-') {

@@ -11,9 +11,10 @@ use crate::logic::actuators::ActuatorPlan;
 use defmt::panic;
 
 
+/// Point d'entrée Core0 : boucle de sondage + machine à états.
 ///
-///
-/// Panic if ...
+/// Panique si un capteur ne retourne aucune mesure valide à l'initialisation
+/// (cf. `are_all_some()` ci-dessous) — pas de démarrage dégradé pour l'instant.
 pub fn run() -> ! {
 
     // Sensor Init

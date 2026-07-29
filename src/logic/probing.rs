@@ -141,7 +141,7 @@ where
         if probing_plan.probe_pressure {
             for (slot, reading) in result.press.iter_mut().zip(self.pressure_source.read()) {
                 if reading.is_ok() {
-                    *slot = Some(reading.unwrap());
+                    *slot = reading.ok();
                 } else {
                     todo!("Error handling for pressure probing");
                 }

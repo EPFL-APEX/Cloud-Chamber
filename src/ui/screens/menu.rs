@@ -2,10 +2,10 @@
 //!
 //! # Navigation
 //!
-//! - `select_next()` / `select_previous()` : déplacent la sélection dans la liste
-//! - `selected_item()` : retourne l'élément actuellement sélectionné
+//! - `right_turn()` / `left_turn()` (trait `Rotary`) : déplacent la sélection
+//!   dans la liste.
 //!
-//! La liste est statique (`MAIN_MENU_ITEMS`) — pas d'allocation heap.
+//! La liste est statique (`MAIN_MENU_SIZE`) — pas d'allocation heap.
 
 use embedded_graphics::{
     Drawable, draw_target::DrawTarget, geometry::{OriginDimensions, Point, Size}, image::{Image, ImageDrawableExt}, mono_font::{MonoTextStyle, ascii::FONT_6X13}, pixelcolor::{Rgb565, Rgb888}, primitives::{Line, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle}, text::{Baseline, LineHeight, Text, TextStyle, TextStyleBuilder},
