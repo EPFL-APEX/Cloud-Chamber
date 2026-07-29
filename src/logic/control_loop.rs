@@ -2,14 +2,13 @@
 
 use core::todo;
 
-use crate::{cloud_chamber_hal::sensors::Sensors,
-    shared::data::{SHARED, SensorSnapshot, SystemTask},
+use crate::{cloud_chamber_hal::{sensors::{BatchSensor, Sensors, DeferredBatchSensor}, units::{Celsius, HectoPascal, Volt}}, shared::data::{SHARED, SensorSnapshot, SystemTask},
 };
 use super::probing::MeasurementHistory;
 use crate::logic::actuators::ActuatorPlan;
-
-#[cfg(test)]
-use crate::drivers::mock::{MockPressureSensor, MockTempSensor, MockVoltSensor};
+use crate::cloud_chamber_hal::config::{
+    NUMBER_OF_TEMP_SENSOR, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_VOLTMETER,
+};
 
 use defmt::panic;
 
@@ -18,42 +17,30 @@ use defmt::panic;
 ///
 /// Panique si un capteur ne retourne aucune mesure valide à l'initialisation
 /// (cf. `are_all_some()` ci-dessous) — pas de démarrage dégradé pour l'instant.
-pub fn run() -> ! {
-
-    // Sensor Init
-    //
-    // En test (cargo test / cargo test-host) : capteurs mock, valeurs fixes
-    // arbitraires (pas de matériel à interroger, cf. `drivers::mock`).
-    // Hors test : construction matérielle réelle pas encore câblée ici (I2C,
-    // bus 1-Wire, horloge) — reste un TODO préexistant, hors périmètre de ce
-    // passage (cf. `main.rs`, supprimé lors d'une synchronisation antérieure
-    // avec le travail en cours de l'auteur).
-    #[cfg(test)]
-    let mut sensors = Sensors::new(
-        MockTempSensor::new(20.0),
-        MockPressureSensor::new(1000.0),
-        MockVoltSensor::new(0.0),
-    );
-    #[cfg(not(test))]
-    let mut sensors = Sensors::new();
+pub fn run<Ts, Ps, Vs>(mut sensors: Sensors<Ts, Ps, Vs>) -> !
+where
+    Ts : DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
+    Ps : BatchSensor<HectoPascal, NUMBER_OF_PRESSURE_SENSOR>,
+    Vs : BatchSensor<Volt, NUMBER_OF_VOLTMETER>,
+{
 
     // Initial values, mais est-ce qu'on veut vraiment ça ?
     let mut latest_measurement = sensors.probe_all();
     if !latest_measurement.are_all_some() {panic!("Not every sensor returned a valid measurement, something goes wrong...")};
-    
+
     update_global_state(&latest_measurement);
-    
+
     // History
     let mut measurement_history  = MeasurementHistory::new();
     measurement_history.update(&latest_measurement);
-    
+
     // Task Init
     let mut current_task = SystemTask::default();
-    
+
     // Probing plan
     let mut probing_plan = current_task.create_probing_plan(&measurement_history);
-    
-    
+
+
     // Control loop
     loop {
         latest_measurement = sensors.probe(probing_plan);
@@ -61,7 +48,7 @@ pub fn run() -> ! {
             update_global_state(&latest_measurement);
         };
         measurement_history.update(&latest_measurement);
-        
+
         current_task = get_current_task();
         // TODO: react_to() retourne maintenant (SystemTask, ActuatorPlan) —
         // cette boucle doit migrer vers PhaseClock::new()/next_task() pour
@@ -72,7 +59,7 @@ pub fn run() -> ! {
         let (next_task, plan) = current_task.react_to(&measurement_history);
         current_task = next_task;
         todo!();
-        
+
         probing_plan = current_task.create_probing_plan(&measurement_history);
     }
 }
@@ -83,11 +70,11 @@ fn update_global_state(latest_measurement:&SensorSnapshot) {
     critical_section::with(|cs| {
         let mut shared_state = SHARED.borrow_ref_mut(cs);
         let mut shared_sensor_data = &mut shared_state.snapshot;
-        
+
         merge_new_readings(&mut shared_sensor_data.temps, &latest_measurement.temps);
         merge_new_readings(&mut shared_sensor_data.press, &latest_measurement.press);
         merge_new_readings(&mut shared_sensor_data.volts, &latest_measurement.volts);
-        
+
         shared_state.new_data = true;
     });
 }
