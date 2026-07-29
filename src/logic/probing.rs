@@ -37,11 +37,13 @@ impl ProbingPlan {
 
 impl SystemTask {
     pub fn create_probing_plan(&self, sys_hist: &MeasurementHistory) -> ProbingPlan {
+        use SystemTask::*;
         match self {
-            SystemTask::Idle => todo!(),
-            SystemTask::Cooling(phase) => phase.create_probing_plan(sys_hist),
-            SystemTask::Stabilising => todo!(),
-            SystemTask::Stopping(phase) => phase.create_probing_plan(sys_hist),
+            Idle => todo!(),
+            Cooling(phase) => phase.create_probing_plan(sys_hist),
+            Stabilising => todo!(),
+            Stopping(phase) => phase.create_probing_plan(sys_hist),
+            Tripped(cause) => todo!(),
         }
     }
 }
@@ -156,7 +158,7 @@ where
                 }
             }
         }
-        
+
         if probing_plan.probe_temperature {
             for (slot, reading) in result.temps.iter_mut().zip(self.temperature_source.read_result()) {
                 if reading.is_ok() {
