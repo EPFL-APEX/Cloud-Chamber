@@ -8,6 +8,9 @@ use crate::{cloud_chamber_hal::sensors::Sensors,
 use super::probing::MeasurementHistory;
 use crate::logic::actuators::ActuatorPlan;
 
+#[cfg(test)]
+use crate::drivers::mock::{MockPressureSensor, MockTempSensor, MockVoltSensor};
+
 use defmt::panic;
 
 
@@ -18,8 +21,22 @@ use defmt::panic;
 pub fn run() -> ! {
 
     // Sensor Init
+    //
+    // En test (cargo test / cargo test-host) : capteurs mock, valeurs fixes
+    // arbitraires (pas de matériel à interroger, cf. `drivers::mock`).
+    // Hors test : construction matérielle réelle pas encore câblée ici (I2C,
+    // bus 1-Wire, horloge) — reste un TODO préexistant, hors périmètre de ce
+    // passage (cf. `main.rs`, supprimé lors d'une synchronisation antérieure
+    // avec le travail en cours de l'auteur).
+    #[cfg(test)]
+    let mut sensors = Sensors::new(
+        MockTempSensor::new(20.0),
+        MockPressureSensor::new(1000.0),
+        MockVoltSensor::new(0.0),
+    );
+    #[cfg(not(test))]
     let mut sensors = Sensors::new();
-    
+
     // Initial values, mais est-ce qu'on veut vraiment ça ?
     let mut latest_measurement = sensors.probe_all();
     if !latest_measurement.are_all_some() {panic!("Not every sensor returned a valid measurement, something goes wrong...")};
