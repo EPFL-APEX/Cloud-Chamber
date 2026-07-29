@@ -6,10 +6,10 @@
 //! revenir en arrière (pop). La profondeur maximale est fixée à la compilation
 //! via const generic `DEPTH` — pas d'allocation heap.
 //!
-//! # `InputEvent`
-//!
-//! Abstraction des entrées physiques (encodeur rotatif, bouton) en événements
-//! de navigation logique. Découple l'UI de la source d'entrée.
+//! Générique et testable en isolation : ne connaît aucun écran concret, juste
+//! des tags [`Screen`]. Le câblage vers les écrans réels (`ui::screens::*`)
+//! et le routage des entrées (`ui::interactions::{Rotary, Click}`) vivent
+//! dans [`crate::ui::router`] — pas ici, pour ne pas casser cette pureté.
 
 /// Écrans disponibles dans l'interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,14 +18,10 @@ pub enum Screen {
     MainMenu,
     Settings,
     Stats,
-}
-
-/// Événement de navigation produit par l'encodeur ou d'autres entrées.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputEvent {
-    Next,
-    Previous,
-    Select,
+    Control,
+    Cooldown,
+    Data,
+    Info,
 }
 
 /// Pile de navigation à profondeur fixe.
