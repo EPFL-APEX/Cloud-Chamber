@@ -10,8 +10,10 @@ use crate::cloud_chamber_hal::config::{
     NUMBER_OF_TEMP_SENSOR, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_VOLTMETER,
 };
 
-use defmt::panic;
-
+// `panic!` du prélude et non `defmt::panic` : defmt exige qu'un global
+// logger soit lié, ce qu'aucune cible hôte ne fournit — l'import cassait
+// `cargo test-host` à l'édition de liens. Sur la Pico, panic-probe
+// (feature print-defmt) affiche le message via defmt de toute façon.
 
 /// Point d'entrée Core0 : boucle de sondage + machine à états.
 ///
