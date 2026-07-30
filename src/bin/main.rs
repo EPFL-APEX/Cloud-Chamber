@@ -55,6 +55,17 @@ pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 // Slot 0..N = ordre de découverte — publié via USB pour identification.
 const OW_MASK: u32 = 1 << 15; // GP15 — cf. config::PIN_ONEWIRE
 
+// ── Résolution des DS18B20 ───────────────────────────────────────────────────
+// Les deux constantes vont ensemble : changer l'une sans l'autre donne soit des
+// lectures avant fin de conversion (valeurs figées), soit une cadence inutilement
+// lente. Cf. la table datasheet dans le commentaire de configuration plus bas.
+const DS_RESOLUTION_CONFIG: u8 = 0x5F; // 11 bits — 0.125 °C
+const DS_CONVERSION_MS:     u64 = 375; // temps de conversion correspondant
+/// Période d'un cycle complet (conversion + lecture des 5 sondes).
+/// Doit rester > DS_CONVERSION_MS + ~40 ms de lecture. Était à 1000 ms quand la
+/// conversion prenait 750 ms ; à 500 ms on double la fréquence de mesure.
+const DS_CYCLE_MS:          u64 = 500;
+
 // ── Garde anti-blocage du bus I²C ────────────────────────────────────────────
 // Un BME280 câblé mais NON alimenté écrase SDA/SCL via ses diodes de
 // protection ESD : le driver I²C bloquant (sans timeout) gèlerait la boucle,
@@ -140,13 +151,21 @@ fn main() -> ! {
         sio.gpio_out_clr().write(|w| w.bits(OW_MASK));
         sio.gpio_oe_clr().write(|w| w.bits(OW_MASK)); // high-Z = idle open-drain
     }
-    // Configurer résolution 12-bit sur tous (SKIP ROM = broadcast)
+    // Configurer la résolution sur tous les capteurs (SKIP ROM = broadcast).
+    //
+    // 11 bits plutôt que le 12 bits d'usine : 0.125 °C de résolution au lieu de
+    // 0.0625 °C, mais 375 ms de conversion au lieu de 750 ms — soit près de deux
+    // fois plus de mesures. Le critère de stabilité de la chambre est à ±1 °C
+    // (STABLE_TOLERANCE_C), 0.125 °C reste très en dessous.
+    //
+    // Table datasheet DS18B20 : 9 bits = 0x1F / 93.75 ms, 10 bits = 0x3F /
+    // 187.5 ms, 11 bits = 0x5F / 375 ms, 12 bits = 0x7F / 750 ms.
     if onewire::ow_reset(&timer, OW_MASK) {
         onewire::ow_write_byte(&timer, OW_MASK, 0xCC); // SKIP ROM
         onewire::ow_write_byte(&timer, OW_MASK, 0x4E); // WRITE SCRATCHPAD
         onewire::ow_write_byte(&timer, OW_MASK, 0x55); // TH
         onewire::ow_write_byte(&timer, OW_MASK, 0x05); // TL
-        onewire::ow_write_byte(&timer, OW_MASK, 0x7F); // 12-bit (0.0625 °C, conversion 750 ms)
+        onewire::ow_write_byte(&timer, OW_MASK, DS_RESOLUTION_CONFIG);
     }
     // ROM codes découverts après USB ready (section plus bas)
     let mut rom_codes = [[0u8; 8]; 5];
@@ -410,8 +429,10 @@ fn main() -> ! {
             }
         }
 
-        // DS18B20 — Phase 1 : lancer la conversion (non-bloquant), 1 Hz
-        if !ds_reading_phase && now_ms.saturating_sub(last_ds_start_ms) >= 1_000 {
+        // DS18B20 — Phase 1 : lancer la conversion (non-bloquant).
+        // Une seule diffusion SKIP ROM + CONVERT T : les 5 sondes convertissent
+        // en parallèle, on n'attend donc qu'une fois pour tout le bus.
+        if !ds_reading_phase && now_ms.saturating_sub(last_ds_start_ms) >= DS_CYCLE_MS {
             if onewire::ow_reset(&timer, OW_MASK) {
                 onewire::ow_write_byte(&timer, OW_MASK, 0xCC); // SKIP ROM
                 onewire::ow_write_byte(&timer, OW_MASK, 0x44); // CONVERT T
@@ -420,8 +441,8 @@ fn main() -> ! {
             last_ds_start_ms  = now_ms;
         }
 
-        // DS18B20 — Phase 2 : lecture après 750 ms (conversion 12-bit terminée)
-        if ds_reading_phase && now_ms.saturating_sub(last_ds_start_ms) >= 750 {
+        // DS18B20 — Phase 2 : lecture une fois la conversion terminée.
+        if ds_reading_phase && now_ms.saturating_sub(last_ds_start_ms) >= DS_CONVERSION_MS {
             for idx in 0..5usize {
                 // La lecture des 5 capteurs bloque ~40 ms au total : on draine
                 // l'USB entre chaque capteur pour ne pas perdre de commandes.
