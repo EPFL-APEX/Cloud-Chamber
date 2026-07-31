@@ -77,26 +77,28 @@ impl Default for SystemTask {
     }
 }
 
-/// Données échangées entre Core1 (producteur) et Core0 (consommateur).
+/// Publié par `logic::control_loop::run()` (seul écrivain) pour les
+/// lecteurs (UI...). Pas de boucle Core1 séparée — architecture abandonnée,
+/// cf. `logic::security`.
 pub struct SharedState {
     pub snapshot: SensorSnapshot,
-    pub system_state: SystemTask,
-    /// Mis à `true` par Core1 quand de nouvelles données sont disponibles.
+    pub task: SystemTask,
+    /// Mis à `true` quand de nouvelles données de capteur sont disponibles.
     pub new_data: bool,
 }
 
 // ─── Point de partage global ─────────────────────────────────────────────────
-/// Static partagé entre Core0 et Core1.
+/// Static partagé entre le cœur de contrôle et ses lecteurs (UI...).
 ///
-/// Toujours accéder via `critical_section::with(|cs| { SHARED.borrow(cs)... })`.
-pub static SHARED: Mutex<RefCell<SharedState>> = Mutex::new(RefCell::new(SharedState {
-    snapshot: SensorSnapshot { 
+/// Toujours accéder via `critical_section::with(|cs| { SHARED_STATE.borrow(cs)... })`.
+pub static SHARED_STATE: Mutex<RefCell<SharedState>> = Mutex::new(RefCell::new(SharedState {
+    snapshot: SensorSnapshot {
             temps: [None; NUMBER_OF_TEMP_SENSOR],
             press: [None; NUMBER_OF_PRESSURE_SENSOR],
             volts: [None; NUMBER_OF_VOLTMETER],
-            is_closed: false 
+            is_closed: false
     },
-    system_state: SystemTask::Idle,
+    task: SystemTask::Idle,
     new_data: false,
 }));
 
@@ -122,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn system_state_variants_are_distinct() {
+    fn system_task_variants_are_distinct() {
         assert_ne!(SystemTask::Idle, SystemTask::Stabilising);
         assert_ne!(SystemTask::Idle, SystemTask::Cooling(CoolingPhase::SensorCheck));
         assert_ne!(

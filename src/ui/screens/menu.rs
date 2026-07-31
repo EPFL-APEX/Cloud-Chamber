@@ -14,7 +14,7 @@ use embedded_graphics::{
 use tinybmp::Bmp;
 use num_enum::{TryFromPrimitive, IntoPrimitive};
 
-use crate::ui::{interactions::{Click, Rotary}, navigator::Screen::MainMenu, theme, utils};
+use crate::ui::{interactions::{Click, NavAction, Rotary}, navigator::Screen, theme, utils};
 
 /// Entrées du menu principal.
 #[repr(u8)]
@@ -50,8 +50,16 @@ impl Rotary for MainMenuScreen {
 }
 
 impl Click for MainMenuScreen {
-    fn click(&mut self) {
-        todo!()
+    fn click(&mut self) -> Option<NavAction> {
+        let screen = match MainMenuItem::try_from(self.selected).ok()? {
+            MainMenuItem::CONTROL => Screen::ManualControl,
+            MainMenuItem::STATS => Screen::Stats,
+            MainMenuItem::SETTINGS => Screen::Settings,
+            MainMenuItem::COOLDOWN => Screen::CurrentTask,
+            MainMenuItem::DATA => Screen::Data,
+            MainMenuItem::INFO => Screen::Info,
+        };
+        Some(NavAction::Push(screen))
     }
 }
 
@@ -204,21 +212,21 @@ mod tests {
     #[test]
     fn select_previous_increments() {
         let mut menu = MainMenuScreen::new();
-        menu.left_turn();
+        menu.right_turn();
         assert_eq!(menu.selected, 1);
     }
 
     #[test]
     fn select_next_at_top_stays() {
         let mut menu = MainMenuScreen::new();
-        menu.right_turn();
+        menu.left_turn();
         assert_eq!(menu.selected, 0);
     }
 
     #[test]
     fn select_previous_at_bottom_stays() {
         let mut menu = MainMenuScreen::new();
-        for _ in 0..20 { menu.left_turn(); }
+        for _ in 0..20 { menu.right_turn(); }
         assert_eq!(menu.selected, MAIN_MENU_SIZE - 1);
     }
 
@@ -226,6 +234,26 @@ mod tests {
     fn menu_draws_without_error() {
         let mut d = make_display();
         MainMenuScreen::new().draw(&mut d).unwrap();
+    }
+
+    #[test]
+    fn click_on_first_item_pushes_control() {
+        let mut menu = MainMenuScreen::new();
+        assert_eq!(menu.click(), Some(NavAction::Push(Screen::ManualControl)));
+    }
+
+    #[test]
+    fn click_on_stats_pushes_stats() {
+        let mut menu = MainMenuScreen::new();
+        menu.right_turn(); // CONTROL -> STATS
+        assert_eq!(menu.click(), Some(NavAction::Push(Screen::Stats)));
+    }
+
+    #[test]
+    fn click_on_last_item_pushes_info() {
+        let mut menu = MainMenuScreen::new();
+        for _ in 0..MAIN_MENU_SIZE { menu.right_turn(); }
+        assert_eq!(menu.click(), Some(NavAction::Push(Screen::Info)));
     }
 
     //#[test]
@@ -239,9 +267,9 @@ mod tests {
     /// Entrée/Espace pour cliquer, fermer la fenêtre pour quitter.
     ///
     /// `cargo test --features live-menu-test main_menu_live` (nécessite
-    /// SDL2 installé et un affichage). `click()` est encore `todo!()` à ce
-    /// stade du repo — Entrée/Espace paniqueront tant qu'il n'est pas
-    /// implémenté, ce qui reste acceptable pour un test manuel.
+    /// SDL2 installé et un affichage). `click()` ne pousse pas réellement
+    /// sur une pile de navigation ici (pas de `Navigator` dans ce test) —
+    /// la décision renvoyée est juste ignorée.
     #[cfg(feature = "live-menu-test")]
     #[test]
     fn main_menu_live() {
@@ -263,7 +291,7 @@ mod tests {
                         match keycode {
                             Keycode::Right | Keycode::Down => menu.right_turn(),
                             Keycode::Left | Keycode::Up => menu.left_turn(),
-                            Keycode::Return | Keycode::Space => menu.click(),
+                            Keycode::Return | Keycode::Space => { menu.click(); }
                             _ => continue,
                         }
                         menu.draw(&mut display).unwrap();
@@ -288,7 +316,7 @@ mod tests {
 
         let path = std::env::args_os()
             .nth(1)
-            .unwrap_or_else(|| "screenshot.png".into());
+            .unwrap_or_else(|| "screenshots/MainMenu.png".into());
         display
             .to_rgb_output_image(&output_settings)
             .save_png(&path)

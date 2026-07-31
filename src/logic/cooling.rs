@@ -9,7 +9,7 @@
 
 use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
 use crate::config::{PRECOOL_TARGET_C, SATURATION_TARGET_C, STABLE_WINDOW_MS, STABLE_TOLERANCE_C};
-use crate::logic::actuators::ActuatorPlan;
+use crate::cloud_chamber_hal::actuators::ActuatorPlan;
 use crate::logic::probing::{MeasurementHistory, ProbingPlan};
 use crate::shared::data::SystemTask;
 
@@ -24,15 +24,12 @@ pub enum CoolingPhase {
 }
 
 impl CoolingPhase {
+    /// Sonde tout à chaque cycle pour l'instant — l'optimisation "sauter la
+    /// conversion température coûteuse (~800ms) sur certaines phases",
+    /// l'intention originale de `ProbingPlan`, reste un raffinement
+    /// ultérieur, pas requise pour un premier cycle correct.
     pub fn create_probing_plan(&self, _prob_hist: &MeasurementHistory) -> ProbingPlan {
-        match self {
-            Self::SensorCheck => todo!(),
-            Self::PreCoolingThePlate => todo!(),
-            Self::StartingIpaCirculation => todo!(),
-            Self::SaturatingAirWithIpa => todo!(),
-            Self::HighVoltage => todo!(),
-            Self::FinalCheckBeforeStabilising => todo!(),
-        }
+        ProbingPlan::all()
     }
 
     pub fn react_to(self, history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {

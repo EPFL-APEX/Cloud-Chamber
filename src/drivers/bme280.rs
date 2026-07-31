@@ -237,7 +237,7 @@ impl<I: I2cTrait, D: DelayNs, C: MonotonicTimer> Sensor<Measurement<Celsius>> fo
 
     fn read(&mut self) -> Result<Measurement<Celsius>, Self::Error> {
         self.start_conversion()?;
-        self.delay.delay_ms(self.conversion_time_ms().as_millis());
+        self.delay.delay_ms(self.conversion_time_ms().as_millis() as u32);
         self.read_result()
     }
 }
@@ -247,11 +247,11 @@ impl<I: I2cTrait, D: DelayNs, C: MonotonicTimer> DeferredSensor<Measurement<Cels
         self.driver.trigger_measurement()
     }
 
-    fn conversion_time_ms(&self) -> Duration { Duration::new(15) }
+    fn conversion_time_ms(&self) -> Duration { Duration::from_millis(15) }
 
     fn read_result(&mut self) -> Result<Measurement<Celsius>, Self::Error> {
         self.driver.fetch_raw()?;
         let value = self.driver.read_celsius()?;
-        Ok(Measurement::new(self.clock.get_counter_us(), Celsius(value)))
+        Ok(Measurement::new(self.clock.now(), Celsius(value)))
     }
 }

@@ -158,6 +158,6 @@ impl<I: I2cTrait, C: MonotonicTimer> Sensor<Measurement<HectoPascal>> for Abp2Se
     /// Lit la pression et la convertit en hectopascal (1 bar = 1000 hPa).
     fn read(&mut self) -> Result<Measurement<HectoPascal>, Self::Error> {
         let hpa = self.driver.read()?.pressure_bar * 1000.0;
-        Ok(Measurement::new(self.clock.get_counter_us(), HectoPascal(hpa)))
+        Ok(Measurement::new(self.clock.now(), HectoPascal(hpa)))
     }
 }

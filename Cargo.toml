@@ -18,6 +18,7 @@ charts = ["dep:embedded-charts"]
 # interactif `main_menu_live` (src/ui/screens/menu.rs) — nécessite SDL2
 # installé sur la machine de compilation.
 live-menu-test = ["embedded-graphics-simulator/with-sdl"]
+usb-comm = []
 
 [dependencies]
 cortex-m = "0.7"

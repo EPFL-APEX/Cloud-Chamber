@@ -15,6 +15,11 @@ pub const PIN_I2C_SDA: u8 = 4;
 pub const PIN_I2C_SCL: u8 = 5;
 /// GPIO de sortie pour le relais de sécurité compresseur
 pub const PIN_COMPRESSOR_RELAY: u8 = 16;
+/// TODO CÂBLAGE : broches provisoires (GP17/GP18, suite de
+/// `PIN_COMPRESSOR_RELAY`), jamais vérifiées sur le montage réel — à
+/// confirmer avant tout bring-up matériel.
+pub const PIN_HV_RELAY: u8 = 17;
+pub const PIN_ISO_HEATER_RELAY: u8 = 18;
 
 // ─── Adresses I²C des capteurs de pression ABP2 ───────────────────────────────
 

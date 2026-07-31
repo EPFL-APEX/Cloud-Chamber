@@ -171,7 +171,7 @@ impl<C: AdcChannel, Clk: MonotonicTimer> Sensor<Measurement<Volt>> for AdcVoltag
     fn read(&mut self) -> Result<Measurement<Volt>, Self::Error> {
         let raw = self.channel.read_raw();
         let value = raw as f32 / ADC_MAX * ADC_VREF * self.gain;
-        Ok(Measurement::new(self.clock.get_counter_us(), Volt(value)))
+        Ok(Measurement::new(self.clock.now(), Volt(value)))
     }
 }
 
@@ -201,7 +201,7 @@ impl<C: AdcChannel, Clk: MonotonicTimer> Sensor<Measurement<Ampere>> for AdcCurr
     fn read(&mut self) -> Result<Measurement<Ampere>, Self::Error> {
         let raw = self.channel.read_raw();
         let value = raw as f32 / ADC_MAX * ADC_VREF * self.gain;
-        Ok(Measurement::new(self.clock.get_counter_us(), Ampere(value)))
+        Ok(Measurement::new(self.clock.now(), Ampere(value)))
     }
 }
 
@@ -222,8 +222,8 @@ mod tests {
     struct MockClock;
 
     impl MonotonicTimer for MockClock {
-        fn get_counter_us(&self) -> crate::cloud_chamber_hal::timer::Instant {
-            crate::cloud_chamber_hal::timer::Instant::new(0)
+        fn now(&self) -> crate::cloud_chamber_hal::timer::Instant {
+            crate::cloud_chamber_hal::timer::Instant::from_micros(0)
         }
     }
 
