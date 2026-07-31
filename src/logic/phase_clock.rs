@@ -19,22 +19,23 @@ use crate::logic::stopping::StoppingPhase;
 use crate::shared::data::SystemTask;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PhaseDurations {
-    pub min_duration_ms: Option<u64>,
-    pub timeout_ms: Option<u64>,
+pub enum PhaseDurations {
+    Duration(u64),
+    Timout(u64),
+    Unbound,
 }
 
 impl PhaseDurations {
     const fn unbounded() -> Self {
-        Self { min_duration_ms: None, timeout_ms: None }
+        Self::Unbound
     }
 
     const fn timed(min_duration_ms: u64) -> Self {
-        Self { min_duration_ms: Some(min_duration_ms), timeout_ms: None }
+        Self::Duration(min_duration_ms)
     }
 
     const fn with_timeout(timeout_ms: u64) -> Self {
-        Self { min_duration_ms: None, timeout_ms: Some(timeout_ms) }
+        Self::Timout(timeout_ms)
     }
 }
 
