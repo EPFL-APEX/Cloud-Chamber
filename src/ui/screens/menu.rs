@@ -316,7 +316,7 @@ mod tests {
 
         let path = std::env::args_os()
             .nth(1)
-            .unwrap_or_else(|| "screenshot.png".into());
+            .unwrap_or_else(|| "screenshots/MainMenu.png".into());
         display
             .to_rgb_output_image(&output_settings)
             .save_png(&path)

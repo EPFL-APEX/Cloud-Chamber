@@ -6,3 +6,4 @@
 pub(super) mod menu;
 pub(super) mod temp;
 pub(super) mod stats;
+pub(super) mod widgets;
