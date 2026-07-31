@@ -16,11 +16,11 @@ impl<Unit> Measurement<Unit> {
 
     /// `true` si cette mesure est plus récente que `other`.
     pub fn is_newer_than(&self, other: &Self) -> bool {
-        self.time.is_newer_than(&other.time)
+        self.time > other.time
     }
 
     /// `true` si cette mesure est plus ancienne que `other`.
     pub fn is_older_than(&self, other: &Self) -> bool {
-        other.time.is_newer_than(&self.time)
+        self.time < other.time
     }
 }

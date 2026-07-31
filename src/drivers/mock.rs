@@ -23,9 +23,9 @@ pub struct MockTempSensor {
 }
 
 impl MockTempSensor {
-    /// Toutes les cases valent `value_c`, horodatées à `Instant::new(0)`.
+    /// Toutes les cases valent `value_c`, horodatées à `Instant::from_micros(0)`.
     pub fn new(value_c: f32) -> Self {
-        let m = Measurement::new(Instant::new(0), Celsius(value_c));
+        let m = Measurement::new(Instant::from_micros(0), Celsius(value_c));
         Self { readings: core::array::from_fn(|_| Ok(m)) }
     }
 
@@ -49,7 +49,7 @@ impl DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR> for MockTempSensor {
     }
 
     fn conversion_time_ms(&self) -> Duration {
-        Duration::new(0)
+        Duration::from_millis(0)
     }
 
     fn read_result(&mut self) -> [Result<Measurement<Celsius>, Self::Error>; NUMBER_OF_TEMP_SENSOR] {
@@ -64,9 +64,9 @@ pub struct MockPressureSensor {
 }
 
 impl MockPressureSensor {
-    /// Toutes les cases valent `value_hpa`, horodatées à `Instant::new(0)`.
+    /// Toutes les cases valent `value_hpa`, horodatées à `Instant::from_micros(0)`.
     pub fn new(value_hpa: f32) -> Self {
-        let m = Measurement::new(Instant::new(0), HectoPascal(value_hpa));
+        let m = Measurement::new(Instant::from_micros(0), HectoPascal(value_hpa));
         Self { readings: core::array::from_fn(|_| Ok(m)) }
     }
 
@@ -91,9 +91,9 @@ pub struct MockVoltSensor {
 }
 
 impl MockVoltSensor {
-    /// Toutes les cases valent `value_v`, horodatées à `Instant::new(0)`.
+    /// Toutes les cases valent `value_v`, horodatées à `Instant::from_micros(0)`.
     pub fn new(value_v: f32) -> Self {
-        let m = Measurement::new(Instant::new(0), Volt(value_v));
+        let m = Measurement::new(Instant::from_micros(0), Volt(value_v));
         Self { readings: core::array::from_fn(|_| Ok(m)) }
     }
 

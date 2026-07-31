@@ -187,10 +187,10 @@ impl Resolution {
     /// Valeurs datasheet + 50 ms de marge pour les clones et les pull-up lents.
     pub fn conversion_time_ms(self) -> Duration {
         match self {
-            Self::Bits9  => Duration::new(150),
-            Self::Bits10 => Duration::new(240),
-            Self::Bits11 => Duration::new(430),
-            Self::Bits12 => Duration::new(800),
+            Self::Bits9  => Duration::from_millis(150),
+            Self::Bits10 => Duration::from_millis(240),
+            Self::Bits11 => Duration::from_millis(430),
+            Self::Bits12 => Duration::from_millis(800),
         }
     }
 }
@@ -564,7 +564,7 @@ BatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR> for Ds18b20Sensors<P, D, C>
         if let Err(e) = self.start_conversion() {
             return core::array::from_fn(|_| Err(e));
         }
-        self.delay.delay_ms(self.resolution.conversion_time_ms().as_millis());
+        self.delay.delay_ms(self.resolution.conversion_time_ms().as_millis() as u32);
         self.read_result()
     }
 }
@@ -585,7 +585,7 @@ DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR> for Ds18b20Sensors<P, D, C>
         core::array::from_fn(|i| {
             if i >= count { return Err(Ds18b20Error::NoSensor); }
             let value = self.bus.read_celsius(i, &mut self.delay)?;
-            Ok(Measurement::new(self.clock.get_counter_us(), Celsius(value)))
+            Ok(Measurement::new(self.clock.now(), Celsius(value)))
         })
     }
 }

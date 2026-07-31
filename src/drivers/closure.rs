@@ -29,7 +29,7 @@ impl<Pin: InputPin, Clk: MonotonicTimer> Sensor<Measurement<bool>> for GpioClosu
     fn read(&mut self) -> Result<Measurement<bool>, Self::Error> {
         let high = self.pin.is_high()?;
         let closed = if self.active_low { !high } else { high };
-        Ok(Measurement::new(self.clock.get_counter_us(), closed))
+        Ok(Measurement::new(self.clock.now(), closed))
     }
 }
 
@@ -56,8 +56,8 @@ mod tests {
     struct MockClock;
 
     impl MonotonicTimer for MockClock {
-        fn get_counter_us(&self) -> crate::cloud_chamber_hal::timer::Instant {
-            crate::cloud_chamber_hal::timer::Instant::new(0)
+        fn now(&self) -> crate::cloud_chamber_hal::timer::Instant {
+            crate::cloud_chamber_hal::timer::Instant::from_micros(0)
         }
     }
 
