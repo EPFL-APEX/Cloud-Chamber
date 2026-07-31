@@ -2,7 +2,7 @@ use crate::cloud_chamber_hal::sensors::{BatchSensor, DeferredBatchSensor, Sensor
 use crate::cloud_chamber_hal::measurement::Measurement;
 use crate::cloud_chamber_hal::units::{Celsius, HectoPascal, Volt};
 use crate::cloud_chamber_hal::config::{
-    NUMBER_OF_TEMP_SENSOR, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_VOLTMETER,
+    CHAMBER_TEMP_IDX, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_VOLTMETER,
 };
 use crate::config::CONTROL_LOOP_HISTORY_SIZE;
 use crate::shared::{
@@ -62,7 +62,7 @@ pub struct MeasurementHistory {
 impl MeasurementHistory {
 
     pub fn new() -> Self {
-        let t0 = Instant::new(0);
+        let t0 = Instant::from_micros(0);
         let default_temp = Measurement::new(t0, Celsius(f32::NAN));
         let default_press = Measurement::new(t0, HectoPascal(f32::NAN));
         let default_volts = Measurement::new(t0, Volt(f32::NAN));
@@ -112,6 +112,21 @@ impl MeasurementHistory {
 
         let expected = (window_ms / 1_000) as usize;
         n >= expected.saturating_mul(4) / 5 && n >= 2 && (max - min) <= tolerance
+    }
+
+    /// Depuis combien de temps la sonde base-chambre n'a pas fourni de
+    /// lecture. Pas de champ dédié à maintenir ailleurs : le ring buffer ne
+    /// se met à jour que sur une lecture réussie (`push_if_newer` ignore
+    /// les absences), son horodatage le plus récent EST la fraîcheur
+    /// cherchée. `0` si jamais aucune lecture (buffer encore à sa valeur
+    /// par défaut `Instant::from_micros(0)`) — traité comme "infiniment
+    /// périmé" par l'appelant via `now_ms - 0`.
+    pub fn chamber_stale_ms(&self, now_ms: u64) -> u64 {
+        let last_valid_ms = self.temps[CHAMBER_TEMP_IDX]
+            .get(0)
+            .map(|m| m.time.as_millis())
+            .unwrap_or(0);
+        now_ms.saturating_sub(last_valid_ms)
     }
 }
 
@@ -169,5 +184,34 @@ where
 
     pub fn probe_all(&mut self) -> SensorSnapshot {
         self.probe(ProbingPlan::all())
+    }
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chamber_stale_ms_is_infinite_when_never_read() {
+        let history = MeasurementHistory::new();
+        assert_eq!(history.chamber_stale_ms(60_000), 60_000);
+    }
+
+    #[test]
+    fn chamber_stale_ms_reflects_last_valid_reading() {
+        let mut history = MeasurementHistory::new();
+        history.temps[CHAMBER_TEMP_IDX]
+            .push(Measurement::new(Instant::from_micros(10_000_000), Celsius(-20.0))); // 10s
+        assert_eq!(history.chamber_stale_ms(15_000), 5_000);
+    }
+
+    #[test]
+    fn chamber_stale_ms_zero_right_after_a_reading() {
+        let mut history = MeasurementHistory::new();
+        history.temps[CHAMBER_TEMP_IDX]
+            .push(Measurement::new(Instant::from_micros(10_000_000), Celsius(-20.0))); // 10s
+        assert_eq!(history.chamber_stale_ms(10_000), 0);
     }
 }

@@ -1,0 +1,350 @@
+//! Limites temporelles de chaque état.
+//!
+//! `cooling.rs` et `stopping.rs` ne portent aucune notion de durée : leurs
+//! transitions ne dépendent que des mesures. C'est donc ici, et nulle part
+//! ailleurs, qu'un état est associé à un temps.
+//!
+//! `min_duration_ms` fait avancer les phases sans capteur dédié (circulation
+//! IPA, décharge HT) ; `timeout_ms` abandonne celles qui attendent un seuil
+//! jamais atteint. `None` = pas de limite, et le type interdit de comparer
+//! par inadvertance une limite absente à une durée.
+
+use crate::config::{
+    FINAL_CHECK_TIMEOUT_MS, HV_STABILISE_TIMEOUT_MS, IPA_CIRCULATION_MS, PRECOOL_TIMEOUT_MS,
+    SATURATION_TIMEOUT_MS, SENSOR_CHECK_TIMEOUT_MS, SENSOR_LOSS_MS, STOP_COMPRESSOR_SETTLE_MS,
+    STOP_EQUALIZE_FALLBACK_MS, STOP_HV_SETTLE_MS,
+};
+use crate::cloud_chamber_hal::actuators::ActuatorPlan;
+use crate::cloud_chamber_hal::timer::{Instant, MonotonicTimer};
+use crate::logic::cooling::CoolingPhase;
+use crate::logic::probing::MeasurementHistory;
+use crate::logic::stopping::StoppingPhase;
+use crate::shared::data::SystemTask;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhaseDurations {
+    Duration(u64),
+    Timeout(u64),
+    Unbound,
+}
+
+impl PhaseDurations {
+    const fn unbounded() -> Self {
+        Self::Unbound
+    }
+
+    const fn timed(min_duration_ms: u64) -> Self {
+        Self::Duration(min_duration_ms)
+    }
+
+    const fn with_timeout(timeout_ms: u64) -> Self {
+        Self::Timeout(timeout_ms)
+    }
+}
+
+impl SystemTask {
+    pub fn durations(&self) -> PhaseDurations {
+        use CoolingPhase::*;
+        use StoppingPhase::*;
+
+        match self {
+            SystemTask::Idle => PhaseDurations::unbounded(),
+
+            SystemTask::Cooling(SensorCheck) => {
+                PhaseDurations::with_timeout(SENSOR_CHECK_TIMEOUT_MS)
+            }
+            SystemTask::Cooling(PreCoolingThePlate) => {
+                PhaseDurations::with_timeout(PRECOOL_TIMEOUT_MS)
+            }
+            // Aucun capteur ne mesure la circulation d'isopropanol : le temps
+            // est le seul témoin, il déclenche donc la transition.
+            SystemTask::Cooling(StartingIpaCirculation) => {
+                PhaseDurations::timed(IPA_CIRCULATION_MS)
+            }
+            SystemTask::Cooling(SaturatingAirWithIpa) => {
+                PhaseDurations::with_timeout(SATURATION_TIMEOUT_MS)
+            }
+            SystemTask::Cooling(HighVoltage) => {
+                PhaseDurations::with_timeout(HV_STABILISE_TIMEOUT_MS)
+            }
+            SystemTask::Cooling(FinalCheckBeforeStabilising) => {
+                PhaseDurations::with_timeout(FINAL_CHECK_TIMEOUT_MS)
+            }
+
+            SystemTask::Stabilising => PhaseDurations::unbounded(),
+
+            SystemTask::Stopping(CutHighVoltage) => PhaseDurations::timed(STOP_HV_SETTLE_MS),
+            SystemTask::Stopping(CutCompressor) => {
+                PhaseDurations::timed(STOP_COMPRESSOR_SETTLE_MS)
+            }
+            // Repli quand le capteur HP est absent ou trop lent : contrairement
+            // aux autres timeouts, la fin de phase reste normale.
+            SystemTask::Stopping(WaitPressureEquilibrium) => {
+                PhaseDurations::with_timeout(STOP_EQUALIZE_FALLBACK_MS)
+            }
+
+            // Verrouillé jusqu'au réarmement opérateur.
+            SystemTask::Tripped(_) => PhaseDurations::unbounded(),
+        }
+    }
+}
+
+/// Abandon si la sonde base-chambre reste invalide trop longtemps en cours
+/// de cycle (hors `SensorCheck`, qui attend justement cette sonde, et hors
+/// `Idle`/`Stabilising`/`Tripped`, qui n'en dépendent pas de la même façon).
+fn sensor_loss_abort(task: SystemTask, chamber_stale_ms: u64) -> Option<SystemTask> {
+    let mid_cycle = matches!(task, SystemTask::Cooling(p) if p != CoolingPhase::SensorCheck);
+    (mid_cycle && chamber_stale_ms > SENSOR_LOSS_MS).then_some(SystemTask::Idle)
+}
+
+/// Où va une phase purement temporisée (`PhaseDurations::Duration`) une fois
+/// sa durée minimale écoulée — `durations()` dit "combien de temps", pas
+/// "vers où", ce petit aiguillage complète l'info pour les 3 seules phases
+/// concernées.
+fn next_after_duration(task: SystemTask) -> SystemTask {
+    use CoolingPhase::*;
+    use StoppingPhase::*;
+    match task {
+        SystemTask::Cooling(StartingIpaCirculation) => SystemTask::Cooling(SaturatingAirWithIpa),
+        SystemTask::Stopping(CutHighVoltage) => SystemTask::Stopping(CutCompressor),
+        SystemTask::Stopping(CutCompressor) => SystemTask::Stopping(WaitPressureEquilibrium),
+        // N'arrive pas si `durations()` reste cohérent avec ce match — reste
+        // dans la phase plutôt que de paniquer sur une incohérence interne.
+        _ => task,
+    }
+}
+
+/// Délais/timeouts purs, dérivés de `SystemTask::durations()`. Un timeout
+/// dépassé abandonne toujours vers `Idle` ; une durée minimale écoulée fait
+/// avancer vers la phase suivante (`next_after_duration`).
+fn timed_transition(task: SystemTask, elapsed_ms: u64) -> Option<SystemTask> {
+    match task.durations() {
+        PhaseDurations::Timeout(timeout_ms) if elapsed_ms > timeout_ms => Some(SystemTask::Idle),
+        PhaseDurations::Duration(min_duration_ms) if elapsed_ms >= min_duration_ms => {
+            Some(next_after_duration(task))
+        }
+        _ => None,
+    }
+}
+
+/// Combine mesure (`react_to`, prioritaire), abandon perte-capteur, puis
+/// délai/timeout (repli) — la seule décision "quel est le prochain état
+/// en mode automatique". Fonction pure : ne possède rien, ne consulte pas
+/// la sécurité (priorité absolue gérée par l'appelant, cf.
+/// `control_loop.rs::run()`), ne sait rien d'une horloge — juste des
+/// durées déjà calculées.
+pub fn advance(
+    current: SystemTask, history: &MeasurementHistory, elapsed_ms: u64, chamber_stale_ms: u64,
+) -> (SystemTask, ActuatorPlan) {
+    let (reacted, plan) = current.react_to(history);
+    if reacted != current {
+        return (reacted, plan);
+    }
+    let next = sensor_loss_abort(current, chamber_stale_ms)
+        .or_else(|| timed_transition(current, elapsed_ms))
+        .unwrap_or(current);
+    (next, plan)
+}
+
+/// Mémorise la phase courante et depuis quand, en lisant l'horloge de
+/// l'appareil qu'il possède — seule responsabilité de ce type. Ne connaît
+/// ni la sécurité, ni les capteurs, ni comment décider la phase suivante
+/// (`advance`, ci-dessus) : uniquement "quelle phase, depuis quand".
+pub struct PhaseClock<Clk: MonotonicTimer> {
+    clock: Clk,
+    current: SystemTask,
+    entered_at: Instant,
+}
+
+impl<Clk: MonotonicTimer> PhaseClock<Clk> {
+    pub fn new(clock: Clk, initial: SystemTask) -> Self {
+        let entered_at = clock.now();
+        Self { clock, current: initial, entered_at }
+    }
+
+    pub fn current(&self) -> SystemTask {
+        self.current
+    }
+
+    pub fn now_ms(&self) -> u64 {
+        self.clock.now().as_millis()
+    }
+
+    pub fn elapsed_ms(&self) -> u64 {
+        self.clock.elapsed_since(self.entered_at).as_millis()
+    }
+
+    /// Force une transition — remet l'horloge de phase à zéro si l'état
+    /// change, sans effet sinon.
+    pub fn set(&mut self, task: SystemTask) {
+        if task != self.current {
+            self.current = task;
+            self.entered_at = self.clock.now();
+        }
+    }
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
+    use crate::cloud_chamber_hal::measurement::Measurement;
+    use crate::cloud_chamber_hal::units::Celsius;
+    use crate::logic::security::SafetyCause;
+    use core::cell::Cell;
+
+    // ─── PhaseDurations ─────────────────────────────────────────────────────
+
+    #[test]
+    fn idle_has_no_limit() {
+        assert_eq!(SystemTask::Idle.durations(), PhaseDurations::Unbound);
+    }
+
+    #[test]
+    fn tripped_never_expires_on_its_own() {
+        let d = SystemTask::Tripped(SafetyCause::CompressorOverheat).durations();
+        assert_eq!(d, PhaseDurations::Unbound);
+    }
+
+    #[test]
+    fn ipa_circulation_is_purely_timed() {
+        let d = SystemTask::Cooling(CoolingPhase::StartingIpaCirculation).durations();
+        assert_eq!(d, PhaseDurations::Duration(IPA_CIRCULATION_MS));
+    }
+
+    #[test]
+    fn sensor_driven_phases_have_a_timeout() {
+        let d = SystemTask::Cooling(CoolingPhase::PreCoolingThePlate).durations();
+        assert_eq!(d, PhaseDurations::Timeout(PRECOOL_TIMEOUT_MS));
+    }
+
+    // ─── advance() ──────────────────────────────────────────────────────────
+    // Fonction pure : pas de PhaseClock/horloge à construire pour la tester.
+
+    fn history_with_chamber_temp(value_c: f32) -> MeasurementHistory {
+        let mut h = MeasurementHistory::new();
+        h.temps[CHAMBER_TEMP_IDX].push(Measurement::new(Instant::from_micros(0), Celsius(value_c)));
+        h
+    }
+
+    #[test]
+    fn advance_prioritizes_measurement_over_timing() {
+        // Un capteur base-chambre valide fait avancer SensorCheck
+        // immédiatement, bien avant tout timeout/durée.
+        let history = history_with_chamber_temp(-5.0);
+        let (next, _plan) =
+            advance(SystemTask::Cooling(CoolingPhase::SensorCheck), &history, 1, 0);
+        assert_eq!(next, SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
+    }
+
+    #[test]
+    fn advance_times_out_back_to_idle() {
+        let history = MeasurementHistory::new(); // chambre toujours NaN
+        let (next, _plan) = advance(
+            SystemTask::Cooling(CoolingPhase::SensorCheck), &history, SENSOR_CHECK_TIMEOUT_MS + 1, 0,
+        );
+        assert_eq!(next, SystemTask::Idle);
+    }
+
+    #[test]
+    fn advance_advances_after_minimum_duration() {
+        // Capteur base-chambre valide (sinon `sensor_loss_abort` prend la
+        // main avant même que la durée minimale ne soit évaluée).
+        let history = history_with_chamber_temp(-25.0);
+        let (next, _plan) = advance(
+            SystemTask::Cooling(CoolingPhase::StartingIpaCirculation), &history, IPA_CIRCULATION_MS, 0,
+        );
+        assert_eq!(next, SystemTask::Cooling(CoolingPhase::SaturatingAirWithIpa));
+    }
+
+    #[test]
+    fn advance_sensor_loss_aborts_mid_cycle() {
+        let history = MeasurementHistory::new(); // chambre jamais valide
+        let (next, _plan) = advance(
+            SystemTask::Cooling(CoolingPhase::PreCoolingThePlate), &history, 0, SENSOR_LOSS_MS + 1,
+        );
+        assert_eq!(next, SystemTask::Idle);
+    }
+
+    #[test]
+    fn advance_sensor_loss_does_not_apply_during_sensor_check() {
+        // SensorCheck attend justement cette sonde — pas d'abandon perte-
+        // capteur ici, seul le timeout de phase (30s, pas encore atteint
+        // à SENSOR_LOSS_MS+1 = 10001ms) s'applique.
+        let history = MeasurementHistory::new();
+        let (next, _plan) = advance(
+            SystemTask::Cooling(CoolingPhase::SensorCheck), &history, 0, SENSOR_LOSS_MS + 1,
+        );
+        assert_eq!(next, SystemTask::Cooling(CoolingPhase::SensorCheck));
+    }
+
+    #[test]
+    fn advance_stabilising_holds_outputs_without_timing_out() {
+        let history = MeasurementHistory::new();
+        let (next, plan) = advance(SystemTask::Stabilising, &history, 10 * 60 * 60 * 1000, 0); // 10h
+        assert_eq!(next, SystemTask::Stabilising);
+        assert_eq!(
+            plan,
+            ActuatorPlan { compressor: true, iso_heater: true, high_voltage: true }
+        );
+    }
+
+    // ─── PhaseClock ─────────────────────────────────────────────────────────
+    // Horloge factice pilotable — pas de Rc/heap nécessaire, une référence
+    // partagée suffit (`&Cell<u64>` est `Copy`).
+
+    impl MonotonicTimer for &Cell<u64> {
+        fn now(&self) -> Instant {
+            Instant::from_micros(self.get())
+        }
+    }
+
+    fn advance_clock(ticks: &Cell<u64>, ms: u64) {
+        ticks.set(ticks.get() + ms * 1_000);
+    }
+
+    #[test]
+    fn phase_clock_starts_at_initial_task() {
+        let ticks = Cell::new(0);
+        let clock = PhaseClock::new(&ticks, SystemTask::Idle);
+        assert_eq!(clock.current(), SystemTask::Idle);
+        assert_eq!(clock.elapsed_ms(), 0);
+    }
+
+    #[test]
+    fn phase_clock_elapsed_ms_grows_with_the_device_clock() {
+        let ticks = Cell::new(0);
+        let clock = PhaseClock::new(&ticks, SystemTask::Idle);
+        advance_clock(&ticks, 500);
+        assert_eq!(clock.elapsed_ms(), 500);
+    }
+
+    #[test]
+    fn phase_clock_set_resets_elapsed_on_transition() {
+        let ticks = Cell::new(0);
+        let mut clock = PhaseClock::new(&ticks, SystemTask::Idle);
+        advance_clock(&ticks, 500);
+        clock.set(SystemTask::Cooling(CoolingPhase::SensorCheck));
+        assert_eq!(clock.elapsed_ms(), 0);
+        assert_eq!(clock.current(), SystemTask::Cooling(CoolingPhase::SensorCheck));
+    }
+
+    #[test]
+    fn phase_clock_set_is_a_no_op_for_the_same_task() {
+        let ticks = Cell::new(0);
+        let mut clock = PhaseClock::new(&ticks, SystemTask::Idle);
+        advance_clock(&ticks, 500);
+        clock.set(SystemTask::Idle); // même état : ne remet rien à zéro
+        assert_eq!(clock.elapsed_ms(), 500);
+    }
+
+    #[test]
+    fn phase_clock_now_ms_reflects_the_device_clock() {
+        let ticks = Cell::new(0);
+        let clock = PhaseClock::new(&ticks, SystemTask::Idle);
+        advance_clock(&ticks, 250);
+        assert_eq!(clock.now_ms(), 250);
+    }
+}

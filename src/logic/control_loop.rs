@@ -1,29 +1,34 @@
-//! All the logic for controlling the state of the chamber goes here
+//! Point d'entrée Core0 : boucle de sondage + machine à états + actionneurs.
 
-use core::todo;
-
-use crate::{cloud_chamber_hal::{sensors::{BatchSensor, Sensors, DeferredBatchSensor}, units::{Celsius, HectoPascal, Volt}}, shared::data::{SHARED, SensorSnapshot, SystemTask},
+use crate::cloud_chamber_hal::{
+    actuators::{ActuatorPlan, Actuators, BinaryActuator},
+    config::{NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER},
+    sensors::{BatchSensor, DeferredBatchSensor, Sensors},
+    timer::MonotonicTimer,
+    units::{Celsius, HectoPascal, Volt},
 };
+use crate::logic::phase_clock::{PhaseClock, advance};
+use crate::logic::security::{SafetyConfig, SafetyMonitor};
+use crate::shared::data::{SHARED_STATE, SensorSnapshot, SystemTask};
+
 use super::probing::MeasurementHistory;
-use crate::logic::actuators::ActuatorPlan;
-use crate::cloud_chamber_hal::config::{
-    NUMBER_OF_TEMP_SENSOR, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_VOLTMETER,
-};
-
-use defmt::panic;
-
 
 /// Point d'entrée Core0 : boucle de sondage + machine à états.
 ///
 /// Panique si un capteur ne retourne aucune mesure valide à l'initialisation
 /// (cf. `are_all_some()` ci-dessous) — pas de démarrage dégradé pour l'instant.
-pub fn run<Ts, Ps, Vs>(mut sensors: Sensors<Ts, Ps, Vs>) -> !
+pub fn run<Ts, Ps, Vs, Hv, Comp, Iso, Clk>(
+    mut sensors: Sensors<Ts, Ps, Vs>, mut actuators: Actuators<Hv, Comp, Iso>, clock: Clk,
+) -> !
 where
-    Ts : DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
-    Ps : BatchSensor<HectoPascal, NUMBER_OF_PRESSURE_SENSOR>,
-    Vs : BatchSensor<Volt, NUMBER_OF_VOLTMETER>,
+    Ts: DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
+    Ps: BatchSensor<HectoPascal, NUMBER_OF_PRESSURE_SENSOR>,
+    Vs: BatchSensor<Volt, NUMBER_OF_VOLTMETER>,
+    Hv: BinaryActuator,
+    Comp: BinaryActuator,
+    Iso: BinaryActuator,
+    Clk: MonotonicTimer,
 {
-
     // Initial values, mais est-ce qu'on veut vraiment ça ?
     let mut latest_measurement = sensors.probe_all();
     if !latest_measurement.are_all_some() {panic!("Not every sensor returned a valid measurement, something goes wrong...")};
@@ -31,15 +36,17 @@ where
     update_global_state(&latest_measurement);
 
     // History
-    let mut measurement_history  = MeasurementHistory::new();
+    let mut measurement_history = MeasurementHistory::new();
     measurement_history.update(&latest_measurement);
 
-    // Task Init
-    let mut current_task = SystemTask::default();
+    // État de phase + sécurité — démarre à Idle, aucun cycle en cours tant
+    // que rien ne force une transition (pas câblé ici : le déclenchement
+    // vient de l'UI, câblage prévu séparément).
+    let mut phase = PhaseClock::new(clock, SystemTask::default());
+    let mut safety = SafetyMonitor::new(SafetyConfig::default(), phase.now_ms());
 
     // Probing plan
-    let mut probing_plan = current_task.create_probing_plan(&measurement_history);
-
+    let mut probing_plan = phase.current().create_probing_plan(&measurement_history);
 
     // Control loop
     loop {
@@ -49,18 +56,37 @@ where
         };
         measurement_history.update(&latest_measurement);
 
-        current_task = get_current_task();
-        // TODO: react_to() retourne maintenant (SystemTask, ActuatorPlan) —
-        // cette boucle doit migrer vers PhaseClock::new()/next_task() pour
-        // gérer timeouts/délais et appliquer le plan via Actuators::apply().
-        // Pas fait ici : ni le timer ni les Actuators ne sont encore
-        // possédés par cette fonction (Sensors::new() ci-dessus est
-        // lui-même déjà incomplet, hors périmètre de ce passage).
-        let (next_task, plan) = current_task.react_to(&measurement_history);
-        current_task = next_task;
-        todo!();
+        // Adopte une écriture externe (UI) survenue depuis le tour précédent ;
+        // no-op si SHARED_STATE contient encore exactement ce que ce
+        // contrôleur y a lui-même écrit la dernière fois — donc aucune
+        // transition autonome décidée ci-dessous (abandon, timeout, fin de
+        // cycle...) ne peut être écrasée par une valeur restée en retard.
+        phase.set(read_task());
+        let synced_task = phase.current();
 
-        probing_plan = current_task.create_probing_plan(&measurement_history);
+        // Sécurité en priorité absolue sur la logique de phase — décision
+        // explicite ici (orchestration), pas cachée dans une méthode.
+        let (next, plan) = if let Some(cause) = safety.check(&measurement_history, phase.now_ms()) {
+            SystemTask::Tripped(cause).react_to(&measurement_history)
+        } else {
+            advance(
+                phase.current(), &measurement_history,
+                phase.elapsed_ms(), measurement_history.chamber_stale_ms(phase.now_ms()),
+            )
+        };
+        actuators.apply(plan);
+
+        // Publie et adopte localement `next` seulement si SHARED_STATE
+        // vaut encore `synced_task` (lu en tout début de tour) — sinon
+        // l'utilisateur a forcé la machine dans un autre état pendant le
+        // calcul de ce tour : `next` (basé sur une lecture désormais
+        // périmée) est abandonné, le tour suivant repartira de ce que
+        // SHARED_STATE contient réellement via la ligne d'adoption ci-dessus.
+        if publish_task_if_unchanged(synced_task, next) {
+            phase.set(next);
+        }
+
+        probing_plan = phase.current().create_probing_plan(&measurement_history);
     }
 }
 
@@ -68,7 +94,7 @@ where
 /// Can be expensive due to using the critical section so avoid using it if there is no update.
 fn update_global_state(latest_measurement:&SensorSnapshot) {
     critical_section::with(|cs| {
-        let mut shared_state = SHARED.borrow_ref_mut(cs);
+        let mut shared_state = SHARED_STATE.borrow_ref_mut(cs);
         let mut shared_sensor_data = &mut shared_state.snapshot;
 
         merge_new_readings(&mut shared_sensor_data.temps, &latest_measurement.temps);
@@ -87,11 +113,27 @@ fn merge_new_readings<T: Copy>(dst: &mut [Option<T>], src: &[Option<T>]) {
     }
 }
 
-
-fn get_current_task() -> SystemTask {
+/// Publie `next` dans `SHARED_STATE.task` uniquement si sa valeur
+/// actuelle vaut encore `expected` (lu en début de tour) — lecture et
+/// écriture dans la même section critique, pour empêcher une écriture
+/// externe (UI) de s'intercaler entre le contrôle et la publication.
+/// Retourne `true` si la publication a eu lieu.
+fn publish_task_if_unchanged(expected: SystemTask, next: SystemTask) -> bool {
     critical_section::with(|cs| {
-        SHARED.borrow_ref(cs).system_state
+        let mut shared = SHARED_STATE.borrow_ref_mut(cs);
+        if shared.task == expected {
+            shared.task = next;
+            true
+        } else {
+            false
+        }
     })
+}
+
+/// Relit `task` — seul moyen de détecter une écriture externe (UI)
+/// survenue depuis le tour précédent, cf. `run()`.
+fn read_task() -> SystemTask {
+    critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).task)
 }
 
 
@@ -108,9 +150,20 @@ impl SystemTask {
             Cooling(phase) => phase.react_to(history),
             // Régime permanent après la séquence de refroidissement : on
             // maintient les sorties de fin de FinalCheckBeforeStabilising.
-            Stabilising => todo!(),
+            // Pas de sortie automatique — seul un arrêt opérateur explicite
+            // (signal UI, pas câblé ici) fait sortir de cet état.
+            Stabilising => (
+                SystemTask::Stabilising,
+                ActuatorPlan { compressor: true, iso_heater: true, high_voltage: true },
+            ),
             Stopping(phase) => phase.react_to(history),
-            Tripped(cause) => todo!(),
+            // Coupure de secours : tout éteint, verrouillé jusqu'au
+            // réarmement opérateur explicite (`SafetyMonitor::reset`, appelé
+            // depuis `control_loop.rs::run()` en priorité absolue).
+            Tripped(cause) => (
+                SystemTask::Tripped(cause),
+                ActuatorPlan { compressor: false, iso_heater: false, high_voltage: false },
+            ),
         }
     }
 }

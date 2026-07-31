@@ -100,7 +100,7 @@ impl<'a> StatsScreen<'a> {
         D: DrawTarget<Color = Rgb565> + OriginDimensions,
     {
         let snap = &self.state.snapshot;
-        let task = self.state.system_state;
+        let task = self.state.task;
 
         let bg = PrimitiveStyleBuilder::new().fill_color(theme::BACKGROUND_COLOR).build();
         Rectangle::new(Point::zero(), Size::new(320, 240)).into_styled(bg).draw(display)?;
@@ -209,7 +209,7 @@ mod tests {
         let mut d = make_display();
         let state = SharedState {
             snapshot: Default::default(),
-            system_state: SystemTask::Idle,
+            task: SystemTask::Idle,
             new_data: false,
         };
         StatsScreen { state: &state }.draw(&mut d).unwrap();
@@ -220,7 +220,7 @@ mod tests {
         let mut d = make_display();
         let state = SharedState {
             snapshot: Default::default(),
-            system_state: SystemTask::Tripped(SafetyCause::CompressorOverheat),
+            task: SystemTask::Tripped(SafetyCause::CompressorOverheat),
             new_data: false,
         };
         StatsScreen { state: &state }.draw(&mut d).unwrap();
@@ -231,7 +231,7 @@ mod tests {
         let mut d = make_display();
         let state = SharedState {
             snapshot: Default::default(),
-            system_state: SystemTask::Cooling(CoolingPhase::HighVoltage),
+            task: SystemTask::Cooling(CoolingPhase::HighVoltage),
             new_data: false,
         };
         StatsScreen { state: &state }.draw(&mut d).unwrap();
