@@ -51,14 +51,15 @@ pub trait AnalogActuator<Unit> {
     fn get_setpoint(&self) -> Result<Unit, Self::Error>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ActuatorPlan {
+    pub compressor: bool,
+    pub iso_heater: bool,
+    pub high_voltage: bool,
+}
+
 /// Regroupe les trois actionneurs de la chambre. Ne décide rien — exécute
 /// seulement ce qu'on lui demande via `apply()`.
-///
-/// Prend trois booléens plutôt qu'un `logic::ActuatorPlan` : le HAL ne
-/// dépend jamais de la logique métier (principe d'inversion de dépendance
-/// du projet — cf. `security_loop` historiquement, `logic/` aujourd'hui,
-/// qui dépendent tous deux de `cloud_chamber_hal`, jamais l'inverse).
-/// L'appelant décompose son `ActuatorPlan` au point d'appel.
 pub struct Actuators<Hv, Comp, Iso> {
     pub high_voltage: Hv,
     pub compressor: Comp,
@@ -71,7 +72,8 @@ where
     Comp: BinaryActuator,
     Iso: BinaryActuator,
 {
-    pub fn apply(&mut self, high_voltage: bool, compressor: bool, iso_heater: bool) {
+    pub fn apply(&mut self, plan: ActuatorPlan) {
+        let ActuatorPlan { compressor, iso_heater, high_voltage } = plan;
         let _ = Self::set(&mut self.high_voltage, high_voltage);
         let _ = Self::set(&mut self.compressor, compressor);
         let _ = Self::set(&mut self.iso_heater, iso_heater);

@@ -77,16 +77,18 @@ impl Default for SystemTask {
     }
 }
 
-/// Données échangées entre Core1 (producteur) et Core0 (consommateur).
+/// Publié par `logic::control_loop::run()` (seul écrivain) pour les
+/// lecteurs (UI...). Pas de boucle Core1 séparée — architecture abandonnée,
+/// cf. `logic::security`.
 pub struct SharedState {
     pub snapshot: SensorSnapshot,
     pub system_state: SystemTask,
-    /// Mis à `true` par Core1 quand de nouvelles données sont disponibles.
+    /// Mis à `true` quand de nouvelles données de capteur sont disponibles.
     pub new_data: bool,
 }
 
 // ─── Point de partage global ─────────────────────────────────────────────────
-/// Static partagé entre Core0 et Core1.
+/// Static partagé entre le cœur de contrôle et ses lecteurs (UI...).
 ///
 /// Toujours accéder via `critical_section::with(|cs| { SHARED.borrow(cs)... })`.
 pub static SHARED: Mutex<RefCell<SharedState>> = Mutex::new(RefCell::new(SharedState {

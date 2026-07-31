@@ -39,11 +39,12 @@ impl SystemTask {
     pub fn create_probing_plan(&self, sys_hist: &MeasurementHistory) -> ProbingPlan {
         use SystemTask::*;
         match self {
-            Idle => todo!(),
+            // Idle/Stabilising/Tripped : rien de spécifique à ces états ne
+            // justifie de sonder un sous-ensemble — tout, comme les phases
+            // de cooling/stopping (cf. leurs `create_probing_plan`).
+            Idle | Stabilising | Tripped(_) => ProbingPlan::all(),
             Cooling(phase) => phase.create_probing_plan(sys_hist),
-            Stabilising => todo!(),
             Stopping(phase) => phase.create_probing_plan(sys_hist),
-            Tripped(cause) => todo!(),
         }
     }
 }
@@ -140,32 +141,26 @@ where
             self.temperature_source.start_conversion();
         }
 
+        // Une lecture en erreur laisse la case à `None` (comme une absence
+        // de mesure) plutôt que de paniquer le cœur de contrôle sur un défi
+        // capteur transitoire — même traitement que `push_if_newer` pour une
+        // donnée absente. `MeasurementHistory` garde alors la dernière
+        // valeur connue (pas de régression), et `SafetyMonitor`/`temp_stable`
+        // traitent déjà l'absence prolongée de donnée comme une alarme.
         if probing_plan.probe_pressure {
             for (slot, reading) in result.press.iter_mut().zip(self.pressure_source.read()) {
-                if reading.is_ok() {
-                    *slot = reading.ok();
-                } else {
-                    todo!("Error handling for pressure probing");
-                }
+                *slot = reading.ok();
             }
         }
         if probing_plan.probe_voltage {
             for (slot, reading) in result.volts.iter_mut().zip(self.voltage_source.read()) {
-                if reading.is_ok() {
-                    *slot = reading.ok();
-                } else {
-                    todo!("Error handling for voltage probing");
-                }
+                *slot = reading.ok();
             }
         }
 
         if probing_plan.probe_temperature {
             for (slot, reading) in result.temps.iter_mut().zip(self.temperature_source.read_result()) {
-                if reading.is_ok() {
-                    *slot = reading.ok();
-                } else {
-                    todo!("Error handling for temperature probing");
-                }
+                *slot = reading.ok();
             }
         }
 

@@ -9,7 +9,7 @@
 
 use crate::cloud_chamber_hal::config::HP_PRESSURE_IDX;
 use crate::config::STOP_EQUALIZE_HP_MAX;
-use crate::logic::actuators::ActuatorPlan;
+use crate::cloud_chamber_hal::actuators::ActuatorPlan;
 use crate::logic::probing::{MeasurementHistory, ProbingPlan};
 use crate::shared::data::SystemTask;
 
@@ -24,12 +24,10 @@ pub enum StoppingPhase {
 }
 
 impl StoppingPhase {
+    /// Sonde tout à chaque cycle — cf. commentaire équivalent dans
+    /// `logic::cooling::CoolingPhase::create_probing_plan`.
     pub fn create_probing_plan(&self, _prob_hist: &MeasurementHistory) -> ProbingPlan {
-        match self {
-            Self::CutHighVoltage => todo!(),
-            Self::CutCompressor => todo!(),
-            Self::WaitPressureEquilibrium => todo!(),
-        }
+        ProbingPlan::all()
     }
 
     pub fn react_to(self, history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
