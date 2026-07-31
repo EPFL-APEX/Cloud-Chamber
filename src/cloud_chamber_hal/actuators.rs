@@ -51,6 +51,13 @@ pub trait AnalogActuator<Unit> {
     fn get_setpoint(&self) -> Result<Unit, Self::Error>;
 }
 
+/// Ce qu'on demande aux trois actionneurs pour un cycle — décidé par
+/// `logic::cooling`/`logic::stopping` (`react_to`), appliqué ici par
+/// `Actuators::apply()`. Vit dans le HAL (comme `Measurement<Unit>`) plutôt
+/// que dans `logic/` : ça permet à `apply()` de prendre le plan directement
+/// sans que le HAL dépende de `logic` — c'est `logic/` qui importe ce type
+/// depuis `cloud_chamber_hal`, jamais l'inverse (inversion de dépendance du
+/// projet, cf. doc de `Actuators` ci-dessous).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ActuatorPlan {
     pub compressor: bool,

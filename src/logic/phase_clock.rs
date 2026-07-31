@@ -192,8 +192,8 @@ mod tests {
     use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
     use crate::cloud_chamber_hal::measurement::Measurement;
     use crate::cloud_chamber_hal::units::Celsius;
+    use crate::drivers::mock::MockClock;
     use crate::logic::security::SafetyCause;
-    use core::cell::Cell;
 
     // ─── PhaseDurations ─────────────────────────────────────────────────────
 
@@ -292,22 +292,12 @@ mod tests {
     }
 
     // ─── PhaseClock ─────────────────────────────────────────────────────────
-    // Horloge factice pilotable — pas de Rc/heap nécessaire, une référence
-    // partagée suffit (`&Cell<u64>` est `Copy`).
-
-    impl MonotonicTimer for &Cell<u64> {
-        fn now(&self) -> Instant {
-            Instant::from_micros(self.get())
-        }
-    }
-
-    fn advance_clock(ticks: &Cell<u64>, ms: u64) {
-        ticks.set(ticks.get() + ms * 1_000);
-    }
+    // Horloge factice pilotable — `MockClock` (drivers::mock), réutilisée
+    // telle quelle par les tests de control_loop.rs.
 
     #[test]
     fn phase_clock_starts_at_initial_task() {
-        let ticks = Cell::new(0);
+        let ticks = MockClock::new(0);
         let clock = PhaseClock::new(&ticks, SystemTask::Idle);
         assert_eq!(clock.current(), SystemTask::Idle);
         assert_eq!(clock.elapsed_ms(), 0);
@@ -315,17 +305,17 @@ mod tests {
 
     #[test]
     fn phase_clock_elapsed_ms_grows_with_the_device_clock() {
-        let ticks = Cell::new(0);
+        let ticks = MockClock::new(0);
         let clock = PhaseClock::new(&ticks, SystemTask::Idle);
-        advance_clock(&ticks, 500);
+        ticks.advance_ms(500);
         assert_eq!(clock.elapsed_ms(), 500);
     }
 
     #[test]
     fn phase_clock_set_resets_elapsed_on_transition() {
-        let ticks = Cell::new(0);
+        let ticks = MockClock::new(0);
         let mut clock = PhaseClock::new(&ticks, SystemTask::Idle);
-        advance_clock(&ticks, 500);
+        ticks.advance_ms(500);
         clock.set(SystemTask::Cooling(CoolingPhase::SensorCheck));
         assert_eq!(clock.elapsed_ms(), 0);
         assert_eq!(clock.current(), SystemTask::Cooling(CoolingPhase::SensorCheck));
@@ -333,18 +323,18 @@ mod tests {
 
     #[test]
     fn phase_clock_set_is_a_no_op_for_the_same_task() {
-        let ticks = Cell::new(0);
+        let ticks = MockClock::new(0);
         let mut clock = PhaseClock::new(&ticks, SystemTask::Idle);
-        advance_clock(&ticks, 500);
+        ticks.advance_ms(500);
         clock.set(SystemTask::Idle); // même état : ne remet rien à zéro
         assert_eq!(clock.elapsed_ms(), 500);
     }
 
     #[test]
     fn phase_clock_now_ms_reflects_the_device_clock() {
-        let ticks = Cell::new(0);
+        let ticks = MockClock::new(0);
         let clock = PhaseClock::new(&ticks, SystemTask::Idle);
-        advance_clock(&ticks, 250);
+        ticks.advance_ms(250);
         assert_eq!(clock.now_ms(), 250);
     }
 }

@@ -11,7 +11,12 @@ use crate::logic::phase_clock::{PhaseClock, advance};
 use crate::logic::security::{SafetyConfig, SafetyMonitor};
 use crate::shared::data::{SHARED_STATE, SensorSnapshot, SystemTask};
 
-use super::probing::MeasurementHistory;
+use super::probing::{MeasurementHistory, ProbingPlan};
+
+// `panic!` du prélude et non `defmt::panic` : defmt exige qu'un global
+// logger soit lié, ce qu'aucune cible hôte ne fournit — l'import cassait
+// `cargo test-host` à l'édition de liens. Sur la Pico, panic-probe
+// (feature print-defmt) affiche le message via defmt de toute façon.
 
 /// Point d'entrée Core0 : boucle de sondage + machine à états.
 ///
@@ -50,44 +55,72 @@ where
 
     // Control loop
     loop {
-        latest_measurement = sensors.probe(probing_plan);
-        if !latest_measurement.are_all_none() {
-            update_global_state(&latest_measurement);
-        };
-        measurement_history.update(&latest_measurement);
-
-        // Adopte une écriture externe (UI) survenue depuis le tour précédent ;
-        // no-op si SHARED_STATE contient encore exactement ce que ce
-        // contrôleur y a lui-même écrit la dernière fois — donc aucune
-        // transition autonome décidée ci-dessous (abandon, timeout, fin de
-        // cycle...) ne peut être écrasée par une valeur restée en retard.
-        phase.set(read_task());
-        let synced_task = phase.current();
-
-        // Sécurité en priorité absolue sur la logique de phase — décision
-        // explicite ici (orchestration), pas cachée dans une méthode.
-        let (next, plan) = if let Some(cause) = safety.check(&measurement_history, phase.now_ms()) {
-            SystemTask::Tripped(cause).react_to(&measurement_history)
-        } else {
-            advance(
-                phase.current(), &measurement_history,
-                phase.elapsed_ms(), measurement_history.chamber_stale_ms(phase.now_ms()),
-            )
-        };
-        actuators.apply(plan);
-
-        // Publie et adopte localement `next` seulement si SHARED_STATE
-        // vaut encore `synced_task` (lu en tout début de tour) — sinon
-        // l'utilisateur a forcé la machine dans un autre état pendant le
-        // calcul de ce tour : `next` (basé sur une lecture désormais
-        // périmée) est abandonné, le tour suivant repartira de ce que
-        // SHARED_STATE contient réellement via la ligne d'adoption ci-dessus.
-        if publish_task_if_unchanged(synced_task, next) {
-            phase.set(next);
-        }
-
-        probing_plan = phase.current().create_probing_plan(&measurement_history);
+        probing_plan = tick(
+            &mut sensors, &mut actuators, &mut phase, &mut safety,
+            &mut measurement_history, probing_plan,
+        );
     }
+}
+
+/// Un tour de la boucle de contrôle : sondage, réconciliation avec
+/// `SHARED_STATE`, décision (sécurité en priorité absolue, sinon logique de
+/// phase), application des actionneurs, publication. Extrait de `run()`
+/// uniquement pour être testable (`run()` ne retourne jamais) — même
+/// contenu que l'ancien corps de `loop`, aucun changement de comportement.
+fn tick<Ts, Ps, Vs, Hv, Comp, Iso, Clk>(
+    sensors: &mut Sensors<Ts, Ps, Vs>,
+    actuators: &mut Actuators<Hv, Comp, Iso>,
+    phase: &mut PhaseClock<Clk>,
+    safety: &mut SafetyMonitor,
+    measurement_history: &mut MeasurementHistory,
+    probing_plan: ProbingPlan,
+) -> ProbingPlan
+where
+    Ts: DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
+    Ps: BatchSensor<HectoPascal, NUMBER_OF_PRESSURE_SENSOR>,
+    Vs: BatchSensor<Volt, NUMBER_OF_VOLTMETER>,
+    Hv: BinaryActuator,
+    Comp: BinaryActuator,
+    Iso: BinaryActuator,
+    Clk: MonotonicTimer,
+{
+    let latest_measurement = sensors.probe(probing_plan);
+    if !latest_measurement.are_all_none() {
+        update_global_state(&latest_measurement);
+    };
+    measurement_history.update(&latest_measurement);
+
+    // Adopte une écriture externe (UI) survenue depuis le tour précédent ;
+    // no-op si SHARED_STATE contient encore exactement ce que ce
+    // contrôleur y a lui-même écrit la dernière fois — donc aucune
+    // transition autonome décidée ci-dessous (abandon, timeout, fin de
+    // cycle...) ne peut être écrasée par une valeur restée en retard.
+    phase.set(read_task());
+    let synced_task = phase.current();
+
+    // Sécurité en priorité absolue sur la logique de phase — décision
+    // explicite ici (orchestration), pas cachée dans une méthode.
+    let (next, plan) = if let Some(cause) = safety.check(measurement_history, phase.now_ms()) {
+        SystemTask::Tripped(cause).react_to(measurement_history)
+    } else {
+        advance(
+            phase.current(), measurement_history,
+            phase.elapsed_ms(), measurement_history.chamber_stale_ms(phase.now_ms()),
+        )
+    };
+    actuators.apply(plan);
+
+    // Publie et adopte localement `next` seulement si SHARED_STATE
+    // vaut encore `synced_task` (lu en tout début de tour) — sinon
+    // l'utilisateur a forcé la machine dans un autre état pendant le
+    // calcul de ce tour : `next` (basé sur une lecture désormais
+    // périmée) est abandonné, le tour suivant repartira de ce que
+    // SHARED_STATE contient réellement via la ligne d'adoption ci-dessus.
+    if publish_task_if_unchanged(synced_task, next) {
+        phase.set(next);
+    }
+
+    phase.current().create_probing_plan(measurement_history)
 }
 
 
@@ -165,5 +198,637 @@ impl SystemTask {
                 ActuatorPlan { compressor: false, iso_heater: false, high_voltage: false },
             ),
         }
+    }
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+//
+// Portée : ces tests exercent `tick()` enchaîné sur plusieurs tours, comme
+// en usage réel — sondage, réconciliation SHARED_STATE (dans les deux
+// sens), priorité sécurité, application actionneurs, publication. Ils ne
+// re-testent pas individuellement chaque condition de transition par phase
+// (déjà couvert par cooling.rs/stopping.rs), ni chaque timeout/durée pris
+// isolément (déjà couvert par phase_clock.rs), ni SafetyMonitor isolément
+// (déjà couvert par security.rs) — seulement leur enchaînement correct.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cloud_chamber_hal::config::{
+        BP_PRESSURE_IDX, CHAMBER_TEMP_IDX, COMPRESSOR_OUT_IDX, HP_PRESSURE_IDX,
+    };
+    use crate::cloud_chamber_hal::measurement::Measurement;
+    use crate::cloud_chamber_hal::timer::Instant;
+    use crate::config::{
+        IPA_CIRCULATION_MS, PRECOOL_TARGET_C, PRECOOL_TIMEOUT_MS, SATURATION_TARGET_C,
+        SENSOR_CHECK_TIMEOUT_MS, SENSOR_LOSS_MS, STOP_COMPRESSOR_SETTLE_MS,
+        STOP_EQUALIZE_FALLBACK_MS, STOP_EQUALIZE_HP_MAX, STOP_HV_SETTLE_MS,
+    };
+    use crate::drivers::mock::{
+        MockActuator, MockClock, MockPressureSensor, MockSensorError, MockTempSensor, MockVoltSensor,
+    };
+    use crate::logic::cooling::CoolingPhase;
+    use crate::logic::security::SafetyCause;
+    use crate::logic::stopping::StoppingPhase;
+
+    // ─── Isolation entre tests ──────────────────────────────────────────────
+    // `SHARED_STATE` est un `static` unique pour tout le process — sans ce
+    // verrou, des tests de ce module (parallèles par défaut sous `cargo
+    // test`) pourraient lire/écrire l'état l'un de l'autre.
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Remet `SHARED_STATE` à un état par défaut connu et exécute `body`
+    /// sous verrou exclusif — chaque test démarre donc d'un état propre,
+    /// indépendant de l'ordre d'exécution.
+    fn with_isolated_shared_state<T>(body: impl FnOnce() -> T) -> T {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        critical_section::with(|cs| {
+            let mut s = SHARED_STATE.borrow_ref_mut(cs);
+            s.snapshot = SensorSnapshot::default();
+            s.task = SystemTask::Idle;
+            s.new_data = false;
+        });
+        body()
+    }
+
+    // ─── Harness ──────────────────────────────────────────────────────────
+
+    struct Harness<'a> {
+        clock: &'a MockClock,
+        sensors: Sensors<MockTempSensor, MockPressureSensor, MockVoltSensor>,
+        actuators: Actuators<MockActuator, MockActuator, MockActuator>,
+        phase: PhaseClock<&'a MockClock>,
+        safety: SafetyMonitor,
+        history: MeasurementHistory,
+        probing_plan: ProbingPlan,
+    }
+
+    impl<'a> Harness<'a> {
+        /// Démarre à `SystemTask::Idle`, comme `run()` en conditions
+        /// réelles — le déclenchement d'un cycle passe par une écriture
+        /// externe dans `SHARED_STATE` (`write_shared_task`), pas par un
+        /// paramètre ici.
+        fn new(clock: &'a MockClock) -> Self {
+            Self::starting_at(clock, SystemTask::Idle)
+        }
+
+        /// Comme `new`, mais démarre à `task` — et aligne `SHARED_STATE` sur
+        /// la même valeur, pour que le premier `tick()` n'adopte pas `Idle`
+        /// (valeur par défaut de `SHARED_STATE`) à la place de l'état de
+        /// départ voulu par le test.
+        fn starting_at(clock: &'a MockClock, task: SystemTask) -> Self {
+            critical_section::with(|cs| SHARED_STATE.borrow_ref_mut(cs).task = task);
+
+            let mut sensors = Sensors::new(
+                MockTempSensor::new(f32::NAN),
+                MockPressureSensor::new(f32::NAN),
+                MockVoltSensor::new(f32::NAN),
+            );
+            // Température sortie-compresseur valide par défaut (loin des
+            // seuils d'alarme), horodatée avant tout instant utilisable par
+            // un test (`Instant::from_micros(1)` : après le t0 par défaut
+            // de `MeasurementHistory`, mais avant toute horloge de test qui
+            // suit la convention `MockClock::new(1)` ou plus tard) — sinon
+            // `SafetyMonitor` considérerait le capteur perdu après
+            // `SENSOR_LOSS_MS` et déclencherait un trip parasite dans
+            // n'importe quel test qui tourne plus de quelques secondes de
+            // temps simulé. Les tests qui exercent spécifiquement ce chemin
+            // (sécurité) l'écrasent explicitement via `set_compressor_temp`.
+            sensors.temperature_source.set(
+                COMPRESSOR_OUT_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
+            );
+
+            let actuators = Actuators {
+                high_voltage: MockActuator::new(),
+                compressor: MockActuator::new(),
+                iso_heater: MockActuator::new(),
+            };
+            let history = MeasurementHistory::new();
+            let probing_plan = task.create_probing_plan(&history);
+            let phase = PhaseClock::new(clock, task);
+            let safety = SafetyMonitor::new(SafetyConfig::default(), phase.now_ms());
+            Self { clock, sensors, actuators, phase, safety, history, probing_plan }
+        }
+
+        fn tick(&mut self) {
+            self.probing_plan = tick(
+                &mut self.sensors, &mut self.actuators, &mut self.phase, &mut self.safety,
+                &mut self.history, self.probing_plan,
+            );
+        }
+
+        fn tick_after_ms(&mut self, ms: u64) {
+            self.clock.advance_ms(ms);
+            self.tick();
+        }
+
+        fn set_temp(&mut self, idx: usize, value_c: f32) {
+            let m = Measurement::new(self.clock.now(), Celsius(value_c));
+            self.sensors.temperature_source.set(idx, Ok(m));
+        }
+
+        fn set_chamber_temp(&mut self, value_c: f32) {
+            self.set_temp(CHAMBER_TEMP_IDX, value_c);
+        }
+
+        fn set_compressor_temp(&mut self, value_c: f32) {
+            self.set_temp(COMPRESSOR_OUT_IDX, value_c);
+        }
+
+        fn lose_chamber_temp(&mut self) {
+            self.sensors.temperature_source.set(CHAMBER_TEMP_IDX, Err(MockSensorError));
+        }
+
+        fn set_pressure(&mut self, idx: usize, value: f32) {
+            let m = Measurement::new(self.clock.now(), HectoPascal(value));
+            self.sensors.pressure_source.set(idx, Ok(m));
+        }
+
+        /// Avance l'horloge, poste une nouvelle lecture chambre horodatée à
+        /// ce nouvel instant, puis exécute le tour — le motif répété pour
+        /// construire les échantillons à intervalle régulier qu'exige
+        /// `temp_stable` en `HighVoltage`.
+        fn tick_with_chamber_temp_after_ms(&mut self, ms: u64, value_c: f32) {
+            self.clock.advance_ms(ms);
+            self.set_chamber_temp(value_c);
+            self.tick();
+        }
+
+        /// Répète `tick_with_chamber_temp_after_ms` jusqu'à ce que
+        /// `phase.current()` change, ou jusqu'à `max_ticks` (panique si
+        /// jamais atteint — une boucle qui n'aboutit pas doit faire
+        /// échouer le test bruyamment, pas silencieusement s'arrêter).
+        fn tick_until_task_changes(&mut self, step_ms: u64, value_c: f32, max_ticks: usize) {
+            let starting = self.phase.current();
+            for _ in 0..max_ticks {
+                self.tick_with_chamber_temp_after_ms(step_ms, value_c);
+                if self.phase.current() != starting {
+                    return;
+                }
+            }
+            panic!("tick_until_task_changes: pas de transition après {max_ticks} tours");
+        }
+
+        fn shared_task(&self) -> SystemTask {
+            critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).task)
+        }
+
+        fn write_shared_task(&self, task: SystemTask) {
+            critical_section::with(|cs| SHARED_STATE.borrow_ref_mut(cs).task = task);
+        }
+    }
+
+    // ─── F — Base ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn idle_stays_idle_without_external_request() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(1);
+            let mut h = Harness::new(&clock);
+            for _ in 0..20 {
+                h.tick_after_ms(1_000);
+            }
+            assert_eq!(h.phase.current(), SystemTask::Idle);
+            assert!(!h.actuators.high_voltage.is_on);
+            assert!(!h.actuators.compressor.is_on);
+            assert!(!h.actuators.iso_heater.is_on);
+            assert_eq!(h.shared_task(), SystemTask::Idle);
+        });
+    }
+
+    // ─── A — Cycle complet (bout en bout) ────────────────────────────────
+
+    #[test]
+    fn full_cycle_idle_to_stabilising_and_back_to_idle() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(1);
+            let mut h = Harness::new(&clock);
+
+            // ─── Démarrage (signal UI) ────────────────────────────────────
+            h.write_shared_task(SystemTask::Cooling(CoolingPhase::SensorCheck));
+            h.set_chamber_temp(20.0);
+            h.tick();
+            assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
+
+            // ─── PreCoolingThePlate ─────────────────────────────────────────
+            h.tick_with_chamber_temp_after_ms(1_000, 0.0); // encore au-dessus du seuil
+            assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
+            assert!(h.actuators.compressor.is_on);
+            assert!(!h.actuators.high_voltage.is_on);
+
+            h.tick_with_chamber_temp_after_ms(1_000, PRECOOL_TARGET_C);
+            assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::StartingIpaCirculation));
+
+            // ─── StartingIpaCirculation (purement temporisé) ─────────────────
+            // Rafraîchit une lecture chambre régulièrement pendant l'attente
+            // (2 min) : cette phase ignore la valeur (avancement temporisé),
+            // mais reste soumise à l'abandon perte-capteur comme toute phase
+            // de Cooling hors SensorCheck — sans rafraîchissement, un seul
+            // grand saut d'horloge déclencherait cet abandon avant même
+            // d'atteindre IPA_CIRCULATION_MS.
+            let step = SENSOR_LOSS_MS / 2;
+            let mut elapsed = 0u64;
+            while elapsed + step < IPA_CIRCULATION_MS {
+                h.tick_with_chamber_temp_after_ms(step, PRECOOL_TARGET_C);
+                elapsed += step;
+            }
+            assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::StartingIpaCirculation));
+            assert!(h.actuators.iso_heater.is_on);
+            h.tick_with_chamber_temp_after_ms(IPA_CIRCULATION_MS - elapsed, PRECOOL_TARGET_C);
+            assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::SaturatingAirWithIpa));
+
+            // ─── SaturatingAirWithIpa ─────────────────────────────────────────
+            h.tick_with_chamber_temp_after_ms(1_000, SATURATION_TARGET_C);
+            assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::HighVoltage));
+
+            // ─── HighVoltage : lectures stables jusqu'à satisfaire temp_stable ──
+            h.tick_until_task_changes(1_000, SATURATION_TARGET_C, 100);
+            assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::FinalCheckBeforeStabilising));
+            assert!(h.actuators.high_voltage.is_on);
+
+            // ─── FinalCheckBeforeStabilising ──────────────────────────────────
+            h.tick_with_chamber_temp_after_ms(1_000, SATURATION_TARGET_C);
+            assert_eq!(h.phase.current(), SystemTask::Stabilising);
+
+            // ─── Stabilising : régime permanent, pas de sortie automatique ────
+            for _ in 0..20 {
+                h.tick_after_ms(60 * 60 * 1_000); // sauts d'une heure
+            }
+            assert_eq!(h.phase.current(), SystemTask::Stabilising);
+            assert!(h.actuators.high_voltage.is_on);
+            assert!(h.actuators.compressor.is_on);
+            assert!(h.actuators.iso_heater.is_on);
+            assert_eq!(h.shared_task(), SystemTask::Stabilising);
+
+            // ─── Arrêt (signal UI) ─────────────────────────────────────────────
+            h.write_shared_task(SystemTask::Stopping(StoppingPhase::CutHighVoltage));
+            h.tick();
+            assert_eq!(h.phase.current(), SystemTask::Stopping(StoppingPhase::CutHighVoltage));
+
+            h.tick_after_ms(STOP_HV_SETTLE_MS);
+            assert_eq!(h.phase.current(), SystemTask::Stopping(StoppingPhase::CutCompressor));
+            assert!(!h.actuators.high_voltage.is_on);
+
+            h.tick_after_ms(STOP_COMPRESSOR_SETTLE_MS);
+            assert_eq!(h.phase.current(), SystemTask::Stopping(StoppingPhase::WaitPressureEquilibrium));
+            assert!(!h.actuators.compressor.is_on);
+
+            h.set_pressure(HP_PRESSURE_IDX, STOP_EQUALIZE_HP_MAX - 0.1);
+            h.tick();
+            assert_eq!(h.phase.current(), SystemTask::Idle);
+            assert!(!h.actuators.high_voltage.is_on);
+            assert!(!h.actuators.compressor.is_on);
+            assert!(!h.actuators.iso_heater.is_on);
+            assert_eq!(h.shared_task(), SystemTask::Idle);
+        });
+    }
+
+    #[test]
+    fn cooling_aborts_to_idle_on_sensor_check_timeout() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(1);
+            let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::SensorCheck));
+            // Chambre jamais valide : react_to reste en SensorCheck, c'est
+            // le timeout de phase qui doit finir par abandonner (perte
+            // capteur exemptée pendant SensorCheck, cf. test dédié plus bas).
+            h.tick_after_ms(SENSOR_CHECK_TIMEOUT_MS + 1);
+            assert_eq!(h.phase.current(), SystemTask::Idle);
+            assert_eq!(h.shared_task(), SystemTask::Idle);
+        });
+    }
+
+    #[test]
+    fn cooling_aborts_to_idle_on_precool_timeout() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(1);
+            let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
+            // Rafraîchit une lecture chambre valide mais jamais sous le
+            // seuil, assez souvent pour ne jamais déclencher l'abandon
+            // perte-capteur (SENSOR_LOSS_MS) avant le timeout de phase —
+            // isole le chemin "timeout" de celui de "perte capteur".
+            let step = SENSOR_LOSS_MS / 2;
+            let mut elapsed = 0u64;
+            while elapsed <= PRECOOL_TIMEOUT_MS {
+                h.tick_with_chamber_temp_after_ms(step, 0.0);
+                elapsed += step;
+            }
+            assert_eq!(h.phase.current(), SystemTask::Idle);
+        });
+    }
+
+    #[test]
+    fn stopping_falls_back_to_idle_without_pressure_sensor() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(1);
+            let mut h = Harness::starting_at(&clock, SystemTask::Stopping(StoppingPhase::WaitPressureEquilibrium));
+            h.tick_after_ms(STOP_EQUALIZE_FALLBACK_MS + 1);
+            assert_eq!(h.phase.current(), SystemTask::Idle);
+        });
+    }
+
+    #[test]
+    fn cooling_survives_a_transient_sensor_blip() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(1);
+            let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
+            h.set_chamber_temp(0.0);
+            h.tick_after_ms(1_000);
+            assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
+
+            // Coupure brève (bien en dessous de SENSOR_LOSS_MS), puis reprise.
+            h.lose_chamber_temp();
+            h.tick_after_ms(2_000);
+            assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
+
+            h.set_chamber_temp(PRECOOL_TARGET_C);
+            h.tick_after_ms(1_000);
+            assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::StartingIpaCirculation));
+        });
+    }
+
+    // ─── B — Abandon perte-capteur mi-cycle ──────────────────────────────
+
+    #[test]
+    fn sensor_loss_aborts_mid_cooling() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(1);
+            let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
+            h.set_chamber_temp(0.0); // valide, au-dessus du seuil (pas de transition)
+            h.tick();
+            assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
+
+            h.lose_chamber_temp();
+            h.tick_after_ms(SENSOR_LOSS_MS + 1);
+            assert_eq!(h.phase.current(), SystemTask::Idle);
+            assert_eq!(h.shared_task(), SystemTask::Idle);
+        });
+    }
+
+    #[test]
+    fn sensor_loss_is_exempted_during_sensor_check() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(1);
+            let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::SensorCheck));
+            // Chambre jamais valide ; horloge avancée au-delà de
+            // SENSOR_LOSS_MS mais en dessous de SENSOR_CHECK_TIMEOUT_MS.
+            assert!(SENSOR_LOSS_MS + 1_000 < SENSOR_CHECK_TIMEOUT_MS);
+            h.tick_after_ms(SENSOR_LOSS_MS + 1_000);
+            assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::SensorCheck));
+        });
+    }
+
+    // ─── C — Priorité sécurité ────────────────────────────────────────────
+
+    #[test]
+    fn safety_trip_cuts_actuators_and_overrides_cooling() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(1);
+            let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::HighVoltage));
+            h.set_chamber_temp(SATURATION_TARGET_C);
+            h.tick();
+            assert!(h.actuators.high_voltage.is_on);
+
+            h.set_compressor_temp(150.0); // > seuil alarme (120.0)
+            h.tick_after_ms(1_000);
+            h.tick_after_ms(1_000);
+            h.tick_after_ms(1_000); // 3e tour consécutif en alarme -> trip
+
+            assert_eq!(h.phase.current(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
+            assert!(!h.actuators.high_voltage.is_on);
+            assert!(!h.actuators.compressor.is_on);
+            assert!(!h.actuators.iso_heater.is_on);
+            assert_eq!(h.shared_task(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
+        });
+    }
+
+    #[test]
+    fn safety_trip_persists_without_explicit_reset() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(1);
+            let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::HighVoltage));
+            h.set_compressor_temp(150.0);
+            h.tick_after_ms(1_000);
+            h.tick_after_ms(1_000);
+            h.tick_after_ms(1_000);
+            assert_eq!(h.phase.current(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
+
+            // La condition redevient normale, mais reste Tripped : pas de
+            // réarmement automatique (`SafetyMonitor::reset` n'est jamais
+            // appelé depuis `control_loop.rs` aujourd'hui — gap documenté,
+            // pas caché).
+            h.set_compressor_temp(20.0);
+            for _ in 0..10 {
+                h.tick_after_ms(1_000);
+            }
+            assert_eq!(h.phase.current(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
+        });
+    }
+
+    #[test]
+    fn safety_trip_reasserts_itself_over_an_external_idle_request() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(1);
+            let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::HighVoltage));
+            h.set_compressor_temp(150.0);
+            h.tick_after_ms(1_000);
+            h.tick_after_ms(1_000);
+            h.tick_after_ms(1_000);
+            assert_eq!(h.phase.current(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
+
+            // Acquittement UI simulé : écrit Idle directement dans SHARED_STATE.
+            h.write_shared_task(SystemTask::Idle);
+            h.tick_after_ms(1_000);
+
+            // `tick()` adopte brièvement Idle en tout début de tour, mais
+            // `SafetyMonitor` (état interne, indépendant de `phase`/
+            // SHARED_STATE) republie Tripped le même tour : sans `reset()`
+            // câblé, l'acquittement UI seul ne suffit pas à sortir de
+            // Tripped — même gap que ci-dessus, vu ici depuis SHARED_STATE.
+            assert_eq!(h.phase.current(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
+            assert_eq!(h.shared_task(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
+        });
+    }
+
+    // ─── D — Réconciliation SHARED_STATE ─────────────────────────────────
+
+    #[test]
+    fn external_write_is_adopted_on_the_next_tick() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(1);
+            let mut h = Harness::new(&clock);
+            h.write_shared_task(SystemTask::Cooling(CoolingPhase::SensorCheck));
+            h.set_chamber_temp(-5.0);
+            h.tick();
+            assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
+        });
+    }
+
+    #[test]
+    fn external_write_of_the_same_task_is_a_no_op() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(1);
+            let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::StartingIpaCirculation));
+            h.tick_after_ms(1_000);
+            assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::StartingIpaCirculation));
+
+            // Écrit exactement la même tâche dans SHARED_STATE : ne doit
+            // pas remettre `elapsed_ms` à zéro (sinon la transition
+            // temporisée ci-dessous n'arriverait jamais). Rafraîchit la
+            // lecture chambre régulièrement pendant l'attente pour ne pas
+            // déclencher l'abandon perte-capteur (cf. commentaire équivalent
+            // dans `full_cycle_...`).
+            h.write_shared_task(SystemTask::Cooling(CoolingPhase::StartingIpaCirculation));
+            let step = SENSOR_LOSS_MS / 2;
+            let mut elapsed = 1_000u64;
+            while elapsed + step < IPA_CIRCULATION_MS {
+                h.tick_with_chamber_temp_after_ms(step, PRECOOL_TARGET_C);
+                elapsed += step;
+            }
+            assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::StartingIpaCirculation));
+            h.tick_with_chamber_temp_after_ms(IPA_CIRCULATION_MS - elapsed, PRECOOL_TARGET_C);
+            assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::SaturatingAirWithIpa));
+        });
+    }
+
+    #[test]
+    fn subphase_change_is_published_without_a_special_case() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(1);
+            let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
+            h.set_chamber_temp(PRECOOL_TARGET_C);
+            h.tick();
+            assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::StartingIpaCirculation));
+            assert_eq!(h.shared_task(), SystemTask::Cooling(CoolingPhase::StartingIpaCirculation));
+        });
+    }
+
+    /// Enveloppe un `MockActuator` et déclenche, au premier appel de
+    /// `turn_on`/`turn_off`, une écriture directe dans `SHARED_STATE` —
+    /// simule une écriture externe (UI) survenant pendant
+    /// `Actuators::apply()`, exactement dans la fenêtre entre la capture de
+    /// `synced_task` et `publish_task_if_unchanged` dans `tick()`. Local à
+    /// ce test : ne va pas dans `drivers::mock`, qui reste générique et ne
+    /// connaît pas `SHARED_STATE`.
+    struct RacyActuator {
+        inner: MockActuator,
+        inject: Option<SystemTask>,
+    }
+
+    impl BinaryActuator for RacyActuator {
+        type Error = core::convert::Infallible;
+
+        fn turn_on(&mut self) -> Result<(), Self::Error> {
+            self.fire();
+            self.inner.turn_on()
+        }
+
+        fn turn_off(&mut self) -> Result<(), Self::Error> {
+            self.fire();
+            self.inner.turn_off()
+        }
+    }
+
+    impl RacyActuator {
+        fn fire(&mut self) {
+            if let Some(task) = self.inject.take() {
+                critical_section::with(|cs| SHARED_STATE.borrow_ref_mut(cs).task = task);
+            }
+        }
+    }
+
+    #[test]
+    fn external_write_during_tick_is_not_clobbered_by_publish() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(1);
+            let mut sensors = Sensors::new(
+                MockTempSensor::new(-20.0), MockPressureSensor::new(f32::NAN), MockVoltSensor::new(f32::NAN),
+            );
+            sensors.temperature_source.set(
+                COMPRESSOR_OUT_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
+            );
+            // Chambre déjà sous PRECOOL_TARGET_C : `advance()` va vouloir
+            // avancer de PreCoolingThePlate vers StartingIpaCirculation ce
+            // tour — c'est cette transition que la course va invalider.
+            let mut actuators = Actuators {
+                high_voltage: RacyActuator { inner: MockActuator::new(), inject: Some(SystemTask::Idle) },
+                compressor: MockActuator::new(),
+                iso_heater: MockActuator::new(),
+            };
+            let mut history = MeasurementHistory::new();
+            let mut phase = PhaseClock::new(&clock, SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
+            let mut safety = SafetyMonitor::new(SafetyConfig::default(), phase.now_ms());
+            let probing_plan = phase.current().create_probing_plan(&history);
+
+            // `with_isolated_shared_state` a remis SHARED_STATE.task à
+            // `Idle` — il faut l'aligner sur l'état local avant le premier
+            // tick, sinon `tick()` adopterait cet `Idle` de départ au lieu
+            // de calculer la transition qu'on veut mettre en course avec
+            // l'injection.
+            critical_section::with(|cs| {
+                SHARED_STATE.borrow_ref_mut(cs).task = SystemTask::Cooling(CoolingPhase::PreCoolingThePlate);
+            });
+
+            let probing_plan = tick(&mut sensors, &mut actuators, &mut phase, &mut safety, &mut history, probing_plan);
+
+            // L'écriture injectée (survenue "pendant" ce tour) n'a pas été
+            // écrasée par la publication de `next` :
+            let shared = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).task);
+            assert_eq!(shared, SystemTask::Idle);
+            // Et l'état local n'a pas non plus adopté `next` (resté à la
+            // valeur synchronisée en début de tour) :
+            assert_eq!(phase.current(), SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
+
+            // Le tour suivant adopte correctement la valeur injectée.
+            tick(&mut sensors, &mut actuators, &mut phase, &mut safety, &mut history, probing_plan);
+            assert_eq!(phase.current(), SystemTask::Idle);
+        });
+    }
+
+    // ─── E — Sondage / robustesse capteurs ───────────────────────────────
+
+    #[test]
+    fn partial_sensor_failure_keeps_last_known_reading() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(1);
+            let mut h = Harness::new(&clock);
+            h.set_chamber_temp(-10.0);
+            h.tick_after_ms(1_000);
+            let before = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[CHAMBER_TEMP_IDX]);
+            assert_eq!(before.unwrap().value.0, -10.0);
+
+            // La sonde chambre tombe en erreur ce tour ; une autre catégorie
+            // continue de fonctionner normalement (pour que ce tour ne soit
+            // pas un échec total, cf. test suivant).
+            h.lose_chamber_temp();
+            h.set_pressure(BP_PRESSURE_IDX, 0.5);
+            h.tick_after_ms(1_000);
+
+            let kept = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[CHAMBER_TEMP_IDX]);
+            assert_eq!(kept.unwrap().value.0, -10.0);
+        });
+    }
+
+    #[test]
+    fn fully_failed_probe_leaves_shared_snapshot_untouched() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(1);
+            let mut h = Harness::new(&clock);
+            h.set_chamber_temp(-10.0);
+            h.tick_after_ms(1_000);
+
+            for i in 0..NUMBER_OF_TEMP_SENSOR {
+                h.sensors.temperature_source.set(i, Err(MockSensorError));
+            }
+            for i in 0..NUMBER_OF_PRESSURE_SENSOR {
+                h.sensors.pressure_source.set(i, Err(MockSensorError));
+            }
+            for i in 0..NUMBER_OF_VOLTMETER {
+                h.sensors.voltage_source.set(i, Err(MockSensorError));
+            }
+            h.tick_after_ms(1_000);
+
+            let after = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[CHAMBER_TEMP_IDX]);
+            assert_eq!(after.unwrap().value.0, -10.0);
+        });
     }
 }
