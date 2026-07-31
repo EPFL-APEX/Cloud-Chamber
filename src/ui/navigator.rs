@@ -18,8 +18,8 @@ pub enum Screen {
     MainMenu,
     Settings,
     Stats,
-    Control,
-    Cooldown,
+    ManualControl,
+    CurrentTask,
     Data,
     Info,
 }
@@ -45,11 +45,12 @@ impl<const DEPTH: usize> Navigator<DEPTH> {
     }
 
     /// Pousse un nouvel écran sur la pile. Ignore si la pile est pleine.
-    pub fn push(&mut self, screen: Screen) {
+    pub fn push(&mut self, screen: Screen) -> Result<(), Screen> {
         if self.top + 1 < DEPTH {
             self.top += 1;
             self.stack[self.top] = screen;
-        }
+            Ok(())
+        } else { Err(screen) }
     }
 
     /// Dépile l'écran courant. Ignore si déjà au niveau racine.
@@ -64,15 +65,6 @@ impl<const DEPTH: usize> Navigator<DEPTH> {
         self.top == 0
     }
 
-    /// Traite un événement d'entrée. Retourne `true` si l'écran a changé.
-    pub fn handle_back(&mut self) -> bool {
-        if !self.is_at_root() {
-            self.pop();
-            true
-        } else {
-            false
-        }
-    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -90,14 +82,15 @@ mod tests {
     #[test]
     fn push_changes_current_screen() {
         let mut nav: Navigator<8> = Navigator::new(Screen::Idle);
-        nav.push(Screen::MainMenu);
+        let ret = nav.push(Screen::MainMenu);
         assert_eq!(nav.current(), Screen::MainMenu);
+        assert_eq!(ret.unwrap(), ());
     }
 
     #[test]
     fn pop_returns_to_previous() {
         let mut nav: Navigator<8> = Navigator::new(Screen::Idle);
-        nav.push(Screen::MainMenu);
+        let _ = nav.push(Screen::MainMenu);
         nav.pop();
         assert_eq!(nav.current(), Screen::Idle);
     }
@@ -118,15 +111,16 @@ mod tests {
     #[test]
     fn is_at_root_after_push() {
         let mut nav: Navigator<8> = Navigator::new(Screen::Idle);
-        nav.push(Screen::MainMenu);
+        let _ = nav.push(Screen::MainMenu);
         assert!(!nav.is_at_root());
     }
 
     #[test]
     fn push_beyond_depth_is_ignored() {
         let mut nav: Navigator<2> = Navigator::new(Screen::Idle);
-        nav.push(Screen::MainMenu);
-        nav.push(Screen::Settings); // profondeur 2 = max, ignoré
+        let _ = nav.push(Screen::MainMenu);
+        let error = nav.push(Screen::Settings); // profondeur 2 = max, ignoré
         assert_eq!(nav.current(), Screen::MainMenu);
+        assert_eq!(error.unwrap_err(), Screen::Settings);
     }
 }

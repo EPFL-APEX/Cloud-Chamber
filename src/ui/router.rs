@@ -35,28 +35,52 @@ impl Screens {
 
     /// Route l'entrée vers l'écran actuellement affiché.
     pub fn right_turn(&mut self) {
+        use Screen::*;
         match self.navigator.current() {
-            Screen::MainMenu => self.main_menu.right_turn(),
+            MainMenu => self.main_menu.right_turn(),
+            Idle => todo!(),
+            Settings => todo!(),
+            Stats => todo!(),
+            ManualControl => todo!(),
+            CurrentTask => todo!(),
+            Data => todo!(),
+            Info => todo!(),
         }
     }
 
     /// Route l'entrée vers l'écran actuellement affiché.
     pub fn left_turn(&mut self) {
+        use Screen::*;
         match self.navigator.current() {
-            Screen::MainMenu => self.main_menu.left_turn(),
+            MainMenu => self.main_menu.left_turn(),
+            Idle => todo!(),
+            Settings => todo!(),
+            Stats => todo!(),
+            ManualControl => todo!(),
+            CurrentTask => todo!(),
+            Data => todo!(),
+            Info => todo!(),
         }
     }
 
     /// Route le clic vers l'écran courant, puis applique la décision de
     /// navigation qu'il renvoie (cf. doc de [`NavAction`]).
     pub fn click(&mut self) {
+        use Screen::*;
         let action = match self.navigator.current() {
             Screen::MainMenu => self.main_menu.click(),
+            Idle => todo!(),
+            Settings => todo!(),
+            Stats => todo!(),
+            ManualControl => todo!(),
+            CurrentTask => todo!(),
+            Data => todo!(),
+            Info => todo!(),
         };
         match action {
-            Some(NavAction::Push(screen)) => self.navigator.push(screen),
+            Some(NavAction::Push(screen)) => self.navigator.push(screen).unwrap(),
             Some(NavAction::Back) => {
-                self.navigator.handle_back();
+                self.navigator.pop();
             }
             None => {}
         }
@@ -73,8 +97,8 @@ impl Screens {
             Screen::Stats => StatsScreen { state }.draw(display),
             Screen::Idle
             | Screen::Settings
-            | Screen::Control
-            | Screen::Cooldown
+            | Screen::ManualControl
+            | Screen::CurrentTask
             | Screen::Data
             | Screen::Info => todo!("écran pas encore construit"),
         }

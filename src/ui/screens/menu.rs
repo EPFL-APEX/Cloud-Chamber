@@ -52,10 +52,10 @@ impl Rotary for MainMenuScreen {
 impl Click for MainMenuScreen {
     fn click(&mut self) -> Option<NavAction> {
         let screen = match MainMenuItem::try_from(self.selected).ok()? {
-            MainMenuItem::CONTROL => Screen::Control,
+            MainMenuItem::CONTROL => Screen::ManualControl,
             MainMenuItem::STATS => Screen::Stats,
             MainMenuItem::SETTINGS => Screen::Settings,
-            MainMenuItem::COOLDOWN => Screen::Cooldown,
+            MainMenuItem::COOLDOWN => Screen::CurrentTask,
             MainMenuItem::DATA => Screen::Data,
             MainMenuItem::INFO => Screen::Info,
         };
@@ -212,21 +212,21 @@ mod tests {
     #[test]
     fn select_previous_increments() {
         let mut menu = MainMenuScreen::new();
-        menu.left_turn();
+        menu.right_turn();
         assert_eq!(menu.selected, 1);
     }
 
     #[test]
     fn select_next_at_top_stays() {
         let mut menu = MainMenuScreen::new();
-        menu.right_turn();
+        menu.left_turn();
         assert_eq!(menu.selected, 0);
     }
 
     #[test]
     fn select_previous_at_bottom_stays() {
         let mut menu = MainMenuScreen::new();
-        for _ in 0..20 { menu.left_turn(); }
+        for _ in 0..20 { menu.right_turn(); }
         assert_eq!(menu.selected, MAIN_MENU_SIZE - 1);
     }
 
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn click_on_first_item_pushes_control() {
         let mut menu = MainMenuScreen::new();
-        assert_eq!(menu.click(), Some(NavAction::Push(Screen::Control)));
+        assert_eq!(menu.click(), Some(NavAction::Push(Screen::ManualControl)));
     }
 
     #[test]
