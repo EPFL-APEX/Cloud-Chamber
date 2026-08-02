@@ -34,3 +34,8 @@ pub mod units;
 
 /// Indices des capteurs dans les tableaux `SensorSnapshot`/`MeasurementHistory`.
 pub mod config;
+
+/// Buffer circulaire générique horodaté — utilisé pour l'historique de
+/// mesures (`logic::probing::MeasurementHistory`) et par tout actionneur
+/// régulé (`TargetActuator`) qui a besoin de voir plusieurs échantillons.
+pub mod ring_buffer;
