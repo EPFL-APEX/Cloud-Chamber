@@ -32,10 +32,13 @@ pub trait BinaryActuator {
 }
 
 
+/// Actionneur qui régule lui-même son état par rapport à une cible et un
+/// historique de mesures — la politique (hystérésis, PID...) est un détail
+/// d'implémentation du driver. `target: None` = coupure forcée, indépendamment de toute mesure.
 pub trait TargetActuator<Unit: Copy, const N: usize> {
     type Error: Debug;
 
-    fn regulate(&mut self, hist: &RingBuffer<Measurement<Unit>, N>, target: Unit) -> Result<(), Self::Error>;
+    fn regulate(&mut self, hist: &RingBuffer<Measurement<Unit>, N>, target: Option<Unit>) -> Result<(), Self::Error>;
 }
 
 /// Actionneur à sortie continue dans l'unité physique `Unit` (ex. tension
@@ -62,18 +65,10 @@ pub trait AnalogActuator<Unit> {
     fn get_setpoint(&self) -> Result<Unit, Self::Error>;
 }
 
-/// Ce qu'on demande aux trois actionneurs pour un cycle — décidé par
-/// `logic::cooling`/`logic::stopping` (`react_to`), appliqué ici par
-/// `Actuators::apply()`. Vit dans le HAL (comme `Measurement<Unit>`) plutôt
-/// que dans `logic/` : ça permet à `apply()` de prendre le plan directement
-/// sans que le HAL dépende de `logic` — c'est `logic/` qui importe ce type
-/// depuis `cloud_chamber_hal`, jamais l'inverse (inversion de dépendance du
-/// projet, cf. doc de `Actuators` ci-dessous).
-///
-/// `cooling`/`iso_heater` sont des objectifs (`Option<Celsius>`), pas des
-/// ON/OFF : `logic/` décide *quoi* atteindre (une température), pas
+/// Ce qu'on demande aux trois actionneurs pour un cycle.
+/// `cooling`/`iso_heater` sont des objectifs (`Option<Celsius>`): `logic/` décide *quoi* atteindre (une température), pas
 /// *comment* — la régulation (hystérésis, PID...) est un détail
-/// d'implémentation du driver, appliqué par `TargetActuator::should_turn_on`.
+/// d'implémentation du driver, appliquée par `TargetActuator::regulate`.
 /// `None` = coupure forcée, indépendante de toute mesure. `high_voltage`
 /// reste un simple `bool` : il n'y a pas de notion de "maintenir" une
 /// haute tension, juste de l'appliquer ou non.
@@ -84,7 +79,8 @@ pub struct ActuatorPlan {
     pub high_voltage: bool,
 }
 
-/// Regroupe les trois actionneurs de la chambre.
+/// Regroupe les trois actionneurs de la chambre. Ne décide rien — exécute
+/// seulement ce qu'on lui demande.
 pub struct Actuators<Hv, Cool, Iso> {
     pub high_voltage: Hv,
     pub cooling: Cool,
