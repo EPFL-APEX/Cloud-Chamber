@@ -8,7 +8,8 @@
 //! par l'appelant, pas ici.
 
 use crate::cloud_chamber_hal::config::HP_PRESSURE_IDX;
-use crate::config::STOP_EQUALIZE_HP_MAX;
+use crate::cloud_chamber_hal::units::Celsius;
+use crate::config::{SATURATION_TARGET_C, STOP_EQUALIZE_HP_MAX};
 use crate::cloud_chamber_hal::actuators::ActuatorPlan;
 use crate::logic::probing::{MeasurementHistory, ProbingPlan};
 use crate::shared::data::SystemTask;
@@ -42,20 +43,22 @@ impl StoppingPhase {
 
 fn cut_high_voltage(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
     // Délai de décharge géré par l'appelant (STOP_HV_SETTLE_MS) ; HT coupée
-    // dès l'entrée en phase.
-    (SystemTask::Stopping(StoppingPhase::CutHighVoltage),
-     ActuatorPlan { compressor: true, iso_heater: false, high_voltage: false })
+    // dès l'entrée en phase. Froid encore actif (l'IPA continue de
+    // circuler pendant la décharge) ; chauffage IPA coupé.
+    (SystemTask::Stopping(StoppingPhase::CutHighVoltage), ActuatorPlan {
+        cooling: Some(Celsius(SATURATION_TARGET_C)), iso_heater: None, high_voltage: false,
+    })
 }
 
 fn cut_compressor(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
     // Délai de settle géré par l'appelant (STOP_COMPRESSOR_SETTLE_MS) ;
     // compresseur coupé dès l'entrée en phase.
     (SystemTask::Stopping(StoppingPhase::CutCompressor),
-     ActuatorPlan { compressor: false, iso_heater: false, high_voltage: false })
+     ActuatorPlan { cooling: None, iso_heater: None, high_voltage: false })
 }
 
 fn wait_pressure_equilibrium(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
-    let plan = ActuatorPlan { compressor: false, iso_heater: false, high_voltage: false };
+    let plan = ActuatorPlan { cooling: None, iso_heater: None, high_voltage: false };
     match history.press[HP_PRESSURE_IDX].get(0) {
         Ok(m) if !m.value.0.is_nan() && m.value.0 < STOP_EQUALIZE_HP_MAX => (SystemTask::Idle, plan),
         // Pas de capteur / pas encore équilibré → l'appelant tranche par

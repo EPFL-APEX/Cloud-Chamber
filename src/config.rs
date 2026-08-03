@@ -79,6 +79,21 @@ pub const STABLE_TOLERANCE_C: f32 = 1.0;
 /// Durée de circulation IPA (pas de capteur dédié — temporisation).
 pub const IPA_CIRCULATION_MS: u64 = 120_000;
 
+/// Demi-largeur de la bande d'hystérésis des actionneurs régulés (froid,
+/// chauffage IPA — `drivers::regulated::HysteresisActuator`). Distincte de
+/// `STABLE_TOLERANCE_C` : même valeur de départ, mais concept différent
+/// (l'une valide qu'une phase peut avancer, l'autre évite l'oscillation
+/// rapide d'un relais) — pas de raison qu'elles restent égales si l'une
+/// est recalibrée plus tard.
+pub const REGULATION_BAND_C: f32 = 1.0;
+
+/// TODO CALIBRAGE : cible du thermostat chauffage isopropanol (ds3, cf.
+/// `ISO_TEMP_IDX`) — aucune valeur physique de référence disponible pour
+/// l'instant. Valeur volontairement haute plutôt qu'un chiffre qui
+/// aurait l'air raisonnable sans l'être — à vérifier sur le montage réel
+/// avant tout bring-up.
+pub const IPA_HEATER_TARGET_C: f32 = 40.0;
+
 // Timeouts d'abandon (phase trop longue → retour Idle), gérés par l'appelant.
 pub const SENSOR_CHECK_TIMEOUT_MS: u64 = 30_000;
 pub const PRECOOL_TIMEOUT_MS: u64 = 45 * 60_000;
