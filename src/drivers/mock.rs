@@ -3,11 +3,12 @@
 //! Compilé uniquement en `#[cfg(test)]` (cf. la déclaration du module dans
 //! `drivers::mod`) : ne fait jamais partie d'un build embarqué ou release.
 
-use crate::cloud_chamber_hal::actuators::BinaryActuator;
+use crate::cloud_chamber_hal::actuators::{BinaryActuator, TargetActuator};
 use crate::cloud_chamber_hal::config::{
     NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER,
 };
 use crate::cloud_chamber_hal::measurement::Measurement;
+use crate::cloud_chamber_hal::ring_buffer::RingBuffer;
 use crate::cloud_chamber_hal::sensors::{BatchSensor, DeferredBatchSensor};
 use crate::cloud_chamber_hal::timer::{Duration, Instant, MonotonicTimer};
 use crate::cloud_chamber_hal::units::{Celsius, HectoPascal, Volt};
@@ -134,6 +135,20 @@ impl BinaryActuator for MockActuator {
     fn turn_off(&mut self) -> Result<(), Self::Error> {
         self.is_on = false;
         Ok(())
+    }
+}
+
+/// Seuil simple (pas d'hystérésis) : la régulation par hystérésis a sa
+/// propre couverture de tests dédiée (`drivers::regulated`) — les tests
+/// d'intégration de `control_loop.rs` n'ont pas besoin de re-simuler cette
+/// logique, seulement de vérifier que `apply()` route les bonnes cibles
+/// vers les bons actionneurs.
+impl<Unit: Copy + PartialOrd, const N: usize> TargetActuator<Unit, N> for MockActuator {
+    type Error = core::convert::Infallible;
+
+    fn regulate(&mut self, hist: &RingBuffer<Measurement<Unit>, N>, target: Option<Unit>) -> Result<(), Self::Error> {
+        let on = target.is_some_and(|t| hist.get(0).map(|m| m.value > t).unwrap_or(false));
+        if on { self.turn_on() } else { self.turn_off() }
     }
 }
 
