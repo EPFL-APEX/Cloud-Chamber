@@ -1,10 +1,24 @@
 //! Fonctions de régulation pures — hystérésis et PID.
-use core::ops::{Add, Sub, Neg, Mul, Div};
+use core::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
 use crate::cloud_chamber_hal::actuators::{BinaryActuator, TargetActuator};
 use crate::cloud_chamber_hal::measurement::Measurement;
 use crate::cloud_chamber_hal::ring_buffer::RingBuffer;
 
+/// Tout ce dont `hysteresis`/`pid` ont besoin sur l'unité physique régulée
+pub trait Unit:
+    Copy
+    + PartialOrd
+    + Add<Output = Self>
+    + AddAssign
+    + Sub<Output = Self>
+    + Neg<Output = Self>
+    + Mul<f32, Output = Self>
+    + Div<f32, Output = Self>
+{
+    /// Valeur neutre pour initialiser un accumulateur (intégrale/dérivée).
+    fn zero() -> Self;
+}
 
 pub enum RegulationDirection {
     Upward,
@@ -12,10 +26,8 @@ pub enum RegulationDirection {
 }
 
 
-pub fn hysteresis<Unit>(current: Unit, target: Unit, band: Unit, is_on: bool, direction:Regu
+pub fn hysteresis<U: Unit>(current: U, target: U, band: U, is_on: bool, direction: RegulationDirection
     ) -> bool
-where
-    Unit: Copy + Sub<Output = Unit> + Neg<Output = Unit> + PartialOrd,
 {
     let error = match direction {
         RegulationDirection::Upward => (current - target),
@@ -32,19 +44,17 @@ pub struct PidGains {
     pub kd: f32,
 }
 
-pub fn pid<Unit, const N: usize>(
-    target: Unit, history: &RingBuffer<Measurement<Unit>, N>, gains: PidGains,
-) -> f32
-where
-    Unit: Copy + Add<Output = Unit> + Sub<Output = Unit> + Mul<f32, Output = Unit> + Div<f32, Output = Unit> + PartialOrd,
+pub fn pid<U: Unit, const N: usize>(
+    target: U, history: &RingBuffer<Measurement<U>, N>, gains: PidGains,
+) -> U
 {
     let newest = history.get(0).unwrap();
 
-    let error_of = |m: Measurement<Unit>| (m.value - target);
+    let error_of = |m: Measurement<U>| (m.value - target);
 
-    let proportional = error_of(newest).into();
-    let mut integral = Unit::new(0.0);
-    let mut derivative = Unit::new(0.0);
+    let proportional = error_of(newest);
+    let mut integral = U::zero();
+    let mut derivative = U::zero();
     let mut previous = newest;
 
     for i in 1..N {
@@ -57,6 +67,5 @@ where
         previous = sample;
     }
 
-    gains.kp * proportional + gains.ki * integral + gains.kd * derivative
+    proportional * gains.kp + integral * gains.ki + derivative * gains.kd
 }
-
