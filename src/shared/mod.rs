@@ -11,6 +11,3 @@
 
 /// Structures de données échangées entre les deux cœurs.
 pub mod data;
-
-/// Buffer circulaire générique pour l'historique des mesures.
-pub mod ring_buffer;

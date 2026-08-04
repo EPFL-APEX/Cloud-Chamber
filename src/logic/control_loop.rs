@@ -1,37 +1,33 @@
 //! Point d'entrée Core0 : boucle de sondage + machine à états + actionneurs.
 
 use crate::cloud_chamber_hal::{
-    actuators::{ActuatorPlan, Actuators, BinaryActuator},
-    config::{NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER},
+    actuators::{ActuatorPlan, Actuators, BinaryActuator, TargetActuator},
+    config::{CHAMBER_TEMP_IDX, ISO_TEMP_IDX, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER},
     sensors::{BatchSensor, DeferredBatchSensor, Sensors},
     timer::MonotonicTimer,
     units::{Celsius, HectoPascal, Volt},
 };
+use crate::config::{CONTROL_LOOP_HISTORY_SIZE, IPA_HEATER_TARGET_C, SATURATION_TARGET_C};
 use crate::logic::phase_clock::{PhaseClock, advance};
 use crate::logic::security::{SafetyConfig, SafetyMonitor};
 use crate::shared::data::{SHARED_STATE, SensorSnapshot, SystemTask};
 
 use super::probing::{MeasurementHistory, ProbingPlan};
 
-// `panic!` du prélude et non `defmt::panic` : defmt exige qu'un global
-// logger soit lié, ce qu'aucune cible hôte ne fournit — l'import cassait
-// `cargo test-host` à l'édition de liens. Sur la Pico, panic-probe
-// (feature print-defmt) affiche le message via defmt de toute façon.
-
 /// Point d'entrée Core0 : boucle de sondage + machine à états.
 ///
 /// Panique si un capteur ne retourne aucune mesure valide à l'initialisation
 /// (cf. `are_all_some()` ci-dessous) — pas de démarrage dégradé pour l'instant.
-pub fn run<Ts, Ps, Vs, Hv, Comp, Iso, Clk>(
-    mut sensors: Sensors<Ts, Ps, Vs>, mut actuators: Actuators<Hv, Comp, Iso>, clock: Clk,
+pub fn run<Ts, Ps, Vs, Hv, Cool, Iso, Clk>(
+    mut sensors: Sensors<Ts, Ps, Vs>, mut actuators: Actuators<Hv, Cool, Iso>, clock: Clk,
 ) -> !
 where
     Ts: DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
     Ps: BatchSensor<HectoPascal, NUMBER_OF_PRESSURE_SENSOR>,
     Vs: BatchSensor<Volt, NUMBER_OF_VOLTMETER>,
     Hv: BinaryActuator,
-    Comp: BinaryActuator,
-    Iso: BinaryActuator,
+    Cool: TargetActuator<Celsius, CONTROL_LOOP_HISTORY_SIZE>,
+    Iso: TargetActuator<Celsius, CONTROL_LOOP_HISTORY_SIZE>,
     Clk: MonotonicTimer,
 {
     // Initial values, mais est-ce qu'on veut vraiment ça ?
@@ -67,9 +63,9 @@ where
 /// phase), application des actionneurs, publication. Extrait de `run()`
 /// uniquement pour être testable (`run()` ne retourne jamais) — même
 /// contenu que l'ancien corps de `loop`, aucun changement de comportement.
-fn tick<Ts, Ps, Vs, Hv, Comp, Iso, Clk>(
+fn tick<Ts, Ps, Vs, Hv, Cool, Iso, Clk>(
     sensors: &mut Sensors<Ts, Ps, Vs>,
-    actuators: &mut Actuators<Hv, Comp, Iso>,
+    actuators: &mut Actuators<Hv, Cool, Iso>,
     phase: &mut PhaseClock<Clk>,
     safety: &mut SafetyMonitor,
     measurement_history: &mut MeasurementHistory,
@@ -80,8 +76,8 @@ where
     Ps: BatchSensor<HectoPascal, NUMBER_OF_PRESSURE_SENSOR>,
     Vs: BatchSensor<Volt, NUMBER_OF_VOLTMETER>,
     Hv: BinaryActuator,
-    Comp: BinaryActuator,
-    Iso: BinaryActuator,
+    Cool: TargetActuator<Celsius, CONTROL_LOOP_HISTORY_SIZE>,
+    Iso: TargetActuator<Celsius, CONTROL_LOOP_HISTORY_SIZE>,
     Clk: MonotonicTimer,
 {
     let latest_measurement = sensors.probe(probing_plan);
@@ -108,7 +104,7 @@ where
             phase.elapsed_ms(), measurement_history.chamber_stale_ms(phase.now_ms()),
         )
     };
-    actuators.apply(plan);
+    actuators.apply(plan, measurement_history);
 
     // Publie et adopte localement `next` seulement si SHARED_STATE
     // vaut encore `synced_task` (lu en tout début de tour) — sinon
@@ -178,16 +174,23 @@ impl SystemTask {
             // tout coupé par défaut plutôt qu'un todo!() qui paniquerait.
             Idle => (
                 SystemTask::Idle,
-                ActuatorPlan { compressor: false, iso_heater: false, high_voltage: false },
+                ActuatorPlan { cooling: None, iso_heater: None, high_voltage: false },
             ),
             Cooling(phase) => phase.react_to(history),
-            // Régime permanent après la séquence de refroidissement : on
-            // maintient les sorties de fin de FinalCheckBeforeStabilising.
-            // Pas de sortie automatique — seul un arrêt opérateur explicite
-            // (signal UI, pas câblé ici) fait sortir de cet état.
+            // Régime permanent après la séquence de refroidissement : les
+            // cibles restent celles de fin de FinalCheckBeforeStabilising,
+            // désormais réellement régulées (cycle on/off autour de la
+            // cible) plutôt que "tout allumé en continu" — plus réaliste
+            // pour un compresseur en régime permanent. Pas de sortie
+            // automatique — seul un arrêt opérateur explicite (signal UI,
+            // pas câblé ici) fait sortir de cet état.
             Stabilising => (
                 SystemTask::Stabilising,
-                ActuatorPlan { compressor: true, iso_heater: true, high_voltage: true },
+                ActuatorPlan {
+                    cooling: Some(Celsius(SATURATION_TARGET_C)),
+                    iso_heater: Some(Celsius(IPA_HEATER_TARGET_C)),
+                    high_voltage: true,
+                },
             ),
             Stopping(phase) => phase.react_to(history),
             // Coupure de secours : tout éteint, verrouillé jusqu'au
@@ -195,11 +198,30 @@ impl SystemTask {
             // depuis `control_loop.rs::run()` en priorité absolue).
             Tripped(cause) => (
                 SystemTask::Tripped(cause),
-                ActuatorPlan { compressor: false, iso_heater: false, high_voltage: false },
+                ActuatorPlan { cooling: None, iso_heater: None, high_voltage: false },
             ),
         }
     }
 }
+
+
+impl<Hv, Cool, Iso> Actuators<Hv, Cool, Iso>
+where
+    Hv: BinaryActuator,
+    Cool: TargetActuator<Celsius, CONTROL_LOOP_HISTORY_SIZE>,
+    Iso: TargetActuator<Celsius, CONTROL_LOOP_HISTORY_SIZE>,
+{
+    /// Vit ici plutôt que dans `cloud_chamber_hal::actuators` : a besoin de
+    /// `MeasurementHistory` pour savoir quel historique donner à chaque
+    /// actionneur régulé, et le HAL ne doit jamais dépendre de `logic`.
+    /// `Actuators`/`TargetActuator` eux-mêmes restent dans le HAL et ne
+    /// connaissent qu'un seul `RingBuffer` à la fois (cf. leur doc). Même
+    /// principe que `SystemTask::react_to` un peu plus bas dans ce fichier.
+    pub fn apply(&mut self, plan: ActuatorPlan, history: &MeasurementHistory) {
+        todo!()
+    }
+}
+
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 //
@@ -300,7 +322,7 @@ mod tests {
 
             let actuators = Actuators {
                 high_voltage: MockActuator::new(),
-                compressor: MockActuator::new(),
+                cooling: MockActuator::new(),
                 iso_heater: MockActuator::new(),
             };
             let history = MeasurementHistory::new();
@@ -329,6 +351,10 @@ mod tests {
 
         fn set_chamber_temp(&mut self, value_c: f32) {
             self.set_temp(CHAMBER_TEMP_IDX, value_c);
+        }
+
+        fn set_iso_temp(&mut self, value_c: f32) {
+            self.set_temp(ISO_TEMP_IDX, value_c);
         }
 
         fn set_compressor_temp(&mut self, value_c: f32) {
@@ -390,7 +416,7 @@ mod tests {
             }
             assert_eq!(h.phase.current(), SystemTask::Idle);
             assert!(!h.actuators.high_voltage.is_on);
-            assert!(!h.actuators.compressor.is_on);
+            assert!(!h.actuators.cooling.is_on);
             assert!(!h.actuators.iso_heater.is_on);
             assert_eq!(h.shared_task(), SystemTask::Idle);
         });
@@ -413,13 +439,22 @@ mod tests {
             // ─── PreCoolingThePlate ─────────────────────────────────────────
             h.tick_with_chamber_temp_after_ms(1_000, 0.0); // encore au-dessus du seuil
             assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
-            assert!(h.actuators.compressor.is_on);
+            assert!(h.actuators.cooling.is_on);
             assert!(!h.actuators.high_voltage.is_on);
 
             h.tick_with_chamber_temp_after_ms(1_000, PRECOOL_TARGET_C);
             assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::StartingIpaCirculation));
 
             // ─── StartingIpaCirculation (purement temporisé) ─────────────────
+            // Lecture iso posée une fois (pas de garde perte-capteur sur ce
+            // canal, contrairement à la chambre — pas besoin de la
+            // rafraîchir) : au-dessus de la cible pour que la règle de seuil
+            // simple de `MockActuator` (`current > target`) le dise "actif" —
+            // le sens réel d'hystérésis pour un chauffage (`ActivateBelow`,
+            // s'active quand c'est FROID) est testé séparément et précisément
+            // dans `drivers::regulated`, pas ici.
+            h.set_iso_temp(IPA_HEATER_TARGET_C + 10.0);
+
             // Rafraîchit une lecture chambre régulièrement pendant l'attente
             // (2 min) : cette phase ignore la valeur (avancement temporisé),
             // mais reste soumise à l'abandon perte-capteur comme toute phase
@@ -451,12 +486,18 @@ mod tests {
             assert_eq!(h.phase.current(), SystemTask::Stabilising);
 
             // ─── Stabilising : régime permanent, pas de sortie automatique ────
+            // Chambre légèrement au-dessus de la cible (règle de seuil
+            // simple du mock, cf. commentaire sur `set_iso_temp` plus haut)
+            // pour que le froid soit "actif" pendant cette longue attente —
+            // horloge avancée d'abord pour que cette lecture soit bien
+            // horodatée après la précédente (sinon `push_if_newer` l'ignore).
+            h.tick_with_chamber_temp_after_ms(1_000, SATURATION_TARGET_C + 5.0);
             for _ in 0..20 {
                 h.tick_after_ms(60 * 60 * 1_000); // sauts d'une heure
             }
             assert_eq!(h.phase.current(), SystemTask::Stabilising);
             assert!(h.actuators.high_voltage.is_on);
-            assert!(h.actuators.compressor.is_on);
+            assert!(h.actuators.cooling.is_on);
             assert!(h.actuators.iso_heater.is_on);
             assert_eq!(h.shared_task(), SystemTask::Stabilising);
 
@@ -471,13 +512,13 @@ mod tests {
 
             h.tick_after_ms(STOP_COMPRESSOR_SETTLE_MS);
             assert_eq!(h.phase.current(), SystemTask::Stopping(StoppingPhase::WaitPressureEquilibrium));
-            assert!(!h.actuators.compressor.is_on);
+            assert!(!h.actuators.cooling.is_on);
 
             h.set_pressure(HP_PRESSURE_IDX, STOP_EQUALIZE_HP_MAX - 0.1);
             h.tick();
             assert_eq!(h.phase.current(), SystemTask::Idle);
             assert!(!h.actuators.high_voltage.is_on);
-            assert!(!h.actuators.compressor.is_on);
+            assert!(!h.actuators.cooling.is_on);
             assert!(!h.actuators.iso_heater.is_on);
             assert_eq!(h.shared_task(), SystemTask::Idle);
         });
@@ -595,7 +636,7 @@ mod tests {
 
             assert_eq!(h.phase.current(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
             assert!(!h.actuators.high_voltage.is_on);
-            assert!(!h.actuators.compressor.is_on);
+            assert!(!h.actuators.cooling.is_on);
             assert!(!h.actuators.iso_heater.is_on);
             assert_eq!(h.shared_task(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
         });
@@ -751,7 +792,7 @@ mod tests {
             // tour — c'est cette transition que la course va invalider.
             let mut actuators = Actuators {
                 high_voltage: RacyActuator { inner: MockActuator::new(), inject: Some(SystemTask::Idle) },
-                compressor: MockActuator::new(),
+                cooling: MockActuator::new(),
                 iso_heater: MockActuator::new(),
             };
             let mut history = MeasurementHistory::new();

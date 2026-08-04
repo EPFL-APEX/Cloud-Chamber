@@ -16,6 +16,10 @@
 
 use core::fmt::Debug;
 
+use crate::cloud_chamber_hal::measurement::Measurement;
+use crate::cloud_chamber_hal::ring_buffer::RingBuffer;
+use crate::cloud_chamber_hal::units::Celsius;
+
 /// Actionneur tout-ou-rien (relais, GPIO simple).
 pub trait BinaryActuator {
     type Error: Debug;
@@ -25,6 +29,16 @@ pub trait BinaryActuator {
 
     /// Désactive la sortie.
     fn turn_off(&mut self) -> Result<(), Self::Error>;
+}
+
+
+/// Actionneur qui régule lui-même son état par rapport à une cible et un
+/// historique de mesures — la politique (hystérésis, PID...) est un détail
+/// d'implémentation du driver. `target: None` = coupure forcée, indépendamment de toute mesure.
+pub trait TargetActuator<Unit: Copy, const N: usize> {
+    type Error: Debug;
+
+    fn regulate(&mut self, hist: &RingBuffer<Measurement<Unit>, N>, target: Option<Unit>) -> Result<(), Self::Error>;
 }
 
 /// Actionneur à sortie continue dans l'unité physique `Unit` (ex. tension
@@ -51,42 +65,24 @@ pub trait AnalogActuator<Unit> {
     fn get_setpoint(&self) -> Result<Unit, Self::Error>;
 }
 
-/// Ce qu'on demande aux trois actionneurs pour un cycle — décidé par
-/// `logic::cooling`/`logic::stopping` (`react_to`), appliqué ici par
-/// `Actuators::apply()`. Vit dans le HAL (comme `Measurement<Unit>`) plutôt
-/// que dans `logic/` : ça permet à `apply()` de prendre le plan directement
-/// sans que le HAL dépende de `logic` — c'est `logic/` qui importe ce type
-/// depuis `cloud_chamber_hal`, jamais l'inverse (inversion de dépendance du
-/// projet, cf. doc de `Actuators` ci-dessous).
+/// Ce qu'on demande aux trois actionneurs pour un cycle.
+/// `cooling`/`iso_heater` sont des objectifs (`Option<Celsius>`): `logic/` décide *quoi* atteindre (une température), pas
+/// *comment* — la régulation (hystérésis, PID...) est un détail
+/// d'implémentation du driver, appliquée par `TargetActuator::regulate`.
+/// `None` = coupure forcée, indépendante de toute mesure. `high_voltage`
+/// reste un simple `bool` : il n'y a pas de notion de "maintenir" une
+/// haute tension, juste de l'appliquer ou non.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ActuatorPlan {
-    pub compressor: bool,
-    pub iso_heater: bool,
+    pub cooling: Option<Celsius>,
+    pub iso_heater: Option<Celsius>,
     pub high_voltage: bool,
 }
 
 /// Regroupe les trois actionneurs de la chambre. Ne décide rien — exécute
-/// seulement ce qu'on lui demande via `apply()`.
-pub struct Actuators<Hv, Comp, Iso> {
+/// seulement ce qu'on lui demande.
+pub struct Actuators<Hv, Cool, Iso> {
     pub high_voltage: Hv,
-    pub compressor: Comp,
+    pub cooling: Cool,
     pub iso_heater: Iso,
-}
-
-impl<Hv, Comp, Iso> Actuators<Hv, Comp, Iso>
-where
-    Hv: BinaryActuator,
-    Comp: BinaryActuator,
-    Iso: BinaryActuator,
-{
-    pub fn apply(&mut self, plan: ActuatorPlan) {
-        let ActuatorPlan { compressor, iso_heater, high_voltage } = plan;
-        let _ = Self::set(&mut self.high_voltage, high_voltage);
-        let _ = Self::set(&mut self.compressor, compressor);
-        let _ = Self::set(&mut self.iso_heater, iso_heater);
-    }
-
-    fn set<A: BinaryActuator>(actuator: &mut A, on: bool) -> Result<(), A::Error> {
-        if on { actuator.turn_on() } else { actuator.turn_off() }
-    }
 }

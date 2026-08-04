@@ -5,10 +5,8 @@ use crate::cloud_chamber_hal::config::{
     CHAMBER_TEMP_IDX, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_VOLTMETER,
 };
 use crate::config::CONTROL_LOOP_HISTORY_SIZE;
-use crate::shared::{
-    data::{SystemTask, SensorSnapshot},
-    ring_buffer::RingBuffer
-};
+use crate::shared::data::{SystemTask, SensorSnapshot};
+use crate::cloud_chamber_hal::ring_buffer::RingBuffer;
 use crate::cloud_chamber_hal::timer::Instant;
 
 /// Décide quelles catégories de capteurs sonder ce cycle.

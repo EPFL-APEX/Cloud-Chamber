@@ -192,6 +192,7 @@ mod tests {
     use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
     use crate::cloud_chamber_hal::measurement::Measurement;
     use crate::cloud_chamber_hal::units::Celsius;
+    use crate::config::{IPA_HEATER_TARGET_C, SATURATION_TARGET_C};
     use crate::drivers::mock::MockClock;
     use crate::logic::security::SafetyCause;
 
@@ -287,7 +288,11 @@ mod tests {
         assert_eq!(next, SystemTask::Stabilising);
         assert_eq!(
             plan,
-            ActuatorPlan { compressor: true, iso_heater: true, high_voltage: true }
+            ActuatorPlan {
+                cooling: Some(Celsius(SATURATION_TARGET_C)),
+                iso_heater: Some(Celsius(IPA_HEATER_TARGET_C)),
+                high_voltage: true,
+            }
         );
     }
 

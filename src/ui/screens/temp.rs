@@ -1,9 +1,6 @@
 ///
 
-use crate::{
-    cloud_chamber_hal::{measurement::Measurement, units::Celsius},
-    shared::ring_buffer::RingBuffer,
-};
+use crate::cloud_chamber_hal::{measurement::Measurement, ring_buffer::RingBuffer, units::Celsius};
 
 
 const TEMP_GRAPH_BUFFER_LENGTH:usize = 100;
