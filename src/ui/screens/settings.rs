@@ -166,7 +166,7 @@ impl Click for SettingsScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use embedded_graphics_simulator::SimulatorDisplay;
+    use embedded_graphics_simulator::{SimulatorDisplay, OutputSettingsBuilder};
 
     fn make_display() -> SimulatorDisplay<Rgb565> {
         SimulatorDisplay::new(Size::new(SCREEN_WIDTH, 240))
@@ -240,4 +240,29 @@ mod tests {
         let _ = screen.click();
         screen.draw(&mut d).unwrap();
     }
+
+
+    #[test]
+    fn main_menu_screenshot() -> Result<(), core::convert::Infallible> {
+        let mut display = make_display();
+
+        let main_menu_screen = SettingsScreen::new();
+
+        main_menu_screen.draw(&mut display)?;
+
+        // SAVE SCREENSHOT
+        let output_settings = OutputSettingsBuilder::new()
+            .build();
+
+        let path = std::env::args_os()
+            .nth(1)
+            .unwrap_or_else(|| "screenshots/SettingsMenu.png".into());
+        display
+            .to_rgb_output_image(&output_settings)
+            .save_png(&path)
+            .expect("failed to save screenshot");
+
+        Ok(())
+    }
+
 }
