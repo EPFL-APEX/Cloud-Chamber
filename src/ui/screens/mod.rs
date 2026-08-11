@@ -4,6 +4,7 @@
 //! `ui::router::Screens` est le seul point d'entrée public de la navigation.
 
 pub(super) mod menu;
+pub(super) mod settings;
 pub(super) mod temp;
 pub(super) mod stats;
 pub(super) mod widgets;

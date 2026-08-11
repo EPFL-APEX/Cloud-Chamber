@@ -12,6 +12,7 @@ use crate::shared::data::SharedState;
 use super::interactions::{Click, NavAction, Rotary};
 use super::navigator::{Navigator, Screen};
 use super::screens::menu::MainMenuScreen;
+use super::screens::settings::SettingsScreen;
 use super::screens::stats::StatsScreen;
 
 const NAV_DEPTH: usize = 8;
@@ -23,6 +24,7 @@ const NAV_DEPTH: usize = 8;
 pub struct Screens {
     navigator: Navigator<NAV_DEPTH>,
     main_menu: MainMenuScreen,
+    settings: SettingsScreen,
 }
 
 impl Screens {
@@ -30,6 +32,7 @@ impl Screens {
         Self {
             navigator: Navigator::new(Screen::MainMenu),
             main_menu: MainMenuScreen::new(),
+            settings: SettingsScreen::new(),
         }
     }
 
@@ -38,8 +41,8 @@ impl Screens {
         use Screen::*;
         match self.navigator.current() {
             MainMenu => self.main_menu.right_turn(),
+            Settings => self.settings.right_turn(),
             Idle => todo!(),
-            Settings => todo!(),
             Stats => todo!(),
             ManualControl => todo!(),
             CurrentTask => todo!(),
@@ -53,8 +56,8 @@ impl Screens {
         use Screen::*;
         match self.navigator.current() {
             MainMenu => self.main_menu.left_turn(),
+            Settings => self.settings.left_turn(),
             Idle => todo!(),
-            Settings => todo!(),
             Stats => todo!(),
             ManualControl => todo!(),
             CurrentTask => todo!(),
@@ -69,8 +72,8 @@ impl Screens {
         use Screen::*;
         let action = match self.navigator.current() {
             Screen::MainMenu => self.main_menu.click(),
+            Settings => self.settings.click(),
             Idle => todo!(),
-            Settings => todo!(),
             Stats => todo!(),
             ManualControl => todo!(),
             CurrentTask => todo!(),
@@ -94,9 +97,9 @@ impl Screens {
     {
         match self.navigator.current() {
             Screen::MainMenu => self.main_menu.draw(display),
+            Screen::Settings => self.settings.draw(display),
             Screen::Stats => StatsScreen { state }.draw(display),
             Screen::Idle
-            | Screen::Settings
             | Screen::ManualControl
             | Screen::CurrentTask
             | Screen::Data

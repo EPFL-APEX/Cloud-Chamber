@@ -1,5 +1,6 @@
-//! Liste "libellé + statut" réutilisable entre écrans (checklist, self-test,
-//! séquence de démarrage...).
+//! Listes de lignes réutilisables entre écrans : "libellé + statut"
+//! (checklist, self-test, séquence de démarrage) et "libellé + valeur"
+//! (réglages).
 //!
 //! `N_LINES` fixe le nombre de lignes à la compilation (pas d'allocation
 //! heap). `SEPARATOR` active des séparateurs horizontaux entre les lignes
@@ -8,11 +9,11 @@
 use embedded_graphics::{
     Drawable,
     draw_target::DrawTarget,
-    geometry::{OriginDimensions, Point},
+    geometry::{OriginDimensions, Point, Size},
     mono_font::{ascii::FONT_6X13, MonoTextStyle},
     pixelcolor::Rgb565,
-    primitives::{Circle, Line, Primitive, PrimitiveStyle},
-    text::{Baseline, Text, TextStyle, TextStyleBuilder},
+    primitives::{Circle, Line, Primitive, PrimitiveStyle, Rectangle},
+    text::{Alignment, Baseline, Text, TextStyle, TextStyleBuilder},
 };
 
 use crate::ui::theme;
@@ -77,6 +78,84 @@ impl<const N_LINES: usize, const SEPARATOR: bool> StatusLines<N_LINES, SEPARATOR
             Line::new(Point::new(0, y), Point::new(WIDTH, y))
                 .into_styled(separator_style)
                 .draw(display)?;
+        }
+
+        Ok(())
+    }
+}
+
+/// Dessine l'icône de statut. Fonction séparée (pas une branche de `match`
+/// Une ligne de réglage : libellé + valeur déjà formatée par l'appelant.
+/// La valeur est un `&str` et non un nombre — c'est l'écran qui sait dans
+/// quelle unité et avec combien de décimales l'afficher.
+#[derive(Clone, Copy)]
+pub struct SettingLine<'a> {
+    pub label: &'static str,
+    pub value: &'a str,
+}
+
+/// Liste de réglages : même géométrie de ligne que [`StatusLines`], mais une
+/// valeur à droite au lieu d'une icône, et une ligne sélectionnée.
+///
+/// `editing` change seulement la couleur de la valeur — l'écran garde la
+/// main sur ce que tourner l'encodeur veut dire dans chaque mode.
+pub struct SettingLines<'a, const N_LINES: usize> {
+    pub lines: [SettingLine<'a>; N_LINES],
+    pub selected: usize,
+    pub editing: bool,
+    /// Ordonnée de la première ligne — l'écran place la liste sous sa bande
+    /// de titre sans qu'on ait à envelopper la cible de dessin.
+    pub top: i32,
+}
+
+impl<'a, const N_LINES: usize> SettingLines<'a, N_LINES> {
+    const LINE_HEIGHT: i32 = 22;
+
+    pub fn draw<D>(&self, display: &mut D) -> Result<(), D::Error>
+    where
+        D: DrawTarget<Color = Rgb565> + OriginDimensions,
+    {
+        let text_style: TextStyle = TextStyleBuilder::new().baseline(Baseline::Top).build();
+        let right_style: TextStyle = TextStyleBuilder::new()
+            .baseline(Baseline::Top)
+            .alignment(Alignment::Right)
+            .build();
+
+        for (i, line) in self.lines.iter().enumerate() {
+            let y = self.top + i as i32 * Self::LINE_HEIGHT;
+            let selected = i == self.selected;
+
+            if selected {
+                Rectangle::new(
+                    Point::new(0, y),
+                    Size::new(WIDTH as u32, Self::LINE_HEIGHT as u32),
+                )
+                .into_styled(PrimitiveStyle::with_fill(theme::ACCENT_COLOR))
+                .draw(display)?;
+            }
+
+            let label_color = if selected { theme::HIGHLIGHT_COLOR } else { theme::TEXT_COLOR };
+            let value_color = if selected && self.editing {
+                theme::WARNING_COLOR
+            } else {
+                theme::DIM_COLOR
+            };
+
+            Text::with_text_style(
+                line.label,
+                Point::new(10, y + 5),
+                MonoTextStyle::new(&FONT_6X13, label_color),
+                text_style,
+            )
+            .draw(display)?;
+
+            Text::with_text_style(
+                line.value,
+                Point::new(WIDTH - 10, y + 5),
+                MonoTextStyle::new(&FONT_6X13, value_color),
+                right_style,
+            )
+            .draw(display)?;
         }
 
         Ok(())
