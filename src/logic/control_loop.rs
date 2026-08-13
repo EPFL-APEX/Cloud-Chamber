@@ -31,7 +31,7 @@ where
     Clk: MonotonicTimer,
 {
     // Initial values, mais est-ce qu'on veut vraiment ça ?
-    let mut latest_measurement = sensors.probe_all();
+    let latest_measurement = sensors.probe_all();
     if !latest_measurement.are_all_some() {panic!("Not every sensor returned a valid measurement, something goes wrong...")};
 
     update_global_state(&latest_measurement);
@@ -124,7 +124,7 @@ where
 fn update_global_state(latest_measurement:&SensorSnapshot) {
     critical_section::with(|cs| {
         let mut shared_state = SHARED_STATE.borrow_ref_mut(cs);
-        let mut shared_sensor_data = &mut shared_state.snapshot;
+        let shared_sensor_data = &mut shared_state.snapshot;
 
         merge_new_readings(&mut shared_sensor_data.temps, &latest_measurement.temps);
         merge_new_readings(&mut shared_sensor_data.press, &latest_measurement.press);
