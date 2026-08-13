@@ -54,7 +54,15 @@ mod imp {
     /// `Option` à `take()` plutôt qu'un par ressource. Posséder `gate_pin`/
     /// `zero_cross_pin` (et pas seulement leur index) empêche à la compilation
     /// qu'une même broche soit réutilisée ailleurs pendant que ce driver tourne.
-    struct Resources<P: PIOExt, Sm: StateMachineIndex, GateId: PinId, GatePull: PullType, ZcId: PinId, ZcPull: PullType> {
+    struct Resources<P, Sm, GateId, GatePull, ZcId, ZcPull>
+    where
+        P: PIOExt,
+        Sm: StateMachineIndex,
+        GateId: PinId,
+        GatePull: PullType,
+        ZcId: PinId,
+        ZcPull: PullType,
+    {
         pio: PIO<P>,
         sm: StateMachine<(P, Sm), hal::pio::Running>,
         rx: Rx<(P, Sm)>,
@@ -69,13 +77,18 @@ mod imp {
     /// (`SM0`..`SM3`) — ce driver n'en consomme qu'un seul, le reste du bloc
     /// PIO reste disponible pour d'autres périphériques. `GateId`/`ZcId`
     /// identifient les deux broches consommées par [`new`](Self::new).
-    pub struct TriacDriver<P: PIOExt, Sm: StateMachineIndex, GateId: PinId, GatePull: PullType, ZcId: PinId, ZcPull: PullType> {
-        // `Option` (plutôt que des champs nus) : `TriacDriver` implémente
-        // `Drop`, qui interdit de déplacer un champ hors de `self` par
-        // destructuration (E0509). `.take()` sur un champ `Option` reste
-        // autorisé — c'est un appel de méthode sur `&mut self`, pas un move
-        // de `self` — et donne un point de sortie partagé entre `uninstall`
-        // (explicite) et `drop` (implicite), sans `unsafe`.
+    pub struct TriacDriver<P, Sm, GateId, GatePull, ZcId, ZcPull>
+    where
+        P: PIOExt,
+        Sm: StateMachineIndex,
+        GateId: PinId,
+        GatePull: PullType,
+        ZcId: PinId,
+        ZcPull: PullType,
+    {
+        // `Option` : `Drop` interdit de déplacer un champ hors de `self`
+        // (E0509), mais `.take()` reste autorisé — un seul point de sortie
+        // pour `uninstall` (explicite) et `drop` (implicite).
         resources: Option<Resources<P, Sm, GateId, GatePull, ZcId, ZcPull>>,
         gate_pin_num: u8,
         /// Nombre de demi-alternances par période, moins un (convention de
@@ -85,8 +98,14 @@ mod imp {
         pid_gains: PidGains,
     }
 
-    impl<P: PIOExt, Sm: StateMachineIndex, GateId: PinId, GatePull: PullType, ZcId: PinId, ZcPull: PullType>
-        TriacDriver<P, Sm, GateId, GatePull, ZcId, ZcPull>
+    impl<P, Sm, GateId, GatePull, ZcId, ZcPull> TriacDriver<P, Sm, GateId, GatePull, ZcId, ZcPull>
+    where
+        P: PIOExt,
+        Sm: StateMachineIndex,
+        GateId: PinId,
+        GatePull: PullType,
+        ZcId: PinId,
+        ZcPull: PullType,
     {
         /// Installe le programme PIO et démarre la state machine.
         ///
@@ -129,8 +148,7 @@ mod imp {
                 pid_gains,
             };
             // x/y valent 0 avant la première écriture FIFO : pousser un
-            // setpoint connu (gate coupée) plutôt que de laisser la state
-            // machine tourner sur un mot indéfini pendant la première période.
+            // setpoint connu plutôt que tourner sur un mot indéfini au démarrage.
             driver.set_output(Percentage(0.0))?;
             Ok(driver)
         }
@@ -149,9 +167,8 @@ mod imp {
         )> {
             let res = self.resources.take()?;
             let mut stopped = res.sm.stop();
-            // La state machine désactivée garde le dernier état de la gate
-            // écrit par le programme PIO — le forcer à 0 explicitement plutôt
-            // que de laisser le triac dans un état indéterminé.
+            // La SM désactivée garde le dernier état écrit sur la gate —
+            // la forcer à 0 plutôt que laisser le triac indéterminé.
             stopped.set_pins([(self.gate_pin_num, PinState::Low)]);
             let (uninit_sm, installed) = stopped.uninit(res.rx, res.tx);
             let mut pio = res.pio;
@@ -184,8 +201,15 @@ mod imp {
         }
     }
 
-    impl<P: PIOExt, Sm: StateMachineIndex, GateId: PinId, GatePull: PullType, ZcId: PinId, ZcPull: PullType>
-        AnalogActuator<Percentage> for TriacDriver<P, Sm, GateId, GatePull, ZcId, ZcPull>
+    impl<P, Sm, GateId, GatePull, ZcId, ZcPull> AnalogActuator<Percentage>
+        for TriacDriver<P, Sm, GateId, GatePull, ZcId, ZcPull>
+    where
+        P: PIOExt,
+        Sm: StateMachineIndex,
+        GateId: PinId,
+        GatePull: PullType,
+        ZcId: PinId,
+        ZcPull: PullType,
     {
         type Error = TriacError;
 
@@ -206,23 +230,22 @@ mod imp {
         }
     }
 
-    impl<
+    impl<P, Sm, GateId, GatePull, ZcId, ZcPull, const N: usize> TargetActuator<Celsius, N>
+        for TriacDriver<P, Sm, GateId, GatePull, ZcId, ZcPull>
+    where
         P: PIOExt,
         Sm: StateMachineIndex,
         GateId: PinId,
         GatePull: PullType,
         ZcId: PinId,
         ZcPull: PullType,
-        const N: usize,
-    > TargetActuator<Celsius, N> for TriacDriver<P, Sm, GateId, GatePull, ZcId, ZcPull>
     {
         type Error = TriacError;
 
         /// `target: None` coupe la sortie sans passer par le PID (contrat de
         /// [`TargetActuator`]). Retourne `Err(HistoryNotFull)` sans toucher à
-        /// la sortie tant que `hist` n'est pas encore plein :
-        /// `regulate_method::pid` indexe l'historique sans vérifier qu'il est
-        /// rempli et panique sinon (voir sa doc) — l'appelant décide comment
+        /// la sortie tant que `hist` n'est pas plein : `regulate_method::pid`
+        /// panique sinon en indexant l'historique — l'appelant décide comment
         /// réagir à un historique incomplet.
         fn regulate(
             &mut self,
@@ -241,8 +264,15 @@ mod imp {
         }
     }
 
-    impl<P: PIOExt, Sm: StateMachineIndex, GateId: PinId, GatePull: PullType, ZcId: PinId, ZcPull: PullType> Drop
+    impl<P, Sm, GateId, GatePull, ZcId, ZcPull> Drop
         for TriacDriver<P, Sm, GateId, GatePull, ZcId, ZcPull>
+    where
+        P: PIOExt,
+        Sm: StateMachineIndex,
+        GateId: PinId,
+        GatePull: PullType,
+        ZcId: PinId,
+        ZcPull: PullType,
     {
         fn drop(&mut self) {
             self.teardown();
