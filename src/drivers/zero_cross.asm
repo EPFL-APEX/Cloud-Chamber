@@ -10,12 +10,12 @@
     mov isr, osr
     out x, 16
     out y, 16
-inner_loop
+inner_loop:
     wait 1 pin, 0
     wait 0 pin, 0  ; évite qu'on compte plusieurs fois le même 0
     jmp x != y no_set
     set pins, 1
-no_set
+no_set:
     jmp y-- inner_loop
     mov x, isr
 .wrap

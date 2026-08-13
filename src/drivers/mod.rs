@@ -35,6 +35,8 @@ pub mod abp2;
 /// Fonctions de régulation (hystérésis, PID)
 pub mod regulate_method;
 
+pub mod zero_cross_pwm;
+
 /// Capteurs mock (température/pression/tension) pour les tests — pas de
 /// matériel, valeurs configurables. Compilé uniquement sous `cargo test`.
 #[cfg(test)]

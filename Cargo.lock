@@ -24,6 +24,7 @@ dependencies = [
  "num_enum",
  "panic-halt",
  "panic-probe",
+ "pio",
  "portable-atomic",
  "regex",
  "rp2040-boot2",
