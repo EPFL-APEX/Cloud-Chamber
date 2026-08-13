@@ -1,7 +1,6 @@
 //! Fonctions de régulation pures — hystérésis et PID.
 use core::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
-use crate::cloud_chamber_hal::actuators::{BinaryActuator, TargetActuator};
 use crate::cloud_chamber_hal::measurement::Measurement;
 use crate::cloud_chamber_hal::ring_buffer::RingBuffer;
 use crate::cloud_chamber_hal::units::Celsius;
@@ -23,35 +22,49 @@ pub trait Unit:
 
 impl Add for Celsius {
     type Output = Self;
-    fn add(self, rhs: Self) -> Self { Celsius(self.0 + rhs.0) }
+    fn add(self, rhs: Self) -> Self {
+        Celsius(self.0 + rhs.0)
+    }
 }
 
 impl AddAssign for Celsius {
-    fn add_assign(&mut self, rhs: Self) { self.0 += rhs.0; }
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 += rhs.0;
+    }
 }
 
 impl Sub for Celsius {
     type Output = Self;
-    fn sub(self, rhs: Self) -> Self { Celsius(self.0 - rhs.0) }
+    fn sub(self, rhs: Self) -> Self {
+        Celsius(self.0 - rhs.0)
+    }
 }
 
 impl Neg for Celsius {
     type Output = Self;
-    fn neg(self) -> Self { Celsius(-self.0) }
+    fn neg(self) -> Self {
+        Celsius(-self.0)
+    }
 }
 
 impl Mul<f32> for Celsius {
     type Output = Self;
-    fn mul(self, rhs: f32) -> Self { Celsius(self.0 * rhs) }
+    fn mul(self, rhs: f32) -> Self {
+        Celsius(self.0 * rhs)
+    }
 }
 
 impl Div<f32> for Celsius {
     type Output = Self;
-    fn div(self, rhs: f32) -> Self { Celsius(self.0 / rhs) }
+    fn div(self, rhs: f32) -> Self {
+        Celsius(self.0 / rhs)
+    }
 }
 
 impl Unit for Celsius {
-    fn zero() -> Self { Celsius(0.0) }
+    fn zero() -> Self {
+        Celsius(0.0)
+    }
 }
 
 pub enum RegulationDirection {
@@ -59,13 +72,16 @@ pub enum RegulationDirection {
     Downward,
 }
 
-
-pub fn hysteresis<U: Unit>(current: U, target: U, band: U, is_on: bool, direction: RegulationDirection
-    ) -> bool
-{
+pub fn hysteresis<U: Unit>(
+    current: U,
+    target: U,
+    band: U,
+    is_on: bool,
+    direction: RegulationDirection,
+) -> bool {
     let error = match direction {
-        RegulationDirection::Upward => (current - target),
-        RegulationDirection::Downward => (target - current),
+        RegulationDirection::Upward => current - target,
+        RegulationDirection::Downward => target - current,
     };
 
     if is_on { error > -band } else { error > band }
@@ -79,12 +95,13 @@ pub struct PidGains {
 }
 
 pub fn pid<U: Unit, const N: usize>(
-    target: U, history: &RingBuffer<Measurement<U>, N>, gains: PidGains,
-) -> U
-{
+    target: U,
+    history: &RingBuffer<Measurement<U>, N>,
+    gains: PidGains,
+) -> U {
     let newest = history.get(0).unwrap();
 
-    let error_of = |m: Measurement<U>| (m.value - target);
+    let error_of = |m: Measurement<U>| m.value - target;
 
     let proportional = error_of(newest);
     let mut integral = U::zero();
