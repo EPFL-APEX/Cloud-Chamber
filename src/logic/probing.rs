@@ -151,7 +151,8 @@ where
         let mut result = SensorSnapshot::default();
 
         if probing_plan.probe_temperature {
-            self.temperature_source.start_conversion();
+            // Une erreur ici laisse simplement la lecture différée absente
+            let _ = self.temperature_source.start_conversion();
         }
 
         // Une lecture en erreur laisse la case à `None` (comme une absence
