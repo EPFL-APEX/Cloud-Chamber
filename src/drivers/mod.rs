@@ -44,6 +44,9 @@ pub mod compressor;
 /// Driver pompe : sortie GPIO tout-ou-rien (marche/arrêt).
 pub mod pump;
 
+/// Driver éclairage : sortie GPIO tout-ou-rien (marche/arrêt).
+pub mod lights;
+
 /// Capteurs mock (température/pression/tension) pour les tests — pas de
 /// matériel, valeurs configurables. Compilé uniquement sous `cargo test`.
 #[cfg(test)]
