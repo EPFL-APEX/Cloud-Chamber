@@ -17,6 +17,7 @@ where
     P: OutputPin,
 {
     pub fn new(activation_pin: P) -> Self {
+        activation_pin.set_low();
         Self { activation_pin, is_on: false }
     }
 
