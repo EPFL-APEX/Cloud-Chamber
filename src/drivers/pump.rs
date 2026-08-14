@@ -16,8 +16,8 @@ impl<P> Pump<P>
 where
     P: OutputPin,
 {
-    pub fn new(activation_pin: P) -> Self {
-        activation_pin.set_low();
+    pub fn new(mut activation_pin: P) -> Self {
+        let _ = activation_pin.set_low();
         Self { activation_pin, is_on: false }
     }
 

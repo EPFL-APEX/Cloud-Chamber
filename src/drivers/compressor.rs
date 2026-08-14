@@ -32,8 +32,8 @@ where
     /// `hysteresis_band` est la demi-largeur (positive) de la bande morte
     /// autour de la cible : le compresseur s'active au-delà de
     /// `target + band` et se coupe en deçà de `target - band`.
-    pub fn new(relay_pin: P, hysteresis_band: Celsius) -> Self {
-        relay_pin.set_low();
+    pub fn new(mut relay_pin: P, hysteresis_band: Celsius) -> Self {
+        let _ = relay_pin.set_low();
         Self { relay_pin, hysteresis_band, is_on: false }
     }
 
