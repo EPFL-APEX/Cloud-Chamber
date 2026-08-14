@@ -37,6 +37,10 @@ pub mod regulate_method;
 
 pub mod zero_cross_pwm;
 
+/// Driver compresseur : relais GPIO régulé par hystérésis autour d'une
+/// température cible.
+pub mod compressor;
+
 /// Capteurs mock (température/pression/tension) pour les tests — pas de
 /// matériel, valeurs configurables. Compilé uniquement sous `cargo test`.
 #[cfg(test)]
