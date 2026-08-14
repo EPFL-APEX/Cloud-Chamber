@@ -1,12 +1,8 @@
 //! Point d'entrée Core0 : boucle de sondage + machine à états + actionneurs.
 
-use crate::cloud_chamber_hal::{
-    actuators::{ActuatorPlan, Actuators, BinaryActuator, TargetActuator},
-    config::{CHAMBER_TEMP_IDX, ISO_TEMP_IDX, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER},
-    sensors::{BatchSensor, DeferredBatchSensor, Sensors},
-    timer::MonotonicTimer,
-    units::{Celsius, HectoPascal, Volt},
-};
+use crate::{cloud_chamber_hal::{
+    actuators::{ActuatorPlan, Actuators, BinaryActuator, TargetActuator}, config::{CHAMBER_TEMP_IDX, ISO_TEMP_IDX, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER}, sensors::{BatchSensor, DeferredBatchSensor, Sensors}, timer::MonotonicTimer, units::{Celsius, HectoPascal, Volt},
+}};
 use crate::config::{CONTROL_LOOP_HISTORY_SIZE, IPA_HEATER_TARGET_C, SATURATION_TARGET_C};
 use crate::logic::phase_clock::{PhaseClock, advance};
 use crate::logic::security::{SafetyConfig, SafetyMonitor};
@@ -211,14 +207,18 @@ where
     Cool: TargetActuator<Celsius, CONTROL_LOOP_HISTORY_SIZE>,
     Iso: TargetActuator<Celsius, CONTROL_LOOP_HISTORY_SIZE>,
 {
-    /// Vit ici plutôt que dans `cloud_chamber_hal::actuators` : a besoin de
-    /// `MeasurementHistory` pour savoir quel historique donner à chaque
-    /// actionneur régulé, et le HAL ne doit jamais dépendre de `logic`.
-    /// `Actuators`/`TargetActuator` eux-mêmes restent dans le HAL et ne
-    /// connaissent qu'un seul `RingBuffer` à la fois (cf. leur doc). Même
-    /// principe que `SystemTask::react_to` un peu plus bas dans ce fichier.
-    pub fn apply(&mut self, plan: ActuatorPlan, history: &MeasurementHistory) {
-        todo!()
+    pub fn apply(&mut self, plan: ActuatorPlan, hist: &MeasurementHistory) {
+        let cooling_hist = &hist.temps[CHAMBER_TEMP_IDX];
+        let iso_temp_hist = &hist.temps[ISO_TEMP_IDX];
+
+        self.cooling.regulate(cooling_hist, plan.cooling);
+        self.iso_heater.regulate(iso_temp_hist, plan.iso_heater);
+        
+        if plan.high_voltage {
+            self.high_voltage.turn_on();
+        } else {
+            self.high_voltage.turn_off();
+        }
     }
 }
 
@@ -237,7 +237,7 @@ where
 mod tests {
     use super::*;
     use crate::cloud_chamber_hal::config::{
-        BP_PRESSURE_IDX, CHAMBER_TEMP_IDX, COMPRESSOR_OUT_IDX, HP_PRESSURE_IDX,
+        BP_PRESSURE_IDX, CHAMBER_TEMP_IDX, COMPRESSOR_OUT_IDX, HP_PRESSURE_IDX, ISO_TEMP_IDX,
     };
     use crate::cloud_chamber_hal::measurement::Measurement;
     use crate::cloud_chamber_hal::timer::Instant;
