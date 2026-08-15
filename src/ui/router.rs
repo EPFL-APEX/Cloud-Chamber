@@ -7,6 +7,7 @@
 
 use embedded_graphics::{draw_target::DrawTarget, geometry::OriginDimensions, pixelcolor::Rgb565};
 
+use crate::config::settings::Settings;
 use crate::shared::data::SharedState;
 
 use super::interactions::{Click, NavAction, Rotary};
@@ -87,6 +88,14 @@ impl Screens {
             }
             None => {}
         }
+    }
+
+    /// Récupère une éventuelle demande de sauvegarde en flash levée par
+    /// l'écran de réglages. `None` la plupart du temps — à consommer
+    /// depuis la boucle principale (pas encore câblé : ce projet n'a pas
+    /// encore de point d'entrée matériel/`main.rs`, cf. `SettingsStore`).
+    pub fn take_save_request(&mut self) -> Option<Settings> {
+        self.settings.take_save_request()
     }
 
     /// Dessine l'écran actuellement affiché. `state` sert aux écrans

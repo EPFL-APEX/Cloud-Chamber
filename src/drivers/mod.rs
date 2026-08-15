@@ -50,6 +50,10 @@ pub mod lights;
 /// Driver chauffage de la vitre supérieure : sortie GPIO tout-ou-rien (marche/arrêt).
 pub mod window_heater;
 
+/// Stockage persistant des réglages (`config::settings::Settings`) dans la
+/// flash interne, sans système de fichiers.
+pub mod flash_store;
+
 /// Capteurs mock (température/pression/tension) pour les tests — pas de
 /// matériel, valeurs configurables. Compilé uniquement sous `cargo test`.
 #[cfg(test)]

@@ -8,13 +8,11 @@
 //! qui seul connaît la durée passée dans la phase courante.
 
 use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
-use crate::cloud_chamber_hal::units::Celsius;
-use crate::config::operating::{
-    IPA_HEATER_TARGET_C, PRECOOL_TARGET_C, SATURATION_TARGET_C, STABLE_TOLERANCE_C, STABLE_WINDOW_MS,
-};
+use crate::config::operating::{STABLE_TOLERANCE_C, STABLE_WINDOW_MS};
 use crate::cloud_chamber_hal::actuators::ActuatorPlan;
 use crate::logic::probing::{MeasurementHistory, ProbingPlan};
 use crate::shared::data::SystemTask;
+use crate::shared::settings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoolingPhase {
@@ -67,12 +65,13 @@ fn sensor_check(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
 }
 
 fn pre_cooling_the_plate(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
+    let precool_target = settings::get().precool_target;
     let plan = ActuatorPlan {
-        cooling: Some(Celsius(PRECOOL_TARGET_C)), iso_heater: None, high_voltage: false,
+        cooling: Some(precool_target), iso_heater: None, high_voltage: false,
         iso_pump: false, lights: None, glass_heater: false,
     };
     match history.temps[CHAMBER_TEMP_IDX].get(0) {
-        Ok(m) if !m.value.0.is_nan() && m.value.0 <= PRECOOL_TARGET_C =>
+        Ok(m) if !m.value.0.is_nan() && m.value.0 <= precool_target.0 =>
             (SystemTask::Cooling(CoolingPhase::StartingIpaCirculation), plan),
         _ => (SystemTask::Cooling(CoolingPhase::PreCoolingThePlate), plan),
     }
@@ -81,32 +80,35 @@ fn pre_cooling_the_plate(history: &MeasurementHistory) -> (SystemTask, ActuatorP
 fn starting_ipa_circulation(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
     // Purement temporisé (pas de capteur dédié) — avancement décidé par
     // l'appelant (cf. `timed_transition` dans control_loop.rs).
+    let settings = settings::get();
     (SystemTask::Cooling(CoolingPhase::StartingIpaCirculation), ActuatorPlan {
-        cooling: Some(Celsius(PRECOOL_TARGET_C)),
-        iso_heater: Some(Celsius(IPA_HEATER_TARGET_C)),
+        cooling: Some(settings.precool_target),
+        iso_heater: Some(settings.ipa_heater_target),
         high_voltage: false,
         iso_pump: false, lights: None, glass_heater: false,
     })
 }
 
 fn saturating_air_with_ipa(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
+    let settings = settings::get();
     let plan = ActuatorPlan {
-        cooling: Some(Celsius(SATURATION_TARGET_C)),
-        iso_heater: Some(Celsius(IPA_HEATER_TARGET_C)),
+        cooling: Some(settings.saturation_target),
+        iso_heater: Some(settings.ipa_heater_target),
         high_voltage: false,
         iso_pump: false, lights: None, glass_heater: false,
     };
     match history.temps[CHAMBER_TEMP_IDX].get(0) {
-        Ok(m) if !m.value.0.is_nan() && m.value.0 <= SATURATION_TARGET_C =>
+        Ok(m) if !m.value.0.is_nan() && m.value.0 <= settings.saturation_target.0 =>
             (SystemTask::Cooling(CoolingPhase::HighVoltage), plan),
         _ => (SystemTask::Cooling(CoolingPhase::SaturatingAirWithIpa), plan),
     }
 }
 
 fn high_voltage(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
+    let settings = settings::get();
     let plan = ActuatorPlan {
-        cooling: Some(Celsius(SATURATION_TARGET_C)),
-        iso_heater: Some(Celsius(IPA_HEATER_TARGET_C)),
+        cooling: Some(settings.saturation_target),
+        iso_heater: Some(settings.ipa_heater_target),
         high_voltage: true,
         iso_pump: false, lights: Some(true), glass_heater: false,
     };
@@ -117,14 +119,15 @@ fn high_voltage(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
 }
 
 fn final_check_before_stabilising(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
+    let settings = settings::get();
     let plan = ActuatorPlan {
-        cooling: Some(Celsius(SATURATION_TARGET_C)),
-        iso_heater: Some(Celsius(IPA_HEATER_TARGET_C)),
+        cooling: Some(settings.saturation_target),
+        iso_heater: Some(settings.ipa_heater_target),
         high_voltage: true,
         iso_pump: false, lights: None, glass_heater: false,
     };
     match history.temps[CHAMBER_TEMP_IDX].get(0) {
-        Ok(m) if !m.value.0.is_nan() && m.value.0 <= SATURATION_TARGET_C + 2.0 =>
+        Ok(m) if !m.value.0.is_nan() && m.value.0 <= settings.saturation_target.0 + 2.0 =>
             (SystemTask::Stabilising, plan),
         _ => (SystemTask::Cooling(CoolingPhase::FinalCheckBeforeStabilising), plan),
     }

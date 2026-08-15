@@ -3,11 +3,11 @@
 use crate::{cloud_chamber_hal::{
     actuators::{ActuatorPlan, Actuators, BinaryActuator, TargetActuator}, config::{CHAMBER_TEMP_IDX, ISO_TEMP_IDX, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR}, sensors::{BatchSensor, DeferredBatchSensor, Sensors}, timer::MonotonicTimer, units::{Celsius, HectoPascal},
 }};
-use crate::config::operating::{IPA_HEATER_TARGET_C, SATURATION_TARGET_C};
 use crate::logic::timing::CONTROL_LOOP_HISTORY_SIZE;
 use crate::logic::phase_clock::{PhaseClock, advance};
 use crate::logic::security::{SafetyConfig, SafetyMonitor};
 use crate::shared::data::{SHARED_STATE, SensorSnapshot, SystemTask};
+use crate::shared::settings;
 
 use super::probing::{MeasurementHistory, ProbingPlan};
 
@@ -190,15 +190,18 @@ impl SystemTask {
             // pour un compresseur en régime permanent. Pas de sortie
             // automatique — seul un arrêt opérateur explicite (signal UI,
             // pas câblé ici) fait sortir de cet état.
-            Stabilising => (
-                SystemTask::Stabilising,
-                ActuatorPlan {
-                    cooling: Some(Celsius(SATURATION_TARGET_C)),
-                    iso_heater: Some(Celsius(IPA_HEATER_TARGET_C)),
-                    high_voltage: true,
-                    iso_pump: false, lights: None, glass_heater: false,
-                },
-            ),
+            Stabilising => {
+                let settings = settings::get();
+                (
+                    SystemTask::Stabilising,
+                    ActuatorPlan {
+                        cooling: Some(settings.saturation_target),
+                        iso_heater: Some(settings.ipa_heater_target),
+                        high_voltage: true,
+                        iso_pump: false, lights: None, glass_heater: false,
+                    },
+                )
+            }
             Stopping(phase) => phase.react_to(history),
             // Coupure de secours : tout éteint, verrouillé jusqu'au
             // réarmement opérateur explicite (`SafetyMonitor::reset`, appelé
@@ -263,7 +266,7 @@ mod tests {
     };
     use crate::cloud_chamber_hal::measurement::Measurement;
     use crate::cloud_chamber_hal::timer::Instant;
-    use crate::config::operating::{PRECOOL_TARGET_C, SATURATION_TARGET_C};
+    use crate::config::operating::{IPA_HEATER_TARGET_C, PRECOOL_TARGET_C, SATURATION_TARGET_C};
     use crate::logic::timing::{
         IPA_CIRCULATION_MS, PRECOOL_TIMEOUT_MS, SENSOR_CHECK_TIMEOUT_MS, SENSOR_LOSS_MS,
         STOP_COMPRESSOR_SETTLE_MS, STOP_EQUALIZE_FALLBACK_MS, STOP_HV_SETTLE_MS,
@@ -284,6 +287,12 @@ mod tests {
     /// Remet `SHARED_STATE` à un état par défaut connu et exécute `body`
     /// sous verrou exclusif — chaque test démarre donc d'un état propre,
     /// indépendant de l'ordre d'exécution.
+    ///
+    /// Réinitialise aussi `shared::settings` (verrou séparé, static
+    /// différent) : `cooling.rs`/`stopping.rs`/`Stabilising` lisent
+    /// `shared::settings::get()` dans leur chemin normal, donc tout test
+    /// qui les exerce (la quasi-totalité de ce module) y est exposé au
+    /// même risque de parallélisme que sur `SHARED_STATE`.
     fn with_isolated_shared_state<T>(body: impl FnOnce() -> T) -> T {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         critical_section::with(|cs| {
@@ -292,7 +301,7 @@ mod tests {
             s.task = SystemTask::Idle;
             s.new_data = false;
         });
-        body()
+        crate::shared::settings::with_isolated_settings(body)
     }
 
     // ─── Harness ──────────────────────────────────────────────────────────

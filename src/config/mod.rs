@@ -6,6 +6,10 @@
 //! - [`operating`] : réglages physiques ajustables (cibles, tolérances,
 //!   seuils de sécurité) — plusieurs sont déjà exposés comme valeurs par
 //!   défaut modifiables dans `ui::screens::settings`.
+//! - [`settings`] : version modifiable en marche des cibles ci-dessus, et
+//!   abstraction du support de stockage persistant. `operating` reste la
+//!   source de vérité des valeurs par défaut ; `settings` porte l'état
+//!   courant, modifié en session.
 //!
 //! Le timing de la boucle de contrôle (timeouts, délais de séquence) vit à
 //! part dans [`crate::logic::timing`], au plus près du code qui l'utilise,
@@ -15,4 +19,5 @@
 //! paramètres de type, et ne doit pas dépendre de ce module.
 
 pub mod operating;
+pub mod settings;
 pub mod wiring;

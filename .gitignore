@@ -111,3 +111,11 @@ $RECYCLE.BIN/
 *.lnk
 
 # End of https://www.toptal.com/developers/gitignore/api/rust,visualstudiocode,macos,windows,linux
+data/
+
+# Binaires de flash — seules les sources sont versionnées.
+*.uf2
+
+# Captures regénérées par cargo test-host — pas versionnées.
+screenshots/
+screenshot.png
