@@ -15,7 +15,7 @@
 //! timeout de `SystemTask::durations()` (`STOP_EQUALIZE_FALLBACK_MS`).
 
 use crate::cloud_chamber_hal::units::Celsius;
-use crate::config::SATURATION_TARGET_C;
+use crate::config::operating::SATURATION_TARGET_C;
 use crate::cloud_chamber_hal::actuators::ActuatorPlan;
 use crate::logic::probing::{MeasurementHistory, ProbingPlan};
 use crate::shared::data::SystemTask;

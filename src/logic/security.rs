@@ -20,7 +20,8 @@
 //! qu'il est censé fournir.
 
 use crate::cloud_chamber_hal::config::COMPRESSOR_OUT_IDX;
-use crate::config::{SAFETY_TEMP_COMPRESSOR_MAX, SENSOR_LOSS_MS};
+use crate::config::operating::SAFETY_TEMP_COMPRESSOR_MAX;
+use crate::logic::timing::SENSOR_LOSS_MS;
 use crate::logic::probing::MeasurementHistory;
 
 /// Nombre de cycles consécutifs en Alarm avant déclenchement (anti-rebond).

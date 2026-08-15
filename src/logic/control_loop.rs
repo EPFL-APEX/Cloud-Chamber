@@ -3,7 +3,8 @@
 use crate::{cloud_chamber_hal::{
     actuators::{ActuatorPlan, Actuators, BinaryActuator, TargetActuator}, config::{CHAMBER_TEMP_IDX, ISO_TEMP_IDX, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR}, sensors::{BatchSensor, DeferredBatchSensor, Sensors}, timer::MonotonicTimer, units::{Celsius, HectoPascal},
 }};
-use crate::config::{CONTROL_LOOP_HISTORY_SIZE, IPA_HEATER_TARGET_C, SATURATION_TARGET_C};
+use crate::config::operating::{IPA_HEATER_TARGET_C, SATURATION_TARGET_C};
+use crate::logic::timing::CONTROL_LOOP_HISTORY_SIZE;
 use crate::logic::phase_clock::{PhaseClock, advance};
 use crate::logic::security::{SafetyConfig, SafetyMonitor};
 use crate::shared::data::{SHARED_STATE, SensorSnapshot, SystemTask};
@@ -262,10 +263,10 @@ mod tests {
     };
     use crate::cloud_chamber_hal::measurement::Measurement;
     use crate::cloud_chamber_hal::timer::Instant;
-    use crate::config::{
-        IPA_CIRCULATION_MS, PRECOOL_TARGET_C, PRECOOL_TIMEOUT_MS, SATURATION_TARGET_C,
-        SENSOR_CHECK_TIMEOUT_MS, SENSOR_LOSS_MS, STOP_COMPRESSOR_SETTLE_MS,
-        STOP_EQUALIZE_FALLBACK_MS, STOP_HV_SETTLE_MS,
+    use crate::config::operating::{PRECOOL_TARGET_C, SATURATION_TARGET_C};
+    use crate::logic::timing::{
+        IPA_CIRCULATION_MS, PRECOOL_TIMEOUT_MS, SENSOR_CHECK_TIMEOUT_MS, SENSOR_LOSS_MS,
+        STOP_COMPRESSOR_SETTLE_MS, STOP_EQUALIZE_FALLBACK_MS, STOP_HV_SETTLE_MS,
     };
     use crate::drivers::mock::{
         MockActuator, MockClock, MockPressureSensor, MockSensorError, MockTempSensor,

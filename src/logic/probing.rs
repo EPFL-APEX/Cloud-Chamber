@@ -4,7 +4,7 @@ use crate::cloud_chamber_hal::units::{Celsius, HectoPascal};
 use crate::cloud_chamber_hal::config::{
     CHAMBER_TEMP_IDX, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_PRESSURE_SENSOR,
 };
-use crate::config::CONTROL_LOOP_HISTORY_SIZE;
+use crate::logic::timing::CONTROL_LOOP_HISTORY_SIZE;
 use crate::shared::data::{SystemTask, SensorSnapshot};
 use crate::cloud_chamber_hal::ring_buffer::RingBuffer;
 use crate::cloud_chamber_hal::timer::Instant;

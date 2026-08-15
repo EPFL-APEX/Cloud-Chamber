@@ -9,7 +9,7 @@
 
 use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
 use crate::cloud_chamber_hal::units::Celsius;
-use crate::config::{
+use crate::config::operating::{
     IPA_HEATER_TARGET_C, PRECOOL_TARGET_C, SATURATION_TARGET_C, STABLE_TOLERANCE_C, STABLE_WINDOW_MS,
 };
 use crate::cloud_chamber_hal::actuators::ActuatorPlan;

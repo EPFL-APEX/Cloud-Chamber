@@ -31,7 +31,8 @@ use embedded_graphics::{
 
 use crate::{
     cloud_chamber_hal::config::{CHAMBER_PRESSURE_IDX, CHAMBER_TEMP_IDX},
-    config::{SATURATION_TARGET_C, TARGET_CHAMBER_TEMP, TEMP_LABELS},
+    config::operating::{SATURATION_TARGET_C, TARGET_CHAMBER_TEMP},
+    config::wiring::TEMP_LABELS,
     logic::{cooling::CoolingPhase, security::SafetyCause, stopping::StoppingPhase},
     shared::data::{SharedState, SystemTask},
     ui::theme,
