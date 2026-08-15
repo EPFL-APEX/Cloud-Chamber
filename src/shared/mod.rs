@@ -11,3 +11,6 @@
 
 /// Structures de données échangées entre les deux cœurs.
 pub mod data;
+
+/// Réglages opérateur courants, partagés entre l'écran de réglages et `logic/`.
+pub mod settings;

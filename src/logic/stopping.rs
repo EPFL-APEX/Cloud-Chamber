@@ -14,11 +14,10 @@
 //! `cooling.rs`. La transition vers `Idle` est gérée par l'appelant via le
 //! timeout de `SystemTask::durations()` (`STOP_EQUALIZE_FALLBACK_MS`).
 
-use crate::cloud_chamber_hal::units::Celsius;
-use crate::config::operating::SATURATION_TARGET_C;
 use crate::cloud_chamber_hal::actuators::ActuatorPlan;
 use crate::logic::probing::{MeasurementHistory, ProbingPlan};
 use crate::shared::data::SystemTask;
+use crate::shared::settings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoppingPhase {
@@ -56,7 +55,7 @@ fn cut_high_voltage(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan)
     // dès l'entrée en phase. Froid encore actif (l'IPA continue de
     // circuler pendant la décharge) ; chauffage IPA coupé.
     (SystemTask::Stopping(StoppingPhase::CutHighVoltage), ActuatorPlan {
-        cooling: Some(Celsius(SATURATION_TARGET_C)), iso_heater: None, high_voltage: false,
+        cooling: Some(settings::get().saturation_target), iso_heater: None, high_voltage: false,
         iso_pump: false, lights: None, glass_heater: false,
     })
 }

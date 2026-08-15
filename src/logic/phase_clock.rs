@@ -283,18 +283,22 @@ mod tests {
 
     #[test]
     fn advance_stabilising_holds_outputs_without_timing_out() {
-        let history = MeasurementHistory::new();
-        let (next, plan) = advance(SystemTask::Stabilising, &history, 10 * 60 * 60 * 1000, 0); // 10h
-        assert_eq!(next, SystemTask::Stabilising);
-        assert_eq!(
-            plan,
-            ActuatorPlan {
-                cooling: Some(Celsius(SATURATION_TARGET_C)),
-                iso_heater: Some(Celsius(IPA_HEATER_TARGET_C)),
-                high_voltage: true,
-                iso_pump: false, lights: None, glass_heater: false,
-            }
-        );
+        // `Stabilising` lit `shared::settings::get()` (cf. control_loop.rs)
+        // — verrou nécessaire, cf. commentaire de `with_isolated_settings`.
+        crate::shared::settings::with_isolated_settings(|| {
+            let history = MeasurementHistory::new();
+            let (next, plan) = advance(SystemTask::Stabilising, &history, 10 * 60 * 60 * 1000, 0); // 10h
+            assert_eq!(next, SystemTask::Stabilising);
+            assert_eq!(
+                plan,
+                ActuatorPlan {
+                    cooling: Some(Celsius(SATURATION_TARGET_C)),
+                    iso_heater: Some(Celsius(IPA_HEATER_TARGET_C)),
+                    high_voltage: true,
+                    iso_pump: false, lights: None, glass_heater: false,
+                }
+            );
+        });
     }
 
     // ─── PhaseClock ─────────────────────────────────────────────────────────
