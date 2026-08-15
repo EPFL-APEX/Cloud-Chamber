@@ -9,7 +9,7 @@
 //! jamais atteint. `None` = pas de limite, et le type interdit de comparer
 //! par inadvertance une limite absente à une durée.
 
-use crate::config::{
+use crate::logic::timing::{
     FINAL_CHECK_TIMEOUT_MS, HV_STABILISE_TIMEOUT_MS, IPA_CIRCULATION_MS, PRECOOL_TIMEOUT_MS,
     SATURATION_TIMEOUT_MS, SENSOR_CHECK_TIMEOUT_MS, SENSOR_LOSS_MS, STOP_COMPRESSOR_SETTLE_MS,
     STOP_EQUALIZE_FALLBACK_MS, STOP_HV_SETTLE_MS,
@@ -192,7 +192,7 @@ mod tests {
     use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
     use crate::cloud_chamber_hal::measurement::Measurement;
     use crate::cloud_chamber_hal::units::Celsius;
-    use crate::config::{IPA_HEATER_TARGET_C, SATURATION_TARGET_C};
+    use crate::config::operating::{IPA_HEATER_TARGET_C, SATURATION_TARGET_C};
     use crate::drivers::mock::MockClock;
     use crate::logic::security::SafetyCause;
 
@@ -292,6 +292,7 @@ mod tests {
                 cooling: Some(Celsius(SATURATION_TARGET_C)),
                 iso_heater: Some(Celsius(IPA_HEATER_TARGET_C)),
                 high_voltage: true,
+                iso_pump: false, lights: None, glass_heater: false,
             }
         );
     }

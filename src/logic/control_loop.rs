@@ -1,9 +1,10 @@
 //! Point d'entrée Core0 : boucle de sondage + machine à états + actionneurs.
 
 use crate::{cloud_chamber_hal::{
-    actuators::{ActuatorPlan, Actuators, BinaryActuator, TargetActuator}, config::{CHAMBER_TEMP_IDX, ISO_TEMP_IDX, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER}, sensors::{BatchSensor, DeferredBatchSensor, Sensors}, timer::MonotonicTimer, units::{Celsius, HectoPascal, Volt},
+    actuators::{ActuatorPlan, Actuators, BinaryActuator, TargetActuator}, config::{CHAMBER_TEMP_IDX, ISO_TEMP_IDX, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR}, sensors::{BatchSensor, DeferredBatchSensor, Sensors}, timer::MonotonicTimer, units::{Celsius, HectoPascal},
 }};
-use crate::config::{CONTROL_LOOP_HISTORY_SIZE, IPA_HEATER_TARGET_C, SATURATION_TARGET_C};
+use crate::config::operating::{IPA_HEATER_TARGET_C, SATURATION_TARGET_C};
+use crate::logic::timing::CONTROL_LOOP_HISTORY_SIZE;
 use crate::logic::phase_clock::{PhaseClock, advance};
 use crate::logic::security::{SafetyConfig, SafetyMonitor};
 use crate::shared::data::{SHARED_STATE, SensorSnapshot, SystemTask};
@@ -14,16 +15,18 @@ use super::probing::{MeasurementHistory, ProbingPlan};
 ///
 /// Panique si un capteur ne retourne aucune mesure valide à l'initialisation
 /// (cf. `are_all_some()` ci-dessous) — pas de démarrage dégradé pour l'instant.
-pub fn run<Ts, Ps, Vs, Hv, Cool, Iso, Clk>(
-    mut sensors: Sensors<Ts, Ps, Vs>, mut actuators: Actuators<Hv, Cool, Iso>, clock: Clk,
+pub fn run<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Clk>(
+    mut sensors: Sensors<Ts, Ps>, mut actuators: Actuators<Hv, Cool, Iso, Pump, Lights, Glass>, clock: Clk,
 ) -> !
 where
     Ts: DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
     Ps: BatchSensor<HectoPascal, NUMBER_OF_PRESSURE_SENSOR>,
-    Vs: BatchSensor<Volt, NUMBER_OF_VOLTMETER>,
     Hv: BinaryActuator,
     Cool: TargetActuator<Celsius, CONTROL_LOOP_HISTORY_SIZE>,
     Iso: TargetActuator<Celsius, CONTROL_LOOP_HISTORY_SIZE>,
+    Pump: BinaryActuator,
+    Lights: BinaryActuator,
+    Glass: BinaryActuator,
     Clk: MonotonicTimer,
 {
     // Initial values, mais est-ce qu'on veut vraiment ça ?
@@ -59,9 +62,9 @@ where
 /// phase), application des actionneurs, publication. Extrait de `run()`
 /// uniquement pour être testable (`run()` ne retourne jamais) — même
 /// contenu que l'ancien corps de `loop`, aucun changement de comportement.
-fn tick<Ts, Ps, Vs, Hv, Cool, Iso, Clk>(
-    sensors: &mut Sensors<Ts, Ps, Vs>,
-    actuators: &mut Actuators<Hv, Cool, Iso>,
+fn tick<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Clk>(
+    sensors: &mut Sensors<Ts, Ps>,
+    actuators: &mut Actuators<Hv, Cool, Iso, Pump, Lights, Glass>,
     phase: &mut PhaseClock<Clk>,
     safety: &mut SafetyMonitor,
     measurement_history: &mut MeasurementHistory,
@@ -70,10 +73,12 @@ fn tick<Ts, Ps, Vs, Hv, Cool, Iso, Clk>(
 where
     Ts: DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
     Ps: BatchSensor<HectoPascal, NUMBER_OF_PRESSURE_SENSOR>,
-    Vs: BatchSensor<Volt, NUMBER_OF_VOLTMETER>,
     Hv: BinaryActuator,
     Cool: TargetActuator<Celsius, CONTROL_LOOP_HISTORY_SIZE>,
     Iso: TargetActuator<Celsius, CONTROL_LOOP_HISTORY_SIZE>,
+    Pump: BinaryActuator,
+    Lights: BinaryActuator,
+    Glass: BinaryActuator,
     Clk: MonotonicTimer,
 {
     let latest_measurement = sensors.probe(probing_plan);
@@ -124,7 +129,6 @@ fn update_global_state(latest_measurement:&SensorSnapshot) {
 
         merge_new_readings(&mut shared_sensor_data.temps, &latest_measurement.temps);
         merge_new_readings(&mut shared_sensor_data.press, &latest_measurement.press);
-        merge_new_readings(&mut shared_sensor_data.volts, &latest_measurement.volts);
 
         shared_state.new_data = true;
     });
@@ -168,9 +172,15 @@ impl SystemTask {
         match self {
             // Mode manuel pas encore codé (cf. plan de réconciliation) —
             // tout coupé par défaut plutôt qu'un todo!() qui paniquerait.
+            // `iso_pump`/`lights`/`glass_heater` : toujours `false` ci-dessous,
+            // cf. commentaire équivalent dans `logic::cooling` — aucune
+            // politique par phase définie pour l'instant.
             Idle => (
                 SystemTask::Idle,
-                ActuatorPlan { cooling: None, iso_heater: None, high_voltage: false },
+                ActuatorPlan {
+                    cooling: None, iso_heater: None, high_voltage: false,
+                    iso_pump: false, lights: None, glass_heater: false,
+                },
             ),
             Cooling(phase) => phase.react_to(history),
             // Régime permanent après la séquence de refroidissement : les
@@ -186,6 +196,7 @@ impl SystemTask {
                     cooling: Some(Celsius(SATURATION_TARGET_C)),
                     iso_heater: Some(Celsius(IPA_HEATER_TARGET_C)),
                     high_voltage: true,
+                    iso_pump: false, lights: None, glass_heater: false,
                 },
             ),
             Stopping(phase) => phase.react_to(history),
@@ -194,32 +205,43 @@ impl SystemTask {
             // depuis `control_loop.rs::run()` en priorité absolue).
             Tripped(cause) => (
                 SystemTask::Tripped(cause),
-                ActuatorPlan { cooling: None, iso_heater: None, high_voltage: false },
+                ActuatorPlan {
+                    cooling: None, iso_heater: None, high_voltage: false,
+                    iso_pump: false, lights: None, glass_heater: false,
+                },
             ),
         }
     }
 }
 
 
-impl<Hv, Cool, Iso> Actuators<Hv, Cool, Iso>
+impl<Hv, Cool, Iso, Pump, Lights, Glass> Actuators<Hv, Cool, Iso, Pump, Lights, Glass>
 where
     Hv: BinaryActuator,
     Cool: TargetActuator<Celsius, CONTROL_LOOP_HISTORY_SIZE>,
     Iso: TargetActuator<Celsius, CONTROL_LOOP_HISTORY_SIZE>,
+    Pump: BinaryActuator,
+    Lights: BinaryActuator,
+    Glass: BinaryActuator,
 {
     pub fn apply(&mut self, plan: ActuatorPlan, hist: &MeasurementHistory) {
         let cooling_hist = &hist.temps[CHAMBER_TEMP_IDX];
         let iso_temp_hist = &hist.temps[ISO_TEMP_IDX];
 
-        self.cooling.regulate(cooling_hist, plan.cooling);
-        self.iso_heater.regulate(iso_temp_hist, plan.iso_heater);
-        
-        if plan.high_voltage {
-            self.high_voltage.turn_on();
-        } else {
-            self.high_voltage.turn_off();
+        let _ = self.cooling.regulate(cooling_hist, plan.cooling);
+        let _ = self.iso_heater.regulate(iso_temp_hist, plan.iso_heater);
+
+        set_binary(&mut self.high_voltage, plan.high_voltage);
+        set_binary(&mut self.iso_pump, plan.iso_pump);
+        if plan.lights.is_some() {
+            set_binary(&mut self.lights, plan.lights.unwrap());
         }
+        set_binary(&mut self.glass_heater, plan.glass_heater);
     }
+}
+
+fn set_binary<A: BinaryActuator>(actuator: &mut A, on: bool) {
+    let _ = if on { actuator.turn_on() } else { actuator.turn_off() };
 }
 
 
@@ -237,17 +259,17 @@ where
 mod tests {
     use super::*;
     use crate::cloud_chamber_hal::config::{
-        BP_PRESSURE_IDX, CHAMBER_TEMP_IDX, COMPRESSOR_OUT_IDX, HP_PRESSURE_IDX, ISO_TEMP_IDX,
+        CHAMBER_PRESSURE_IDX, CHAMBER_TEMP_IDX, COMPRESSOR_OUT_IDX, ISO_TEMP_IDX,
     };
     use crate::cloud_chamber_hal::measurement::Measurement;
     use crate::cloud_chamber_hal::timer::Instant;
-    use crate::config::{
-        IPA_CIRCULATION_MS, PRECOOL_TARGET_C, PRECOOL_TIMEOUT_MS, SATURATION_TARGET_C,
-        SENSOR_CHECK_TIMEOUT_MS, SENSOR_LOSS_MS, STOP_COMPRESSOR_SETTLE_MS,
-        STOP_EQUALIZE_FALLBACK_MS, STOP_EQUALIZE_HP_MAX, STOP_HV_SETTLE_MS,
+    use crate::config::operating::{PRECOOL_TARGET_C, SATURATION_TARGET_C};
+    use crate::logic::timing::{
+        IPA_CIRCULATION_MS, PRECOOL_TIMEOUT_MS, SENSOR_CHECK_TIMEOUT_MS, SENSOR_LOSS_MS,
+        STOP_COMPRESSOR_SETTLE_MS, STOP_EQUALIZE_FALLBACK_MS, STOP_HV_SETTLE_MS,
     };
     use crate::drivers::mock::{
-        MockActuator, MockClock, MockPressureSensor, MockSensorError, MockTempSensor, MockVoltSensor,
+        MockActuator, MockClock, MockPressureSensor, MockSensorError, MockTempSensor,
     };
     use crate::logic::cooling::CoolingPhase;
     use crate::logic::security::SafetyCause;
@@ -277,8 +299,8 @@ mod tests {
 
     struct Harness<'a> {
         clock: &'a MockClock,
-        sensors: Sensors<MockTempSensor, MockPressureSensor, MockVoltSensor>,
-        actuators: Actuators<MockActuator, MockActuator, MockActuator>,
+        sensors: Sensors<MockTempSensor, MockPressureSensor>,
+        actuators: Actuators<MockActuator, MockActuator, MockActuator, MockActuator, MockActuator, MockActuator>,
         phase: PhaseClock<&'a MockClock>,
         safety: SafetyMonitor,
         history: MeasurementHistory,
@@ -304,7 +326,6 @@ mod tests {
             let mut sensors = Sensors::new(
                 MockTempSensor::new(f32::NAN),
                 MockPressureSensor::new(f32::NAN),
-                MockVoltSensor::new(f32::NAN),
             );
             // Température sortie-compresseur valide par défaut (loin des
             // seuils d'alarme), horodatée avant tout instant utilisable par
@@ -324,6 +345,9 @@ mod tests {
                 high_voltage: MockActuator::new(),
                 cooling: MockActuator::new(),
                 iso_heater: MockActuator::new(),
+                iso_pump: MockActuator::new(),
+                lights: MockActuator::new(),
+                glass_heater: MockActuator::new(),
             };
             let history = MeasurementHistory::new();
             let probing_plan = task.create_probing_plan(&history);
@@ -514,8 +538,10 @@ mod tests {
             assert_eq!(h.phase.current(), SystemTask::Stopping(StoppingPhase::WaitPressureEquilibrium));
             assert!(!h.actuators.cooling.is_on);
 
-            h.set_pressure(HP_PRESSURE_IDX, STOP_EQUALIZE_HP_MAX - 0.1);
-            h.tick();
+            // Pas de capteur dédié au circuit réfrigérant : purement
+            // temporisé désormais (cf. logic::stopping), le seul chemin vers
+            // Idle est le timeout d'équilibrage.
+            h.tick_after_ms(STOP_EQUALIZE_FALLBACK_MS + 1);
             assert_eq!(h.phase.current(), SystemTask::Idle);
             assert!(!h.actuators.high_voltage.is_on);
             assert!(!h.actuators.cooling.is_on);
@@ -782,7 +808,7 @@ mod tests {
         with_isolated_shared_state(|| {
             let clock = MockClock::new(1);
             let mut sensors = Sensors::new(
-                MockTempSensor::new(-20.0), MockPressureSensor::new(f32::NAN), MockVoltSensor::new(f32::NAN),
+                MockTempSensor::new(-20.0), MockPressureSensor::new(f32::NAN),
             );
             sensors.temperature_source.set(
                 COMPRESSOR_OUT_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
@@ -794,6 +820,9 @@ mod tests {
                 high_voltage: RacyActuator { inner: MockActuator::new(), inject: Some(SystemTask::Idle) },
                 cooling: MockActuator::new(),
                 iso_heater: MockActuator::new(),
+                iso_pump: MockActuator::new(),
+                lights: MockActuator::new(),
+                glass_heater: MockActuator::new(),
             };
             let mut history = MeasurementHistory::new();
             let mut phase = PhaseClock::new(&clock, SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
@@ -841,7 +870,7 @@ mod tests {
             // continue de fonctionner normalement (pour que ce tour ne soit
             // pas un échec total, cf. test suivant).
             h.lose_chamber_temp();
-            h.set_pressure(BP_PRESSURE_IDX, 0.5);
+            h.set_pressure(CHAMBER_PRESSURE_IDX, 0.5);
             h.tick_after_ms(1_000);
 
             let kept = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[CHAMBER_TEMP_IDX]);
@@ -862,9 +891,6 @@ mod tests {
             }
             for i in 0..NUMBER_OF_PRESSURE_SENSOR {
                 h.sensors.pressure_source.set(i, Err(MockSensorError));
-            }
-            for i in 0..NUMBER_OF_VOLTMETER {
-                h.sensors.voltage_source.set(i, Err(MockSensorError));
             }
             h.tick_after_ms(1_000);
 

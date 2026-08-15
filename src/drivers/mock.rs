@@ -5,13 +5,13 @@
 
 use crate::cloud_chamber_hal::actuators::{BinaryActuator, TargetActuator};
 use crate::cloud_chamber_hal::config::{
-    NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER,
+    NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR,
 };
 use crate::cloud_chamber_hal::measurement::Measurement;
 use crate::cloud_chamber_hal::ring_buffer::RingBuffer;
 use crate::cloud_chamber_hal::sensors::{BatchSensor, DeferredBatchSensor};
 use crate::cloud_chamber_hal::timer::{Duration, Instant, MonotonicTimer};
-use crate::cloud_chamber_hal::units::{Celsius, HectoPascal, Volt};
+use crate::cloud_chamber_hal::units::{Celsius, HectoPascal};
 
 /// Erreur simulée : les mocks ne renvoient une erreur que si le test le
 /// demande explicitement via [`MockTempSensor::set`] et consorts.
@@ -82,33 +82,6 @@ impl BatchSensor<HectoPascal, NUMBER_OF_PRESSURE_SENSOR> for MockPressureSensor 
     type Error = MockSensorError;
 
     fn read(&mut self) -> [Result<Measurement<HectoPascal>, Self::Error>; NUMBER_OF_PRESSURE_SENSOR] {
-        self.readings
-    }
-}
-
-/// Capteur de tension mock — implémente
-/// `BatchSensor<Volt, NUMBER_OF_VOLTMETER>`.
-pub struct MockVoltSensor {
-    readings: [Result<Measurement<Volt>, MockSensorError>; NUMBER_OF_VOLTMETER],
-}
-
-impl MockVoltSensor {
-    /// Toutes les cases valent `value_v`, horodatées à `Instant::from_micros(0)`.
-    pub fn new(value_v: f32) -> Self {
-        let m = Measurement::new(Instant::from_micros(0), Volt(value_v));
-        Self { readings: core::array::from_fn(|_| Ok(m)) }
-    }
-
-    /// Fixe la lecture (ou l'erreur) d'un capteur individuel.
-    pub fn set(&mut self, index: usize, reading: Result<Measurement<Volt>, MockSensorError>) {
-        self.readings[index] = reading;
-    }
-}
-
-impl BatchSensor<Volt, NUMBER_OF_VOLTMETER> for MockVoltSensor {
-    type Error = MockSensorError;
-
-    fn read(&mut self) -> [Result<Measurement<Volt>, Self::Error>; NUMBER_OF_VOLTMETER] {
         self.readings
     }
 }

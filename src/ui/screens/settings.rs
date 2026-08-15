@@ -2,7 +2,7 @@
 //! la sélection, cliquer entre en édition, tourner change la valeur, cliquer
 //! valide.
 //!
-//! Les valeurs vivent ici, initialisées depuis `crate::config` au démarrage.
+//! Les valeurs vivent ici, initialisées depuis `crate::config::operating` au démarrage.
 //! Rien d'autre ne les lit encore : `logic/` continue de consulter les
 //! constantes. Le jour où une struct `Settings` partagée existera, ce tableau
 //! sera remplacé par un emprunt et le reste de l'écran ne bougera pas.
@@ -20,7 +20,7 @@ use embedded_graphics::{
 };
 use heapless::String;
 
-use crate::config::{IPA_HEATER_TARGET_C, PRECOOL_TARGET_C, SATURATION_TARGET_C, TARGET_CHAMBER_TEMP};
+use crate::config::operating::{IPA_HEATER_TARGET_C, PRECOOL_TARGET_C, SATURATION_TARGET_C, TARGET_CHAMBER_TEMP};
 use crate::ui::interactions::{Click, NavAction, Rotary};
 use crate::ui::theme;
 

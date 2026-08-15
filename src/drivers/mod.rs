@@ -47,6 +47,9 @@ pub mod pump;
 /// Driver éclairage : sortie GPIO tout-ou-rien (marche/arrêt).
 pub mod lights;
 
+/// Driver chauffage de la vitre supérieure : sortie GPIO tout-ou-rien (marche/arrêt).
+pub mod window_heater;
+
 /// Capteurs mock (température/pression/tension) pour les tests — pas de
 /// matériel, valeurs configurables. Compilé uniquement sous `cargo test`.
 #[cfg(test)]
