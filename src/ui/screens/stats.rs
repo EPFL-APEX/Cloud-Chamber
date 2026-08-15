@@ -30,7 +30,7 @@ use embedded_graphics::{
 };
 
 use crate::{
-    cloud_chamber_hal::config::{BP_PRESSURE_IDX, CHAMBER_TEMP_IDX, HP_PRESSURE_IDX},
+    cloud_chamber_hal::config::{CHAMBER_PRESSURE_IDX, CHAMBER_TEMP_IDX},
     config::{SATURATION_TARGET_C, TARGET_CHAMBER_TEMP, TEMP_LABELS},
     logic::{cooling::CoolingPhase, security::SafetyCause, stopping::StoppingPhase},
     shared::data::{SharedState, SystemTask},
@@ -60,8 +60,6 @@ fn alert_message(cause: SafetyCause) -> &'static str {
     match cause {
         SafetyCause::CompressorOverheat => "SURCHAUFFE COMPRESSEUR",
         SafetyCause::CompressorSensorLost => "SONDE COMPRESSEUR PERDUE",
-        SafetyCause::PressureHigh => "PRESSION HP TROP HAUTE",
-        SafetyCause::PressureLow => "PRESSION BP TROP BASSE",
     }
 }
 
@@ -173,14 +171,12 @@ impl<'a> StatsScreen<'a> {
             Text::new(text, Point::new(x, y), MonoTextStyle::new(&FONT_6X10, color)).draw(display)?;
         }
 
-        // ─── Pression BP / HP ─────────────────────────────────────────────────
+        // ─── Pression chambre ─────────────────────────────────────────────────
         {
             let mut s: String<32> = String::new();
-            let bp = snap.press[BP_PRESSURE_IDX].map(|m| m.value.0);
-            let hp = snap.press[HP_PRESSURE_IDX].map(|m| m.value.0);
-            match (bp, hp) {
-                (Some(bp), Some(hp)) => { write!(s, "BP:{:5.2}bar  HP:{:5.2}bar", bp, hp).ok(); }
-                _ => { write!(s, "BP: ---       HP: ---").ok(); }
+            match snap.press[CHAMBER_PRESSURE_IDX].map(|m| m.value.0) {
+                Some(p) => { write!(s, "Pression: {:5.2}bar", p).ok(); }
+                None => { write!(s, "Pression: ---").ok(); }
             }
             Text::new(s.as_str(), Point::new(4, 150), MonoTextStyle::new(&FONT_6X10, theme::TEXT_COLOR))
                 .draw(display)?;

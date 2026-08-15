@@ -24,9 +24,9 @@ use critical_section::Mutex;
 
 use crate::{
     cloud_chamber_hal::measurement::Measurement,
-    cloud_chamber_hal::units::{Celsius, HectoPascal, Volt},
+    cloud_chamber_hal::units::{Celsius, HectoPascal},
     cloud_chamber_hal::config::{
-        NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER,
+        NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR,
     }, logic::{
         cooling::CoolingPhase,
         stopping::StoppingPhase,
@@ -41,8 +41,6 @@ pub struct SensorSnapshot {
     pub temps: [Option<Measurement<Celsius>>; NUMBER_OF_TEMP_SENSOR],
     /// Pressions mesurées.
     pub press: [Option<Measurement<HectoPascal>>; NUMBER_OF_PRESSURE_SENSOR],
-    /// Tensions mesurées.
-    pub volts: [Option<Measurement<Volt>>; NUMBER_OF_VOLTMETER],
     /// `true` si la chambre est physiquement fermée (capteur de fermeture).
     pub is_closed: bool,
 }
@@ -51,13 +49,11 @@ impl SensorSnapshot {
     pub fn are_all_none(&self) -> bool {
         self.temps.iter().all(Option::is_none)
             && self.press.iter().all(Option::is_none)
-            && self.volts.iter().all(Option::is_none)
     }
 
     pub fn are_all_some(&self) -> bool {
         self.temps.iter().all(Option::is_some)
             && self.press.iter().all(Option::is_some)
-            && self.volts.iter().all(Option::is_some)
     }
 }
 
@@ -95,7 +91,6 @@ pub static SHARED_STATE: Mutex<RefCell<SharedState>> = Mutex::new(RefCell::new(S
     snapshot: SensorSnapshot {
             temps: [None; NUMBER_OF_TEMP_SENSOR],
             press: [None; NUMBER_OF_PRESSURE_SENSOR],
-            volts: [None; NUMBER_OF_VOLTMETER],
             is_closed: false
     },
     task: SystemTask::Idle,
@@ -119,7 +114,6 @@ mod tests {
         let s = SensorSnapshot::default();
         for &t in &s.temps { assert!(t.is_none()); }
         for &p in &s.press { assert!(p.is_none()); }
-        for &v in &s.volts { assert!(v.is_none()); }
         assert!(!s.is_closed);
     }
 

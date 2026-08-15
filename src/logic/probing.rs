@@ -1,8 +1,8 @@
 use crate::cloud_chamber_hal::sensors::{BatchSensor, DeferredBatchSensor, Sensors};
 use crate::cloud_chamber_hal::measurement::Measurement;
-use crate::cloud_chamber_hal::units::{Celsius, HectoPascal, Volt};
+use crate::cloud_chamber_hal::units::{Celsius, HectoPascal};
 use crate::cloud_chamber_hal::config::{
-    CHAMBER_TEMP_IDX, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_VOLTMETER,
+    CHAMBER_TEMP_IDX, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_PRESSURE_SENSOR,
 };
 use crate::config::CONTROL_LOOP_HISTORY_SIZE;
 use crate::shared::data::{SystemTask, SensorSnapshot};
@@ -20,16 +20,15 @@ use crate::cloud_chamber_hal::timer::Instant;
 pub struct ProbingPlan {
     pub probe_temperature: bool,
     pub probe_pressure: bool,
-    pub probe_voltage: bool,
 }
 
 impl ProbingPlan {
-    pub const fn new(probe_temperature: bool, probe_pressure: bool, probe_voltage: bool) -> Self {
-        Self { probe_temperature, probe_pressure, probe_voltage }
+    pub const fn new(probe_temperature: bool, probe_pressure: bool) -> Self {
+        Self { probe_temperature, probe_pressure }
     }
 
     pub const fn all() -> Self {
-        Self { probe_temperature: true, probe_pressure: true, probe_voltage: true }
+        Self { probe_temperature: true, probe_pressure: true }
     }
 }
 
@@ -54,7 +53,6 @@ pub struct MeasurementHistory {
     // d'accesseurs par capteur, cf. décisions de conception de logic/).
     pub temps: [RingBuffer<Measurement<Celsius>, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_TEMP_SENSOR],
     pub press: [RingBuffer<Measurement<HectoPascal>, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_PRESSURE_SENSOR],
-    pub volts: [RingBuffer<Measurement<Volt>, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_VOLTMETER],
 }
 
 impl MeasurementHistory {
@@ -63,11 +61,9 @@ impl MeasurementHistory {
         let t0 = Instant::from_micros(0);
         let default_temp = Measurement::new(t0, Celsius(f32::NAN));
         let default_press = Measurement::new(t0, HectoPascal(f32::NAN));
-        let default_volts = Measurement::new(t0, Volt(f32::NAN));
         Self {
             temps: core::array::from_fn(|_| RingBuffer::filled(default_temp)),
             press: core::array::from_fn(|_| RingBuffer::filled(default_press)),
-            volts: core::array::from_fn(|_| RingBuffer::filled(default_volts)),
         }
     }
 
@@ -75,7 +71,6 @@ impl MeasurementHistory {
     pub fn update(&mut self, latest_measurement: &SensorSnapshot) {
         push_if_newer(&mut self.temps, &latest_measurement.temps);
         push_if_newer(&mut self.press, &latest_measurement.press);
-        push_if_newer(&mut self.volts, &latest_measurement.volts);
     }
 
     /// `true` si la température `idx` est restée dans une bande de
@@ -141,11 +136,10 @@ fn push_if_newer<Unit: Copy, const N: usize>(
     }
 }
 
-impl<Tmp, Prs, Vlt> Sensors<Tmp, Prs, Vlt>
+impl<Tmp, Prs> Sensors<Tmp, Prs>
 where
     Tmp: DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
     Prs: BatchSensor<HectoPascal, NUMBER_OF_PRESSURE_SENSOR>,
-    Vlt: BatchSensor<Volt, NUMBER_OF_VOLTMETER>,
 {
     pub fn probe(&mut self, probing_plan: ProbingPlan) -> SensorSnapshot {
         let mut result = SensorSnapshot::default();
@@ -163,11 +157,6 @@ where
         // traitent déjà l'absence prolongée de donnée comme une alarme.
         if probing_plan.probe_pressure {
             for (slot, reading) in result.press.iter_mut().zip(self.pressure_source.read()) {
-                *slot = reading.ok();
-            }
-        }
-        if probing_plan.probe_voltage {
-            for (slot, reading) in result.volts.iter_mut().zip(self.voltage_source.read()) {
                 *slot = reading.ok();
             }
         }

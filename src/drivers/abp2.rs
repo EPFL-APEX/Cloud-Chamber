@@ -80,7 +80,7 @@ pub struct Abp2Driver<I> {
 impl<I: I2cTrait> Abp2Driver<I> {
     /// Crée un nouveau driver.
     ///
-    /// - `addr`  : adresse I2C 7 bits (depuis `config::ABP2_BP_ADDR` / `ABP2_HP_ADDR`)
+    /// - `addr`  : adresse I2C 7 bits (depuis `config::ABP2_ADDR`)
     /// - `p_min` : borne basse de la plage de pression en bar
     /// - `p_max` : borne haute de la plage de pression en bar
     pub fn new(i2c: I, addr: u8, p_min: f32, p_max: f32) -> Self {

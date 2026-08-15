@@ -32,10 +32,10 @@
 use core::fmt::Debug;
 
 use crate::cloud_chamber_hal::{
-    config::{NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER},
+    config::{NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR},
     measurement::Measurement,
     timer::Duration,
-    units::{Celsius, HectoPascal, Volt},
+    units::{Celsius, HectoPascal},
 };
 
 /// Capteur retournant une mesure unique de type `T` (ex: `Measurement<Celsius>`).
@@ -114,34 +114,33 @@ where
     }
 }
 
-/// Regroupe les trois sources de mesure (température, pression, tension).
+/// Regroupe les deux sources de mesure (température, pression). Pas de
+/// mesure de tension : `AnalogActuator`/`AdcCurrentSensor` couvrent les
+/// besoins analogiques restants (courant), il n'y a pas de voltmètre dédié.
 ///
 /// Chaque source produit un batch complet en un seul appel — que ce soit un
 /// bus partagé natif (ex: `Ds18b20Sensors`) ou `N` capteurs indépendants
 /// enveloppés dans `IndependentSensors`.
-pub struct Sensors<Tmp, Prs, Vlt>
+pub struct Sensors<Tmp, Prs>
 where
     Tmp: DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
     Prs: BatchSensor<HectoPascal, NUMBER_OF_PRESSURE_SENSOR>,
-    Vlt: BatchSensor<Volt, NUMBER_OF_VOLTMETER>,
 {
     pub temperature_source: Tmp,
     pub pressure_source: Prs,
-    pub voltage_source: Vlt,
 }
 
-impl<Tmp, Prs, Vlt> Sensors<Tmp, Prs, Vlt>
+impl<Tmp, Prs> Sensors<Tmp, Prs>
 where
     Tmp: DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
     Prs: BatchSensor<HectoPascal, NUMBER_OF_PRESSURE_SENSOR>,
-    Vlt: BatchSensor<Volt, NUMBER_OF_VOLTMETER>,
 {
     /// Construit `Sensors` à partir de sources déjà initialisées.
     ///
     /// La construction matérielle (bus I2C, broches GPIO...) est de la
     /// responsabilité du code d'initialisation propre à la carte, pas de
     /// cette fonction : `Sensors` ne fait qu'agréger des sources prêtes.
-    pub fn new(temperature_source: Tmp, pressure_source: Prs, voltage_source: Vlt) -> Self {
-        Self { temperature_source, pressure_source, voltage_source }
+    pub fn new(temperature_source: Tmp, pressure_source: Prs) -> Self {
+        Self { temperature_source, pressure_source }
     }
 }

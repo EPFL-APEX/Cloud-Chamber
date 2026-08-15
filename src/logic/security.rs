@@ -19,8 +19,8 @@
 //! sécurité débranché ne doit pas désactiver silencieusement la protection
 //! qu'il est censé fournir.
 
-use crate::cloud_chamber_hal::config::{COMPRESSOR_OUT_IDX, HP_PRESSURE_IDX, BP_PRESSURE_IDX};
-use crate::config::{SAFETY_BP_MIN, SAFETY_HP_MAX, SAFETY_TEMP_COMPRESSOR_MAX, SENSOR_LOSS_MS};
+use crate::cloud_chamber_hal::config::COMPRESSOR_OUT_IDX;
+use crate::config::{SAFETY_TEMP_COMPRESSOR_MAX, SENSOR_LOSS_MS};
 use crate::logic::probing::MeasurementHistory;
 
 /// Nombre de cycles consécutifs en Alarm avant déclenchement (anti-rebond).
@@ -41,24 +41,20 @@ pub enum SafetyCause {
     CompressorOverheat,
     /// Sonde sortie-compresseur invalide depuis trop longtemps.
     CompressorSensorLost,
-    /// Pression HP trop haute.
-    PressureHigh,
-    /// Pression BP trop basse.
-    PressureLow,
 }
 
 /// Configuration des seuils.
+///
+/// Pas de seuil de pression ici : l'unique capteur de pression restant
+/// mesure la chambre (`CHAMBER_PRESSURE_IDX`), pas le circuit réfrigérant —
+/// les anciens seuils HP/BP (risque mécanique / perte de réfrigérant)
+/// n'ont plus de capteur pour les alimenter et ont été retirés plutôt que
+/// réappliqués à une grandeur physique différente.
 #[derive(Debug, Clone, Copy)]
 pub struct SafetyConfig {
     /// T° sortie compresseur (°C) — surchauffe.
     pub temp_compressor_warn: f32,
     pub temp_compressor_alarm: f32,
-    /// Pression HP (bar) — risque mécanique.
-    pub hp_warn: f32,
-    pub hp_alarm: f32,
-    /// Pression BP (bar) — perte de réfrigérant (seuils BAS).
-    pub bp_warn_low: f32,
-    pub bp_alarm_low: f32,
 }
 
 impl Default for SafetyConfig {
@@ -66,10 +62,6 @@ impl Default for SafetyConfig {
         Self {
             temp_compressor_warn: 100.0,
             temp_compressor_alarm: SAFETY_TEMP_COMPRESSOR_MAX,
-            hp_warn: 12.0,
-            hp_alarm: SAFETY_HP_MAX, // TODO CALIBRAGE — cf. commentaire dans config.rs
-            bp_warn_low: 0.25,
-            bp_alarm_low: SAFETY_BP_MIN,
         }
     }
 }
@@ -77,12 +69,6 @@ impl Default for SafetyConfig {
 fn check_high(value: f32, warn: f32, alarm: f32) -> Severity {
     if value > alarm { Severity::Alarm }
     else if value > warn { Severity::Warning }
-    else { Severity::Normal }
-}
-
-fn check_low(value: f32, warn: f32, alarm: f32) -> Severity {
-    if value < alarm { Severity::Alarm }
-    else if value < warn { Severity::Warning }
     else { Severity::Normal }
 }
 
@@ -98,18 +84,6 @@ fn evaluate(history: &MeasurementHistory, config: &SafetyConfig) -> (Severity, O
         if !m.value.0.is_nan() {
             let s = check_high(m.value.0, config.temp_compressor_warn, config.temp_compressor_alarm);
             if s > worst_sev { worst_sev = s; worst_cause = Some(SafetyCause::CompressorOverheat); }
-        }
-    }
-    if let Ok(m) = history.press[HP_PRESSURE_IDX].get(0) {
-        if !m.value.0.is_nan() {
-            let s = check_high(m.value.0, config.hp_warn, config.hp_alarm);
-            if s > worst_sev { worst_sev = s; worst_cause = Some(SafetyCause::PressureHigh); }
-        }
-    }
-    if let Ok(m) = history.press[BP_PRESSURE_IDX].get(0) {
-        if !m.value.0.is_nan() {
-            let s = check_low(m.value.0, config.bp_warn_low, config.bp_alarm_low);
-            if s > worst_sev { worst_sev = s; worst_cause = Some(SafetyCause::PressureLow); }
         }
     }
     (worst_sev, worst_cause)

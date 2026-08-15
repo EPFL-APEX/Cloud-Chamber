@@ -292,6 +292,7 @@ mod tests {
                 cooling: Some(Celsius(SATURATION_TARGET_C)),
                 iso_heater: Some(Celsius(IPA_HEATER_TARGET_C)),
                 high_voltage: true,
+                iso_pump: false, lights: None, glass_heater: false,
             }
         );
     }

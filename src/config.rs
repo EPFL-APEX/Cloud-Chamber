@@ -21,17 +21,20 @@ pub const PIN_COMPRESSOR_RELAY: u8 = 16;
 pub const PIN_HV_RELAY: u8 = 17;
 pub const PIN_ISO_HEATER_RELAY: u8 = 18;
 
-// ─── Adresses I²C des capteurs de pression ABP2 ───────────────────────────────
+// ─── Adresse I²C du capteur de pression ABP2 (chambre) ─────────────────────────
 
-pub const ABP2_BP_ADDR: u8 = 0x28; // Basse pression (0–1 bar abs)
-pub const ABP2_HP_ADDR: u8 = 0x38; // Haute pression (0–12 bar gauge)
+/// TODO CÂBLAGE : reprend l'ancienne adresse basse-pression (0x28) en
+/// attendant vérification — l'unique capteur restant est câblé dans la
+/// chambre, pas sur le circuit réfrigérant, l'adresse réelle n'est pas
+/// confirmée sur le montage.
+pub const ABP2_ADDR: u8 = 0x28;
 
-// ─── Plages de pression ABP2 ──────────────────────────────────────────────────
+// ─── Plage de pression ABP2 ─────────────────────────────────────────────────────
 
-pub const BP_PRESSURE_MIN: f32 = 0.0;
-pub const BP_PRESSURE_MAX: f32 = 1.0;
-pub const HP_PRESSURE_MIN: f32 = 0.0;
-pub const HP_PRESSURE_MAX: f32 = 12.0;
+/// TODO CALIBRAGE : reprend la plage 0–1 bar (variante basse-pression) en
+/// attendant confirmation de la plage réelle du capteur chambre.
+pub const CHAMBER_PRESSURE_MIN: f32 = 0.0;
+pub const CHAMBER_PRESSURE_MAX: f32 = 1.0;
 
 // ─── Labels des capteurs de température ──────────────────────────────────────
 
@@ -45,16 +48,10 @@ pub const TEMP_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
 
 // ─── Seuils de sécurité ───────────────────────────────────────────────────────
 
-/// TODO CALIBRAGE : 14.0 bar est au-dessus de la plage du capteur ABP2 HP
-/// (0-12 bar, cf. `HP_PRESSURE_MAX`) — ce seuil ne peut physiquement jamais
-/// être atteint tel quel, l'alarme HP ne se déclenchera donc jamais en
-/// pratique. Bug trouvé pendant l'audit de logic/security.rs, présent sur
-/// les deux lignées d'origine. Valeur volontairement pas corrigée ici :
-/// il faut la vraie limite mécanique du circuit frigorifique, pas une
-/// valeur devinée sur un seuil de sécurité.
-pub const SAFETY_HP_MAX: f32 = 14.0;
+/// Plus de seuils HP/BP ici : l'unique capteur de pression restant mesure
+/// la chambre, pas le circuit réfrigérant — cf. commentaire dans
+/// `logic::security::SafetyConfig`.
 pub const SAFETY_TEMP_COMPRESSOR_MAX: f32 = 120.0;
-pub const SAFETY_BP_MIN: f32 = 0.15;
 pub const TARGET_CHAMBER_TEMP: f32 = -40.0;
 
 // ─── Contol loop options ──────────────────────────────────────────────────────────────
@@ -112,7 +109,6 @@ pub const SENSOR_LOSS_MS: u64 = 10_000;
 pub const STOP_HV_SETTLE_MS: u64 = 2_000;
 /// Délai après coupure compresseur avant d'attendre l'équilibrage pression.
 pub const STOP_COMPRESSOR_SETTLE_MS: u64 = 500;
-/// HP considérée équilibrée sous ce seuil (bar) — si capteur présent.
-pub const STOP_EQUALIZE_HP_MAX: f32 = 2.0;
-/// Sans capteur HP : temporisation d'équilibrage (anti court-cycle).
+/// Pas de capteur dédié au circuit réfrigérant : temporisation fixe
+/// d'équilibrage avant de considérer l'arrêt terminé (anti court-cycle).
 pub const STOP_EQUALIZE_FALLBACK_MS: u64 = 60_000;
