@@ -20,38 +20,37 @@ jobs:
       - name: Run library tests
         run: cargo test --target x86_64-unknown-linux-gnu --lib
 
-  check-rp2040:
-    name: Check RP2040 (thumbv6m-none-eabi)
+  check:
+    name: Check ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: RP2040 (thumbv6m-none-eabi)
+            target: thumbv6m-none-eabi
+            pico_rs: rp2040
+          - name: RP2350 ARM (thumbv8m.main-none-eabihf)
+            target: thumbv8m.main-none-eabihf
+            pico_rs: rp2350
+          - name: RP2350 RISC-V (riscv32imac-unknown-none-elf)
+            target: riscv32imac-unknown-none-elf
+            pico_rs: rp2350-riscv
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: thumbv6m-none-eabi
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - name: cargo check
-        run: cargo check --target thumbv6m-none-eabi
-
-  check-rp2350-arm:
-    name: Check RP2350 ARM (thumbv8m.main-none-eabihf)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: thumbv8m.main-none-eabihf
-      - uses: Swatinem/rust-cache@v2
+          key: ${{ matrix.target }}
+      # build.rs choisit cfg(rp2040)/cfg(rp2350) (et donc quels drivers
+      # matériel sont compilés) d'après le contenu de .pico-rs, pas d'après
+      # le --target passé à cargo — sans cette étape, tous les jobs de cette
+      # matrice compilaient avec cfg(rp2040) (valeur committée du fichier),
+      # donc les checks RP2350 ARM/RISC-V référençaient rp2040_hal, absent
+      # de leurs dépendances de cible, et échouaient.
+      - name: Select chip for build.rs (.pico-rs)
+        run: echo "${{ matrix.pico_rs }}" > .pico-rs
       - name: cargo check
-        run: cargo check --target thumbv8m.main-none-eabihf
-
-  check-rp2350-riscv:
-    name: Check RP2350 RISC-V (riscv32imac-unknown-none-elf)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: riscv32imac-unknown-none-elf
-      - uses: Swatinem/rust-cache@v2
-      - name: cargo check
-        run: cargo check --target riscv32imac-unknown-none-elf
+        run: cargo check --target ${{ matrix.target }}
