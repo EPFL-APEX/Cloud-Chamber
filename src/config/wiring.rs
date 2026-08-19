@@ -14,7 +14,7 @@ use crate::cloud_chamber_hal::config::NUMBER_OF_TEMP_SENSOR;
 // ─── Broches GPIO (numéros GP du RP2040/RP2350) ───────────────────────────────
 
 /// Bus 1-Wire pour les DS18B20 (avec pull-up 4.7 kΩ externe)
-pub const PIN_ONEWIRE: u8 = 15;
+pub const PIN_ONEWIRE: u8 = 23;
 /// I²C SDA pour les capteurs
 pub const PIN_I2C_SDA: u8 = 4;
 /// I²C SCL pour les capteurs
@@ -58,4 +58,7 @@ pub const TEMP_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
     "entree_evaporateur",
     "sortie_evaporateur",
     "base_chambre",
+    "",
+    "",
+    "",
 ];

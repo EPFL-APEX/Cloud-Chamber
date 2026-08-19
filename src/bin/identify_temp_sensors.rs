@@ -37,7 +37,11 @@ const XOSC_CRYSTAL_FREQ: u32 = 12_000_000;
 // variable, donc rien ne les lie automatiquement. Si `PIN_ONEWIRE` change
 // dans config/wiring.rs, cette assertion casse la compilation ici plutôt
 // que de laisser ce fichier sonder la mauvaise broche en silence.
-const _: () = assert!(PIN_ONEWIRE == 15, "adapter pins.gpio15 ci-dessous si PIN_ONEWIRE change");
+const _: () = assert!(PIN_ONEWIRE == 23, "adapter pins.gpio23 ci-dessous si PIN_ONEWIRE change");
+
+#[unsafe(link_section = ".boot2")]
+#[used]
+static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 #[hal::entry]
 fn main() -> ! {

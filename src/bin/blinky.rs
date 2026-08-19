@@ -31,6 +31,10 @@ use rp2040_hal::{self as hal, Sio, Watchdog, clocks::init_clocks_and_plls, gpio:
 /// Fréquence du cristal externe du Pico — cf. `hal::clocks::init_clocks_and_plls`.
 const XOSC_CRYSTAL_FREQ: u32 = 12_000_000;
 
+#[unsafe(link_section = ".boot2")]
+#[used]
+static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
+
 #[hal::entry]
 fn main() -> ! {
     let mut pac = pac::Peripherals::take().unwrap();
