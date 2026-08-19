@@ -500,6 +500,13 @@ impl<P: OpenDrainPin> Ds18b20Bus<P> {
 
     pub fn sensor_count(&self) -> usize { self.sensors.len() }
 
+    /// Code ROM (8 octets, identifiant unique du capteur) découvert à
+    /// l'index `index`. Ordre stable entre deux appels tant que `discover()`
+    /// n'est pas relancé et que rien n'est débranché/rebranché sur le bus.
+    pub fn rom_code(&self, index: usize) -> Option<[u8; 8]> {
+        self.sensors.get(index).copied()
+    }
+
     /// Configure la résolution d'un capteur via la commande WriteScratchpad (0x4E).
     ///
     /// Les alarmes TH/TL sont mises à zéro (désactivées).

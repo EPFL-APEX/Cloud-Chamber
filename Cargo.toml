@@ -19,6 +19,25 @@ charts = ["dep:embedded-charts"]
 # installé sur la machine de compilation.
 live-menu-test = ["embedded-graphics-simulator/with-sdl"]
 usb-comm = []
+# N'active rien à elle seule — sert uniquement de garde via `required-features`
+# sur `[[bin]] identify_temp_sensors` (RP2040 uniquement), pour que les jobs
+# CI `cargo check` sur les autres cibles ne tentent pas de le construire.
+bin-identify-temp-sensors = []
+
+# N'active rien à elle seule — sert uniquement de garde via `required-features`
+# sur `[[bin]] blinky` (RP2040 uniquement), pour que les jobs CI
+# `cargo check` sur les autres cibles ne tentent pas de le construire.
+bin-blinky = []
+
+[[bin]]
+name = "identify_temp_sensors"
+path = "src/bin/identify_temp_sensors.rs"
+required-features = ["bin-identify-temp-sensors"]
+
+[[bin]]
+name = "blinky"
+path = "src/bin/blinky.rs"
+required-features = ["bin-blinky"]
 
 [dependencies]
 cortex-m = "0.7"
