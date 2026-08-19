@@ -23,7 +23,13 @@ use defmt_rtt as _;
 use panic_probe as _;
 
 use embedded_hal::delay::DelayNs;
-use rp2040_hal::{self as hal, Sio, Watchdog, clocks::init_clocks_and_plls, gpio::Pins, pac};
+use embedded_hal::digital::OutputPin;
+use rp2040_hal::{
+    self as hal, Sio, Watchdog,
+    clocks::init_clocks_and_plls,
+    gpio::{DynBankId, DynPinId, DynPullType, FunctionSio, Pins, SioInput, SioOutput, new_pin},
+    pac,
+};
 
 use cloud_chamber_firmware::config::wiring::PIN_ONEWIRE;
 use cloud_chamber_firmware::drivers::ds18b20::{Ds18b20Bus, Resolution, rp2040_adapter::Rp2040OpenDrain};
@@ -36,36 +42,48 @@ const XOSC_CRYSTAL_FREQ: u32 = 12_000_000;
 static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 /// Configure GP`pin` pour l'usage 1-Wire (`Rp2040OpenDrain`) : fonction SIO,
-/// entrée lisible, aucun pull interne (l'externe s'en charge), sortie fixée
-/// à 0 puis mise en haute impédance — exactement ce que `Rp2040OpenDrain`
-/// attend avant de prendre la main sur `gpio_oe` en direct registre.
+/// aucun pull interne (l'externe s'en charge), sortie fixée à 0 puis remise
+/// en entrée flottante — exactement ce que `Rp2040OpenDrain` attend avant
+/// de prendre la main sur `gpio_oe` en direct registre.
 ///
-/// Passe par les registres bruts plutôt que par l'API typée `pins.gpio<N>`,
-/// qui exige un identifiant littéral connu à la compilation — donc un champ
-/// dupliqué qu'il faut garder manuellement synchronisé avec `PIN_ONEWIRE`.
-/// C'est exactement le bug déjà rencontré une fois : `PIN_ONEWIRE` était
-/// passé de 15 à 23, `pins.gpio15` en dessous ne l'a pas suivi, et rien au
-/// niveau du compilateur ne pouvait le détecter (une assertion vérifiait
-/// bien la valeur numérique, mais pas quel champ `pins.gpioN` était
-/// effectivement utilisé). Ici `PIN_ONEWIRE` est directement utilisé comme
-/// index — une seule source, rien à garder synchronisé.
+/// Passe par `gpio::new_pin`/`DynPinId` (API dynamique de `rp2040-hal`,
+/// pensée pour ce cas) plutôt que par l'API typée `pins.gpio<N>`, qui exige
+/// un identifiant littéral connu à la compilation — donc un champ dupliqué
+/// qu'il faudrait garder manuellement synchronisé avec `PIN_ONEWIRE`. C'est
+/// exactement le bug déjà rencontré une fois : `PIN_ONEWIRE` était passé de
+/// 15 à 23, `pins.gpio15` en dessous ne l'a pas suivi, et rien au niveau du
+/// compilateur ne pouvait le détecter. Ici `PIN_ONEWIRE` est directement
+/// utilisé comme index — une seule source, rien à garder synchronisé.
 ///
-/// À appeler après `Pins::new(...)` (ou une construction équivalente) :
-/// c'est elle qui sort IO_BANK0/PADS_BANK0 de reset et désactive l'entrée
-/// (`IE`) sur tous les pads par défaut — les écritures ci-dessous n'ont
-/// d'effet qu'après, et doivent réactiver `IE` explicitement pour ce pin.
+/// `try_into_function` fait le travail registre (funcsel, validité pour
+/// cette broche) à l'intérieur du HAL, pas à la main : on ne réécrit donc
+/// plus soi-même la sémantique des registres IO_BANK0/PADS_BANK0/SIO.
+///
+/// # Safety
+/// `new_pin` exige qu'aucune autre instance de `Pin` pour cette broche
+/// n'existe en parallèle. `Pins::new(...)` (appelé juste avant, pour ses
+/// effets de bord de sortie de reset) réserve bien un champ typé
+/// `pins.gpio<N>` pour ce même numéro, mais ce champ n'est ni lu ni écrit
+/// nulle part dans ce fichier : aucun accès concurrent réel aux registres
+/// n'en résulte.
 fn configure_onewire_pin(pin: u8) {
-    let n = pin as usize;
-    let mask = 1u32 << pin;
-    unsafe {
-        (*pac::IO_BANK0::ptr()).gpio(n).gpio_ctrl().modify(|_, w| w.funcsel().sio());
-        (*pac::PADS_BANK0::ptr()).gpio(n).modify(|_, w| w.pue().bit(false).pde().bit(false).ie().bit(true));
-        (*pac::SIO::ptr()).gpio_out_clr().write(|w| w.bits(mask));
-        (*pac::SIO::ptr()).gpio_oe_set().write(|w| w.bits(mask));
-        (*pac::SIO::ptr()).gpio_oe_clr().write(|w| w.bits(mask));
-        // ^ `bits()` est `unsafe fn` sur ces registres write-only (rp2040-pac
-        // 0.6.0) : safe car on est déjà dans le bloc `unsafe` englobant.
-    }
+    let id = DynPinId { bank: DynBankId::Bank0, num: pin };
+    let raw = unsafe { new_pin(id) };
+
+    let mut out = raw
+        .try_into_function::<FunctionSio<SioOutput>>()
+        .ok()
+        .expect("SIO est une fonction valide sur toute broche de Bank0");
+    out.set_pull_type(DynPullType::None);
+    let _ = out.set_low();
+
+    // Remise en entrée flottante : c'est ensuite `Rp2040OpenDrain` qui
+    // pilote `gpio_oe` en direct registre, sans repasser par ce type.
+    let in_pin = out
+        .try_into_function::<FunctionSio<SioInput>>()
+        .ok()
+        .expect("SIO est une fonction valide sur toute broche de Bank0");
+    drop(in_pin);
 }
 
 #[hal::entry]
