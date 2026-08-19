@@ -35,6 +35,12 @@ pub const PIN_PUMP_RELAY: u8 = 7;
 pub const PIN_LIGHTS_RELAY: u8 = 8;
 pub const PIN_WINDOW_HEATER_RELAY: u8 = 21;
 
+/// Encodeur rotatif de l'UI (quadrature) — cf. `drivers::encoder`.
+pub const PIN_ENCODER_A: u8 = 26;
+pub const PIN_ENCODER_B: u8 = 27;
+/// Bouton-poussoir intégré à l'encodeur.
+pub const PIN_ENCODER_SW: u8 = 28;
+
 // ─── Adresse I²C du capteur de pression ABP2 (chambre) ─────────────────────────
 
 /// TODO CÂBLAGE : reprend l'ancienne adresse basse-pression (0x28) en
