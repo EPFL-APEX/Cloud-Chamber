@@ -1,8 +1,15 @@
 //! Sanity check de bring-up : fait clignoter la LED embarquée du Pico
 //! (GP25, pas utilisée par le câblage de la chambre — cf.
-//! `config::wiring`) à 1 Hz. Sert à vérifier que la chaîne complète
-//! (toolchain, `flip-link`, règles udev, `probe-rs`) fonctionne avant de
-//! passer à un bin qui touche du vrai matériel de la chambre.
+//! `config::wiring`) à 1 Hz, en journalisant chaque battement. Sert à
+//! vérifier que la chaîne complète (toolchain, `flip-link`, règles udev,
+//! `probe-rs`, attache RTT) fonctionne avant de passer à un bin qui touche
+//! du vrai matériel de la chambre.
+//!
+//! Un seul message au démarrage aurait pu se perdre si l'attache RTT de
+//! `probe-rs` arrive après coup (course entre le reset/flash et le moment
+//! où le viewer RTT commence à lire) — un message par bascule permet de
+//! voir si le programme tourne (LED + logs) même si les tout premiers
+//! logs ont été manqués.
 //!
 //! RP2040 uniquement, même limite que `identify_temp_sensors`. Derrière la
 //! feature `bin-blinky` (désactivée par défaut) pour ne pas être construit
@@ -47,12 +54,15 @@ fn main() -> ! {
     let pins = Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
     let mut led = pins.gpio25.into_push_pull_output();
 
-    defmt::info!("blinky demarre (GP25, 1 Hz)");
+    defmt::info!("blinky demarre (GP25, 1 Hz) — un log par bascule ci-dessous");
 
+    let mut on = false;
+    let mut tick: u32 = 0;
     loop {
-        led.set_high().unwrap();
-        timer.delay_ms(500);
-        led.set_low().unwrap();
+        on = !on;
+        if on { led.set_high().unwrap(); } else { led.set_low().unwrap(); }
+        defmt::info!("tick {} : led = {}", tick, on);
+        tick = tick.wrapping_add(1);
         timer.delay_ms(500);
     }
 }
