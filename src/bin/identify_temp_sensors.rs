@@ -23,7 +23,6 @@ use defmt_rtt as _;
 use panic_probe as _;
 
 use embedded_hal::delay::DelayNs;
-use embedded_hal::digital::PinState;
 use rp2040_hal::{self as hal, Sio, Watchdog, clocks::init_clocks_and_plls, gpio::Pins, pac};
 
 use cloud_chamber_firmware::config::wiring::PIN_ONEWIRE;
@@ -32,16 +31,42 @@ use cloud_chamber_firmware::drivers::ds18b20::{Ds18b20Bus, Resolution, rp2040_ad
 /// Fréquence du cristal externe du Pico — cf. `hal::clocks::init_clocks_and_plls`.
 const XOSC_CRYSTAL_FREQ: u32 = 12_000_000;
 
-// `pins.gpio15` ci-dessous doit rester le même numéro que PIN_ONEWIRE : le
-// champ se sélectionne par un identifiant littéral (`gpio<N>`), pas par une
-// variable, donc rien ne les lie automatiquement. Si `PIN_ONEWIRE` change
-// dans config/wiring.rs, cette assertion casse la compilation ici plutôt
-// que de laisser ce fichier sonder la mauvaise broche en silence.
-const _: () = assert!(PIN_ONEWIRE == 23, "adapter pins.gpio23 ci-dessous si PIN_ONEWIRE change");
-
 #[unsafe(link_section = ".boot2")]
 #[used]
 static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
+
+/// Configure GP`pin` pour l'usage 1-Wire (`Rp2040OpenDrain`) : fonction SIO,
+/// entrée lisible, aucun pull interne (l'externe s'en charge), sortie fixée
+/// à 0 puis mise en haute impédance — exactement ce que `Rp2040OpenDrain`
+/// attend avant de prendre la main sur `gpio_oe` en direct registre.
+///
+/// Passe par les registres bruts plutôt que par l'API typée `pins.gpio<N>`,
+/// qui exige un identifiant littéral connu à la compilation — donc un champ
+/// dupliqué qu'il faut garder manuellement synchronisé avec `PIN_ONEWIRE`.
+/// C'est exactement le bug déjà rencontré une fois : `PIN_ONEWIRE` était
+/// passé de 15 à 23, `pins.gpio15` en dessous ne l'a pas suivi, et rien au
+/// niveau du compilateur ne pouvait le détecter (une assertion vérifiait
+/// bien la valeur numérique, mais pas quel champ `pins.gpioN` était
+/// effectivement utilisé). Ici `PIN_ONEWIRE` est directement utilisé comme
+/// index — une seule source, rien à garder synchronisé.
+///
+/// À appeler après `Pins::new(...)` (ou une construction équivalente) :
+/// c'est elle qui sort IO_BANK0/PADS_BANK0 de reset et désactive l'entrée
+/// (`IE`) sur tous les pads par défaut — les écritures ci-dessous n'ont
+/// d'effet qu'après, et doivent réactiver `IE` explicitement pour ce pin.
+fn configure_onewire_pin(pin: u8) {
+    let n = pin as usize;
+    let mask = 1u32 << pin;
+    unsafe {
+        (*pac::IO_BANK0::ptr()).gpio(n).gpio_ctrl().modify(|_, w| w.funcsel().sio());
+        (*pac::PADS_BANK0::ptr()).gpio(n).modify(|_, w| w.pue().bit(false).pde().bit(false).ie().bit(true));
+        (*pac::SIO::ptr()).gpio_out_clr().write(|w| w.bits(mask));
+        (*pac::SIO::ptr()).gpio_oe_set().write(|w| w.bits(mask));
+        (*pac::SIO::ptr()).gpio_oe_clr().write(|w| w.bits(mask));
+        // ^ `bits()` est `unsafe fn` sur ces registres write-only (rp2040-pac
+        // 0.6.0) : safe car on est déjà dans le bloc `unsafe` englobant.
+    }
+}
 
 #[hal::entry]
 fn main() -> ! {
@@ -66,16 +91,11 @@ fn main() -> ! {
     let mut timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
 
     let sio = Sio::new(pac.SIO);
-    let pins = Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
-
-    // Séquence attendue par `Rp2040OpenDrain` (cf. sa doc) : la broche doit
-    // être configurée en sortie niveau bas puis remise en haute impédance
-    // avant de lui être confiée — ensuite il pilote lui-même `gpio_oe`
-    // directement en registre, sans repasser par ce type.
-    let _onewire_pin = pins
-        .gpio23
-        .into_push_pull_output_in_state(PinState::Low)
-        .into_floating_input();
+    // `Pins::new` reste nécessaire même si le pin 1-Wire n'utilise pas son
+    // API typée ensuite : c'est cet appel qui sort IO_BANK0/PADS_BANK0 de
+    // reset (cf. doc de `configure_onewire_pin`).
+    let _pins = Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
+    configure_onewire_pin(PIN_ONEWIRE);
 
     let adapter = Rp2040OpenDrain::new(1u32 << PIN_ONEWIRE);
     let mut bus = Ds18b20Bus::new(adapter);
