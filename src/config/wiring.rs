@@ -16,23 +16,23 @@ use crate::cloud_chamber_hal::config::NUMBER_OF_TEMP_SENSOR;
 /// Bus 1-Wire pour les DS18B20 (avec pull-up 4.7 kΩ externe)
 pub const PIN_ONEWIRE: u8 = 23;
 /// I²C SDA pour les capteurs
-pub const PIN_I2C_SDA: u8 = 4;
+pub const PIN_I2C_SDA: u8 = 21;
 /// I²C SCL pour les capteurs
-pub const PIN_I2C_SCL: u8 = 5;
+pub const PIN_I2C_SCL: u8 = 20;
 /// GPIO de sortie pour le relais de sécurité compresseur
-pub const PIN_COMPRESSOR_RELAY: u8 = 16;
+pub const PIN_COMPRESSOR_RELAY: u8 = 5;
 /// TODO CÂBLAGE : broches provisoires (GP17/GP18, suite de
 /// `PIN_COMPRESSOR_RELAY`), jamais vérifiées sur le montage réel — à
 /// confirmer avant tout bring-up matériel.
-pub const PIN_HV_RELAY: u8 = 17;
-pub const PIN_ISO_HEATER_RELAY: u8 = 18;
+pub const PIN_HV_RELAY: u8 = 14;
+pub const PIN_ISO_HEATER_RELAY: u8 = 9;
 /// TODO CÂBLAGE : broches provisoires (suite de `PIN_ISO_HEATER_RELAY`),
 /// jamais assignées sur le montage réel. Les drivers `drivers::pump::Pump`,
 /// `drivers::lights::Lights` et `drivers::window_heater::WindowHeater`
 /// existent déjà mais n'étaient pas encore référencés ici — à confirmer
 /// avant tout bring-up matériel, comme les broches ci-dessus.
-pub const PIN_PUMP_RELAY: u8 = 19;
-pub const PIN_LIGHTS_RELAY: u8 = 20;
+pub const PIN_PUMP_RELAY: u8 = 7;
+pub const PIN_LIGHTS_RELAY: u8 = 8;
 pub const PIN_WINDOW_HEATER_RELAY: u8 = 21;
 
 // ─── Adresse I²C du capteur de pression ABP2 (chambre) ─────────────────────────

@@ -73,7 +73,7 @@ fn main() -> ! {
     // avant de lui être confiée — ensuite il pilote lui-même `gpio_oe`
     // directement en registre, sans repasser par ce type.
     let _onewire_pin = pins
-        .gpio15
+        .gpio23
         .into_push_pull_output_in_state(PinState::Low)
         .into_floating_input();
 
