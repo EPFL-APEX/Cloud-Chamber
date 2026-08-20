@@ -49,6 +49,11 @@ bin-bme-test = []
 # `cargo check` sur les autres cibles ne tentent pas de le construire.
 bin-screen-test = []
 
+# N'active rien à elle seule — sert uniquement de garde via `required-features`
+# sur `[[bin]] ui_test` (RP2040 uniquement), pour que les jobs CI
+# `cargo check` sur les autres cibles ne tentent pas de le construire.
+bin-ui-test = []
+
 [[bin]]
 name = "identify_temp_sensors"
 path = "src/bin/identify_temp_sensors.rs"
@@ -78,6 +83,11 @@ required-features = ["bin-bme-test"]
 name = "screen_test"
 path = "src/bin/screen_test.rs"
 required-features = ["bin-screen-test"]
+
+[[bin]]
+name = "ui_test"
+path = "src/bin/ui_test.rs"
+required-features = ["bin-ui-test"]
 
 [dependencies]
 cortex-m = "0.7"
