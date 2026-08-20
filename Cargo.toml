@@ -107,6 +107,10 @@ ili9341 = "0.6"
 # Interface SPI générique pour ili9341 (WriteOnlyDataCommand) — non tirée
 # transitivement, ili9341 dépend seulement du trait display-interface.
 display-interface-spi = "0.5"
+# Le trait WriteOnlyDataCommand lui-même — nécessaire pour écrire une
+# fonction générique sur IFACE (cf. ui_test::redraw), display-interface-spi
+# ne le ré-exporte pas sous un nom utilisable directement.
+display-interface = "0.5"
 
 # Données
 num_enum = { version = "0.7", default-features = false }

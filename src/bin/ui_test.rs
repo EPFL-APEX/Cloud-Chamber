@@ -9,6 +9,34 @@
 //! `ValidatedPinTx`/`ValidatedPinSck` pour SPI0). Voir leur documentation
 //! de module pour le détail de chaque étape.
 //!
+//! # Deux problèmes de performance constatés sur matériel réel
+//!
+//! ## Rendu lent (plusieurs secondes pour un menu)
+//!
+//! Résolu en déplaçant l'écran vers `drivers::display::FramebufferedDisplay`
+//! (dessine dans un framebuffer RAM bandé, transfère chaque bande en une
+//! seule transaction SPI, au lieu d'une transaction par pixel individuel)
+//! — cf. sa documentation de module pour le détail et le raisonnement sur
+//! la marge de pile.
+//!
+//! ## Rotation perdue pendant un dessin
+//!
+//! `FramebufferedDisplay::render` bloque quand même le cœur pendant le
+//! transfert SPI de chaque bande. Avec un `encoder.poll()` appelé depuis la
+//! boucle principale (comme dans les versions précédentes de ce bin), toute
+//! rotation survenant *pendant* ce blocage n'est jamais lue — pas juste
+//! retardée, perdue : deux rotations rapprochées ne comptaient que pour une.
+//!
+//! Fix : `RotaryEncoder::poll()` tourne maintenant depuis une interruption
+//! matérielle périodique (`TIMER_IRQ_0`, alarme 0 du périphérique `TIMER`,
+//! réarmée toutes les 1 ms), indépendante de ce que fait la boucle
+//! principale. Une routine d'interruption reste préemptive même pendant un
+//! blocage SPI classique (celui-ci n'attend pas dans une section critique,
+//! seul du code protégé par `critical_section::with` — bref, autour des
+//! accès aux statics partagés ci-dessous — désactive les interruptions).
+//! La boucle principale ne fait plus que lire un drapeau "quelque chose a
+//! changé", router l'événement déjà appliqué à `Screens`, et redessiner.
+//!
 //! # Écrans qui vont paniquer (attendu, pas un bug matériel)
 //!
 //! `ui::router::Screens` a plusieurs branches `todo!()` pour des écrans pas
@@ -20,36 +48,35 @@
 //! - Une fois sur Stats, tourner ou cliquer panique aussi (`right_turn`/
 //!   `left_turn`/`click` pas encore câblés pour cet écran).
 //!
-//! Un panic ici (message RTT clair via `panic-probe`, puis reset) n'est
-//! donc pas forcément un problème de câblage — vérifier d'abord si le
-//! chemin de navigation emprunté est un de ceux ci-dessus avant de
-//! suspecter le matériel.
-//!
 //! RP2040 uniquement pour l'instant, même limite que les autres bins de
 //! bring-up. Derrière la feature `bin-ui-test` (désactivée par défaut)
 //! pour ne pas être construit par les jobs CI `cargo check` sur les
 //! autres cibles :
 //!
 //! ```text
-//! cargo run --target thumbv6m-none-eabi --features bin-ui-test \
+//! cargo run --release --target thumbv6m-none-eabi --features bin-ui-test \
 //!     --bin ui_test
 //! ```
 #![no_std]
 #![no_main]
 
+use core::cell::{Cell, RefCell};
+
 use defmt_rtt as _;
 use panic_probe as _;
 
+use critical_section::Mutex;
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
 use embedded_hal::spi::MODE_0;
 use rp2040_hal::{
     Clock, Sio, Watchdog, self as hal,
     clocks::init_clocks_and_plls,
-    fugit::RateExtU32,
+    fugit::{ExtU32, RateExtU32},
     gpio::{DynBankId, DynPinId, DynPullType, FunctionSio, FunctionSpi, Pin, Pins, SioInput, SioOutput, new_pin},
-    pac,
+    pac::{self, interrupt},
     spi::{Spi, ValidatedPinSck, ValidatedPinTx},
+    timer::{Alarm, Alarm0},
 };
 
 use display_interface_spi::SPIInterface;
@@ -60,6 +87,7 @@ use cloud_chamber_firmware::config::wiring::{
     PIN_ENCODER_A, PIN_ENCODER_B, PIN_ENCODER_SW, PIN_SCREEN_CS, PIN_SCREEN_DC, PIN_SCREEN_MOSI,
     PIN_SCREEN_RESET, PIN_SCREEN_SCK,
 };
+use cloud_chamber_firmware::drivers::display::FramebufferedDisplay;
 use cloud_chamber_firmware::drivers::encoder::{EncoderEvent, RotaryEncoder};
 use cloud_chamber_firmware::shared::data::SHARED_STATE;
 use cloud_chamber_firmware::ui::router::Screens;
@@ -71,42 +99,62 @@ const XOSC_CRYSTAL_FREQ: u32 = 12_000_000;
 #[used]
 static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
-/// Configure GP`pin` en sortie push-pull logicielle (CS/DC/RESET), démarrée
-/// à l'état bas — cf. `screen_test`.
-///
-/// # Safety
-/// `new_pin` exige qu'aucune autre instance de `Pin` pour cette broche
-/// n'existe en parallèle. `Pins::new(...)` (appelé juste avant, pour ses
-/// effets de bord de sortie de reset) réserve bien un champ typé
-/// `pins.gpio<N>` pour ce même numéro, mais ce champ n'est ni lu ni écrit
-/// nulle part dans ce fichier : aucun accès concurrent réel aux registres
-/// n'en résulte.
-fn configure_output_pin(pin: u8) -> Pin<DynPinId, FunctionSio<SioOutput>, DynPullType> {
-    let id = DynPinId { bank: DynBankId::Bank0, num: pin };
-    let raw = unsafe { new_pin(id) };
-    let mut out = raw
-        .try_into_function::<FunctionSio<SioOutput>>()
-        .ok()
-        .expect("SIO est une fonction valide sur toute broche de Bank0");
-    out.set_pull_type(DynPullType::None);
-    let _ = out.set_low();
-    out
-}
+// ─── État partagé avec l'interruption TIMER_IRQ_0 ──────────────────────────
 
-/// Configure GP`pin` en entrée avec pull-up interne (broches encodeur) —
-/// cf. `encoder_test`.
-///
-/// # Safety
-/// Même raisonnement que `configure_output_pin`.
-fn configure_input_pin(pin: u8) -> Pin<DynPinId, FunctionSio<SioInput>, DynPullType> {
-    let id = DynPinId { bank: DynBankId::Bank0, num: pin };
-    let raw = unsafe { new_pin(id) };
-    let mut in_pin = raw
-        .try_into_function::<FunctionSio<SioInput>>()
-        .ok()
-        .expect("SIO est une fonction valide sur toute broche de Bank0");
-    in_pin.set_pull_type(DynPullType::Up);
-    in_pin
+type EncPin = Pin<DynPinId, FunctionSio<SioInput>, DynPullType>;
+type Encoder = RotaryEncoder<EncPin, EncPin, EncPin>;
+
+/// `None` jusqu'à ce que `main()` y dépose l'encodeur — l'ISR ne fait rien
+/// tant que ce n'est pas fait (ne peut pas se produire avant la fin de
+/// `main()`'s setup, l'interruption n'étant démasquée qu'après).
+static ENCODER: Mutex<RefCell<Option<Encoder>>> = Mutex::new(RefCell::new(None));
+static ALARM: Mutex<RefCell<Option<Alarm0>>> = Mutex::new(RefCell::new(None));
+/// Écrans + pile de navigation : mutée uniquement par l'ISR (right_turn/
+/// left_turn/click), lue par la boucle principale pour dessiner. Un seul
+/// `Screens` partagé plutôt que des compteurs d'événements en attente :
+/// aucune raison de rejouer les événements côté boucle principale, l'ISR
+/// peut appliquer la navigation directement.
+static SCREENS: Mutex<RefCell<Option<Screens>>> = Mutex::new(RefCell::new(None));
+/// Mis à `true` par l'ISR dès que `SCREENS` a changé ; la boucle principale
+/// le lit puis le remet à `false` avant de redessiner.
+static DIRTY: Mutex<Cell<bool>> = Mutex::new(Cell::new(false));
+
+/// Routine d'interruption : appelée toutes les 1 ms par l'alarme 0 du
+/// `TIMER`, indépendamment de ce que fait `main()` (y compris pendant un
+/// blocage SPI). Fait le travail minimal — poller l'encodeur, router
+/// l'événement, réarmer l'alarme — puis rend la main.
+#[interrupt]
+fn TIMER_IRQ_0() {
+    critical_section::with(|cs| {
+        if let Some(alarm) = ALARM.borrow(cs).borrow_mut().as_mut() {
+            alarm.clear_interrupt();
+            let _ = alarm.schedule(1_u32.millis());
+        }
+
+        let event = match ENCODER.borrow(cs).borrow_mut().as_mut() {
+            Some(encoder) => encoder.poll(),
+            None => return,
+        };
+
+        let mut screens_ref = SCREENS.borrow(cs).borrow_mut();
+        let Some(screens) = screens_ref.as_mut() else { return };
+
+        match event {
+            EncoderEvent::RotateClockwise => {
+                screens.right_turn();
+                DIRTY.borrow(cs).set(true);
+            }
+            EncoderEvent::RotateCounterClockwise => {
+                screens.left_turn();
+                DIRTY.borrow(cs).set(true);
+            }
+            EncoderEvent::ButtonPressed => {
+                screens.click();
+                DIRTY.borrow(cs).set(true);
+            }
+            EncoderEvent::None => {}
+        }
+    });
 }
 
 #[hal::entry]
@@ -152,10 +200,19 @@ fn main() -> ! {
 
     // Turbofish DS=8 (taille de trame en bits) : plusieurs impls existent
     // (4/5/8...), rien ne force le choix sans cette annotation explicite.
+    //
+    // 32 MHz : doublé depuis les 16 MHz initiaux. L'ILI9341 est souvent
+    // documenté prudemment (~10-15 MHz) mais couramment poussé à 40 MHz+
+    // sur un câblage court et propre — 32 MHz reste une marge raisonnable
+    // sans matériel sous la main pour vérifier le point de rupture réel. Si
+    // l'écran affiche du bruit visuel (pixels aléatoires, lignes
+    // corrompues), c'est le signe d'être allé trop loin : rebaisser cette
+    // valeur (le maximum matériel du RP2040 est peripheral_clock / 2, soit
+    // ~62.5 MHz à l'horloge système par défaut).
     let spi = Spi::<_, _, _, 8>::new(pac.SPI0, (tx, sck)).init(
         &mut pac.RESETS,
         clocks.peripheral_clock.freq(),
-        16_000_000u32.Hz(),
+        32_000_000u32.Hz(),
         MODE_0,
     );
 
@@ -167,7 +224,7 @@ fn main() -> ! {
     let spi_device = ExclusiveDevice::new_no_delay(spi, cs).unwrap();
     let iface = SPIInterface::new(spi_device, dc);
 
-    let mut display = match Ili9341::new(iface, rst, &mut timer, Orientation::Landscape, DisplaySize240x320) {
+    let ili9341_display = match Ili9341::new(iface, rst, &mut timer, Orientation::Landscape, DisplaySize240x320) {
         Ok(display) => display,
         Err(e) => {
             defmt::error!("echec init ecran : {}", defmt::Debug2Format(&e));
@@ -176,61 +233,107 @@ fn main() -> ! {
             }
         }
     };
+    let mut display = FramebufferedDisplay::new(ili9341_display);
 
-    // ─── Encodeur (A/B/SW, pull-up interne) ────────────────────────────────
+    // ─── Encodeur (A/B/SW, pull-up interne) — piloté par interruption ──────
     let pin_a = configure_input_pin(PIN_ENCODER_A);
     let pin_b = configure_input_pin(PIN_ENCODER_B);
     let pin_sw = configure_input_pin(PIN_ENCODER_SW);
-    let mut encoder = RotaryEncoder::new(pin_a, pin_b, pin_sw);
+    let encoder = RotaryEncoder::new(pin_a, pin_b, pin_sw);
 
-    // ─── Routeur UI réel ────────────────────────────────────────────────────
-    let mut screens = Screens::new();
+    let mut alarm = timer.alarm_0().expect("alarme 0 disponible au premier appel");
+    alarm.schedule(1_u32.millis()).expect("planification initiale valide");
+    alarm.enable_interrupt();
 
-    defmt::info!("ui_test demarre — premier rendu (MainMenu)");
     critical_section::with(|cs| {
-        let state = SHARED_STATE.borrow(cs).borrow();
-        let _ = screens.draw(&mut display, &state);
+        ENCODER.borrow(cs).replace(Some(encoder));
+        ALARM.borrow(cs).replace(Some(alarm));
+        SCREENS.borrow(cs).replace(Some(Screens::new()));
     });
 
-    // Redessine uniquement sur événement (rotation/clic) : un rendu complet
-    // à 320x240 sur SPI à 16 MHz prend un temps non négligeable, inutile de
-    // le refaire à chaque tour de boucle de poll (1 ms) sans rien de
-    // nouveau à afficher.
-    //
-    // Poll à 1 ms plutôt que 10 : RotaryEncoder::poll (un seul front par
-    // cycle de quadrature) manque ou lit à moitié les transitions à une
-    // cadence trop lente par rapport à une rotation manuelle normale (un
-    // cycle peut survenir en 10-20 ms) — constaté sur matériel réel comme
-    // du mauvais sens détecté par intermittence. Cf. doc de
-    // `drivers::encoder`.
-    loop {
-        match encoder.poll() {
-            EncoderEvent::RotateClockwise => {
-                defmt::info!("rotation horaire");
-                screens.right_turn();
-                critical_section::with(|cs| {
-                    let state = SHARED_STATE.borrow(cs).borrow();
-                    let _ = screens.draw(&mut display, &state);
-                });
-            }
-            EncoderEvent::RotateCounterClockwise => {
-                defmt::info!("rotation anti-horaire");
-                screens.left_turn();
-                critical_section::with(|cs| {
-                    let state = SHARED_STATE.borrow(cs).borrow();
-                    let _ = screens.draw(&mut display, &state);
-                });
-            }
-            EncoderEvent::ButtonPressed => {
-                defmt::info!("bouton presse");
-                screens.click();
-                critical_section::with(|cs| {
-                    let state = SHARED_STATE.borrow(cs).borrow();
-                    let _ = screens.draw(&mut display, &state);
-                });
-            }
-            EncoderEvent::None => {}
-        }
-        timer.delay_ms(1);
+    // Sûr : ENCODER/ALARM/SCREENS sont déposés juste au-dessus, avant que
+    // l'interruption ne puisse jamais se déclencher.
+    unsafe {
+        pac::NVIC::unmask(pac::Interrupt::TIMER_IRQ_0);
     }
+
+    defmt::info!("ui_test demarre — premier rendu (MainMenu)");
+
+    // `Screens`/`SHARED_STATE` sont partagés avec l'ISR : empruntés depuis
+    // la fermeture passée à `render`, rappelée une fois par bande.
+    //
+    // Chronométrage : `Timer` est `Copy` (juste un accès aux registres
+    // matériels), capturer une copie dans la fermeture ne pose pas de
+    // problème de possession face au `timer` utilisé plus haut. Sert à
+    // vérifier concrètement l'effet des optimisations (framebuffer,
+    // interruption, vitesse SPI) plutôt que de se fier à une impression —
+    // à retirer si le log devient gênant une fois la performance jugée
+    // suffisante.
+    let redraw = |display: &mut FramebufferedDisplay<_, _>| {
+        let start = timer.get_counter();
+        let _ = display.render(|target| {
+            critical_section::with(|cs| {
+                if let Some(screens) = SCREENS.borrow(cs).borrow().as_ref() {
+                    let state = SHARED_STATE.borrow(cs).borrow();
+                    screens.draw(target, &state)
+                } else {
+                    Ok(())
+                }
+            })
+        });
+        let elapsed = timer.get_counter() - start;
+        defmt::info!("redraw termine en {} ms", elapsed.to_millis());
+    };
+
+    redraw(&mut display);
+
+    loop {
+        let dirty = critical_section::with(|cs| {
+            let was_dirty = DIRTY.borrow(cs).get();
+            DIRTY.borrow(cs).set(false);
+            was_dirty
+        });
+
+        if dirty {
+            redraw(&mut display);
+        }
+    }
+}
+
+/// Configure GP`pin` en sortie push-pull logicielle (CS/DC/RESET), démarrée
+/// à l'état bas — cf. `screen_test`.
+///
+/// # Safety
+/// `new_pin` exige qu'aucune autre instance de `Pin` pour cette broche
+/// n'existe en parallèle. `Pins::new(...)` (appelé juste avant, pour ses
+/// effets de bord de sortie de reset) réserve bien un champ typé
+/// `pins.gpio<N>` pour ce même numéro, mais ce champ n'est ni lu ni écrit
+/// nulle part dans ce fichier : aucun accès concurrent réel aux registres
+/// n'en résulte.
+fn configure_output_pin(pin: u8) -> Pin<DynPinId, FunctionSio<SioOutput>, DynPullType> {
+    let id = DynPinId { bank: DynBankId::Bank0, num: pin };
+    let raw = unsafe { new_pin(id) };
+    let mut out = raw
+        .try_into_function::<FunctionSio<SioOutput>>()
+        .ok()
+        .expect("SIO est une fonction valide sur toute broche de Bank0");
+    out.set_pull_type(DynPullType::None);
+    let _ = out.set_low();
+    out
+}
+
+/// Configure GP`pin` en entrée avec pull-up interne (broches encodeur) —
+/// cf. `encoder_test`.
+///
+/// # Safety
+/// Même raisonnement que `configure_output_pin`.
+fn configure_input_pin(pin: u8) -> Pin<DynPinId, FunctionSio<SioInput>, DynPullType> {
+    let id = DynPinId { bank: DynBankId::Bank0, num: pin };
+    let raw = unsafe { new_pin(id) };
+    let mut in_pin = raw
+        .try_into_function::<FunctionSio<SioInput>>()
+        .ok()
+        .expect("SIO est une fonction valide sur toute broche de Bank0");
+    in_pin.set_pull_type(DynPullType::Up);
+    in_pin
 }
