@@ -19,6 +19,17 @@
 //! sortiront inversés ou bruités — observable directement dans les logs
 //! ci-dessous, à ajuster si besoin une fois testé.
 //!
+//! # Cadence de poll
+//!
+//! `RotaryEncoder::poll` ne regarde qu'un front montant sur A et lit B à
+//! cet instant précis — pas de machine à états complète sur les 4
+//! transitions de quadrature. Un poll trop lent par rapport à la vitesse
+//! de rotation manque des transitions ou les lit à moitié faites (A et B
+//! pas encore synchrones), ce qui peut renvoyer le mauvais sens sans que
+//! rien ne soit cassé côté câblage. 1 ms laisse largement plus de marge
+//! que les 10 ms d'origine face à un cycle de quadrature complet, qui peut
+//! survenir en 10-20 ms à vitesse de rotation normale.
+//!
 //! RP2040 uniquement pour l'instant, même limite que les autres bins de
 //! bring-up. Derrière la feature `bin-encoder-test` (désactivée par
 //! défaut) pour ne pas être construit par les jobs CI `cargo check` sur
@@ -108,7 +119,7 @@ fn main() -> ! {
     let mut encoder = RotaryEncoder::new(pin_a, pin_b, pin_sw);
 
     defmt::info!(
-        "encoder_test demarre — A=GP{} B=GP{} SW=GP{}, poll toutes les 10ms",
+        "encoder_test demarre — A=GP{} B=GP{} SW=GP{}, poll toutes les 1ms",
         PIN_ENCODER_A,
         PIN_ENCODER_B,
         PIN_ENCODER_SW
@@ -121,6 +132,6 @@ fn main() -> ! {
             EncoderEvent::ButtonPressed => defmt::info!("bouton presse"),
             EncoderEvent::None => {}
         }
-        timer.delay_ms(10);
+        timer.delay_ms(1);
     }
 }
