@@ -39,6 +39,11 @@ bin-relay-test = []
 # `cargo check` sur les autres cibles ne tentent pas de le construire.
 bin-encoder-test = []
 
+# N'active rien à elle seule — sert uniquement de garde via `required-features`
+# sur `[[bin]] bme_test` (RP2040 uniquement), pour que les jobs CI
+# `cargo check` sur les autres cibles ne tentent pas de le construire.
+bin-bme-test = []
+
 [[bin]]
 name = "identify_temp_sensors"
 path = "src/bin/identify_temp_sensors.rs"
@@ -58,6 +63,11 @@ required-features = ["bin-relay-test"]
 name = "encoder_test"
 path = "src/bin/encoder_test.rs"
 required-features = ["bin-encoder-test"]
+
+[[bin]]
+name = "bme_test"
+path = "src/bin/bme_test.rs"
+required-features = ["bin-bme-test"]
 
 [dependencies]
 cortex-m = "0.7"
