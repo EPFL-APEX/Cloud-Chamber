@@ -32,6 +32,10 @@ pub mod bme280;
 /// Driver ABP2 : capteur de pression Honeywell via I²C.
 pub mod abp2;
 
+/// Driver écran ILI9341 (SPI) avec framebuffer RAM bandé pour un rendu
+/// rapide — cf. doc de module pour le détail.
+pub mod display;
+
 /// Fonctions de régulation (hystérésis, PID)
 pub mod regulate_method;
 
