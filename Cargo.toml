@@ -44,6 +44,11 @@ bin-encoder-test = []
 # `cargo check` sur les autres cibles ne tentent pas de le construire.
 bin-bme-test = []
 
+# N'active rien à elle seule — sert uniquement de garde via `required-features`
+# sur `[[bin]] screen_test` (RP2040 uniquement), pour que les jobs CI
+# `cargo check` sur les autres cibles ne tentent pas de le construire.
+bin-screen-test = []
+
 [[bin]]
 name = "identify_temp_sensors"
 path = "src/bin/identify_temp_sensors.rs"
@@ -69,6 +74,11 @@ name = "bme_test"
 path = "src/bin/bme_test.rs"
 required-features = ["bin-bme-test"]
 
+[[bin]]
+name = "screen_test"
+path = "src/bin/screen_test.rs"
+required-features = ["bin-screen-test"]
+
 [dependencies]
 cortex-m = "0.7"
 cortex-m-rt = "0.7"
@@ -84,6 +94,9 @@ embedded-graphics = "0.8"
 embedded-charts = { version = "0.3.0", default-features = false, features = ["floating-point", "animations", "color-support"], optional = true}
 tinybmp = "0.7.0"
 ili9341 = "0.6"
+# Interface SPI générique pour ili9341 (WriteOnlyDataCommand) — non tirée
+# transitivement, ili9341 dépend seulement du trait display-interface.
+display-interface-spi = "0.5"
 
 # Données
 num_enum = { version = "0.7", default-features = false }

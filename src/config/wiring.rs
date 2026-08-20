@@ -41,6 +41,15 @@ pub const PIN_ENCODER_B: u8 = 27;
 /// Bouton-poussoir intégré à l'encodeur.
 pub const PIN_ENCODER_SW: u8 = 28;
 
+/// Écran SPI (ILI9341, 320x240). SCK/MOSI passent par le périphérique SPI0
+/// matériel (broches valides pour ce rôle d'après la table RP2040) ; CS/DC/RESET
+/// sont de simples GPIO pilotés en logiciel.
+pub const PIN_SCREEN_SCK: u8 = 18;
+pub const PIN_SCREEN_MOSI: u8 = 19;
+pub const PIN_SCREEN_CS: u8 = 22;
+pub const PIN_SCREEN_DC: u8 = 16;
+pub const PIN_SCREEN_RESET: u8 = 17;
+
 // ─── Adresse I²C du capteur de pression ABP2 (chambre) ─────────────────────────
 
 /// TODO CÂBLAGE : reprend l'ancienne adresse basse-pression (0x28) en
