@@ -194,8 +194,15 @@ fn main() -> ! {
 
     // Redessine uniquement sur événement (rotation/clic) : un rendu complet
     // à 320x240 sur SPI à 16 MHz prend un temps non négligeable, inutile de
-    // le refaire à chaque tour de boucle de poll (10 ms) sans rien de
+    // le refaire à chaque tour de boucle de poll (1 ms) sans rien de
     // nouveau à afficher.
+    //
+    // Poll à 1 ms plutôt que 10 : RotaryEncoder::poll (un seul front par
+    // cycle de quadrature) manque ou lit à moitié les transitions à une
+    // cadence trop lente par rapport à une rotation manuelle normale (un
+    // cycle peut survenir en 10-20 ms) — constaté sur matériel réel comme
+    // du mauvais sens détecté par intermittence. Cf. doc de
+    // `drivers::encoder`.
     loop {
         match encoder.poll() {
             EncoderEvent::RotateClockwise => {
@@ -224,6 +231,6 @@ fn main() -> ! {
             }
             EncoderEvent::None => {}
         }
-        timer.delay_ms(10);
+        timer.delay_ms(1);
     }
 }
