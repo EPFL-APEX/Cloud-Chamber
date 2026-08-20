@@ -16,9 +16,9 @@ use crate::cloud_chamber_hal::config::NUMBER_OF_TEMP_SENSOR;
 /// Bus 1-Wire pour les DS18B20 (avec pull-up 4.7 kΩ externe)
 pub const PIN_ONEWIRE: u8 = 23;
 /// I²C SDA pour les capteurs
-pub const PIN_I2C_SDA: u8 = 21;
+pub const PIN_I2C_SDA: u8 = 20;
 /// I²C SCL pour les capteurs
-pub const PIN_I2C_SCL: u8 = 20;
+pub const PIN_I2C_SCL: u8 = 21;
 /// GPIO de sortie pour le relais de sécurité compresseur
 pub const PIN_COMPRESSOR_RELAY: u8 = 5;
 /// TODO CÂBLAGE : broches provisoires (GP17/GP18, suite de
