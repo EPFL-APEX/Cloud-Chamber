@@ -1,4 +1,4 @@
-//! Driver écran ILI9341 (320×240, SPI) avec framebuffer RAM bandé.
+//! Driver écran ILI9341 (320×240, SPI) avec framebuffer RAM.
 //!
 //! # Pourquoi un framebuffer plutôt que dessiner directement sur l'écran
 //!
@@ -10,24 +10,24 @@
 //! d'une seule — constaté sur matériel réel : plusieurs secondes pour
 //! dessiner un menu, même en `--release`.
 //!
-//! [`FramebufferedDisplay`] dessine plutôt dans une bande de RAM (écritures
-//! quasi gratuites, aucune transaction SPI), puis transfère toute la bande
-//! à l'écran en un seul bloc via `Ili9341::draw_raw_slice`.
+//! [`FramebufferedDisplay`] dessine plutôt dans une zone de RAM (écritures
+//! quasi gratuites, aucune transaction SPI), puis transfère l'écran entier
+//! en un seul bloc via `Ili9341::draw_raw_slice`.
 //!
-//! # Pourquoi bandé plutôt que plein écran
+//! # Plein écran plutôt que bandé
 //!
-//! Un framebuffer plein écran (320×240×2 = 150 Ko) tiendrait en RAM au
-//! sens du linker, mais rp-hal place `.data`/`.bss`/`.uninit` en haut de
-//! la RAM et laisse tout le bas à la pile (pour qu'un débordement de pile
-//! tombe en mémoire non mappée plutôt que d'écraser les statics) — vérifié
+//! Le framebuffer fait 320×240×2 = 150 Ko — plein écran, pas bandé.
+//! `BAND_HEIGHT` reste paramétrable (mécanisme conservé pour re-réduire la
+//! RAM utilisée si besoin un jour), mais vaut aujourd'hui [`SCREEN_HEIGHT`]
+//! (une seule "bande" = l'écran entier, une seule transaction SPI). Vérifié
 //! par lecture directe des symboles `_stack_start`/`_stack_end` du linker
-//! sur un binaire réel, un plein écran laisserait encore une marge de pile
-//! confortable (~104 Ko sur `ui_test`), mais deux bandes d'une demi-image
-//! chacune ([`BAND_HEIGHT`], 320×120×2 = 75 Ko) laissent une marge encore
-//! plus large (~180 Ko, vérifié) pour tout ce qui grandira dans cette UI
-//! par la suite — pour un coût négligeable : la fonction de dessin est
-//! rejouée une fois par bande, en RAM donc quasi gratuit face au coût réel
-//! qui est le nombre de transactions SPI, pas le volume de données.
+//! sur un binaire réel (`ui_test`) : rp-hal place `.data`/`.bss`/`.uninit`
+//! en haut de la RAM et laisse tout le bas à la pile (pour qu'un
+//! débordement de pile tombe en mémoire non mappée plutôt que d'écraser
+//! les statics) — même avec les 150 Ko du plein écran, la marge de pile
+//! restante est d'environ 104 Ko, largement suffisante. L'ancienne version
+//! à deux bandes rejouait `draw_fn` deux fois par redessin (une fois par
+//! bande) ; en plein écran, une seule fois.
 //!
 //! # Utilisation
 //!
@@ -52,8 +52,11 @@ use ili9341::Ili9341;
 pub const SCREEN_WIDTH: usize = 320;
 /// Hauteur de l'écran ILI9341 en pixels (orientation paysage).
 pub const SCREEN_HEIGHT: usize = 240;
-/// Hauteur d'une bande du framebuffer — cf. doc de module ("Pourquoi bandé").
-pub const BAND_HEIGHT: usize = SCREEN_HEIGHT / 2;
+/// Hauteur d'une bande du framebuffer — cf. doc de module ("Plein écran
+/// plutôt que bandé"). Vaut aujourd'hui l'écran entier ; réduire cette
+/// constante (ex. `SCREEN_HEIGHT / 2`) redonne le comportement bandé si la
+/// RAM redevient contrainte.
+pub const BAND_HEIGHT: usize = SCREEN_HEIGHT;
 
 /// Écran ILI9341 avec framebuffer RAM bandé — cf. doc de module.
 pub struct FramebufferedDisplay<IFACE, RESET> {

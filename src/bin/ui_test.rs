@@ -200,10 +200,19 @@ fn main() -> ! {
 
     // Turbofish DS=8 (taille de trame en bits) : plusieurs impls existent
     // (4/5/8...), rien ne force le choix sans cette annotation explicite.
+    //
+    // 32 MHz : doublé depuis les 16 MHz initiaux. L'ILI9341 est souvent
+    // documenté prudemment (~10-15 MHz) mais couramment poussé à 40 MHz+
+    // sur un câblage court et propre — 32 MHz reste une marge raisonnable
+    // sans matériel sous la main pour vérifier le point de rupture réel. Si
+    // l'écran affiche du bruit visuel (pixels aléatoires, lignes
+    // corrompues), c'est le signe d'être allé trop loin : rebaisser cette
+    // valeur (le maximum matériel du RP2040 est peripheral_clock / 2, soit
+    // ~62.5 MHz à l'horloge système par défaut).
     let spi = Spi::<_, _, _, 8>::new(pac.SPI0, (tx, sck)).init(
         &mut pac.RESETS,
         clocks.peripheral_clock.freq(),
-        16_000_000u32.Hz(),
+        32_000_000u32.Hz(),
         MODE_0,
     );
 
@@ -252,7 +261,16 @@ fn main() -> ! {
 
     // `Screens`/`SHARED_STATE` sont partagés avec l'ISR : empruntés depuis
     // la fermeture passée à `render`, rappelée une fois par bande.
+    //
+    // Chronométrage : `Timer` est `Copy` (juste un accès aux registres
+    // matériels), capturer une copie dans la fermeture ne pose pas de
+    // problème de possession face au `timer` utilisé plus haut. Sert à
+    // vérifier concrètement l'effet des optimisations (framebuffer,
+    // interruption, vitesse SPI) plutôt que de se fier à une impression —
+    // à retirer si le log devient gênant une fois la performance jugée
+    // suffisante.
     let redraw = |display: &mut FramebufferedDisplay<_, _>| {
+        let start = timer.get_counter();
         let _ = display.render(|target| {
             critical_section::with(|cs| {
                 if let Some(screens) = SCREENS.borrow(cs).borrow().as_ref() {
@@ -263,6 +281,8 @@ fn main() -> ! {
                 }
             })
         });
+        let elapsed = timer.get_counter() - start;
+        defmt::info!("redraw termine en {} ms", elapsed.to_millis());
     };
 
     redraw(&mut display);
