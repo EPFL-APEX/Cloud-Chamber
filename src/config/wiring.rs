@@ -14,26 +14,41 @@ use crate::cloud_chamber_hal::config::NUMBER_OF_TEMP_SENSOR;
 // ─── Broches GPIO (numéros GP du RP2040/RP2350) ───────────────────────────────
 
 /// Bus 1-Wire pour les DS18B20 (avec pull-up 4.7 kΩ externe)
-pub const PIN_ONEWIRE: u8 = 15;
+pub const PIN_ONEWIRE: u8 = 23;
 /// I²C SDA pour les capteurs
-pub const PIN_I2C_SDA: u8 = 4;
+pub const PIN_I2C_SDA: u8 = 20;
 /// I²C SCL pour les capteurs
-pub const PIN_I2C_SCL: u8 = 5;
+pub const PIN_I2C_SCL: u8 = 21;
 /// GPIO de sortie pour le relais de sécurité compresseur
-pub const PIN_COMPRESSOR_RELAY: u8 = 16;
+pub const PIN_COMPRESSOR_RELAY: u8 = 5;
 /// TODO CÂBLAGE : broches provisoires (GP17/GP18, suite de
 /// `PIN_COMPRESSOR_RELAY`), jamais vérifiées sur le montage réel — à
 /// confirmer avant tout bring-up matériel.
-pub const PIN_HV_RELAY: u8 = 17;
-pub const PIN_ISO_HEATER_RELAY: u8 = 18;
+pub const PIN_HV_RELAY: u8 = 14;
+pub const PIN_ISO_HEATER_RELAY: u8 = 9;
 /// TODO CÂBLAGE : broches provisoires (suite de `PIN_ISO_HEATER_RELAY`),
 /// jamais assignées sur le montage réel. Les drivers `drivers::pump::Pump`,
 /// `drivers::lights::Lights` et `drivers::window_heater::WindowHeater`
 /// existent déjà mais n'étaient pas encore référencés ici — à confirmer
 /// avant tout bring-up matériel, comme les broches ci-dessus.
-pub const PIN_PUMP_RELAY: u8 = 19;
-pub const PIN_LIGHTS_RELAY: u8 = 20;
+pub const PIN_PUMP_RELAY: u8 = 7;
+pub const PIN_LIGHTS_RELAY: u8 = 8;
 pub const PIN_WINDOW_HEATER_RELAY: u8 = 21;
+
+/// Encodeur rotatif de l'UI (quadrature) — cf. `drivers::encoder`.
+pub const PIN_ENCODER_A: u8 = 26;
+pub const PIN_ENCODER_B: u8 = 27;
+/// Bouton-poussoir intégré à l'encodeur.
+pub const PIN_ENCODER_SW: u8 = 28;
+
+/// Écran SPI (ILI9341, 320x240). SCK/MOSI passent par le périphérique SPI0
+/// matériel (broches valides pour ce rôle d'après la table RP2040) ; CS/DC/RESET
+/// sont de simples GPIO pilotés en logiciel.
+pub const PIN_SCREEN_SCK: u8 = 18;
+pub const PIN_SCREEN_MOSI: u8 = 19;
+pub const PIN_SCREEN_CS: u8 = 22;
+pub const PIN_SCREEN_DC: u8 = 16;
+pub const PIN_SCREEN_RESET: u8 = 17;
 
 // ─── Adresse I²C du capteur de pression ABP2 (chambre) ─────────────────────────
 
@@ -58,4 +73,7 @@ pub const TEMP_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
     "entree_evaporateur",
     "sortie_evaporateur",
     "base_chambre",
+    "",
+    "",
+    "",
 ];

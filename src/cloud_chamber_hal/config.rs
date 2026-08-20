@@ -14,12 +14,12 @@
 //! INFO ds{i}) avant de faire confiance à ces valeurs sur un nouveau montage.
 
 /// Nombre de sondes de température (DS18B20 sur le bus 1-Wire).
-pub const NUMBER_OF_TEMP_SENSOR: usize = 5;
+pub const NUMBER_OF_TEMP_SENSOR: usize = 8;
 /// Nombre de capteurs de pression (1 ABP2, pression chambre — pas de mesure
 /// séparée basse/haute pression circuit réfrigérant).
 pub const NUMBER_OF_PRESSURE_SENSOR: usize = 1;
 /// Nombre d'ampèremètres.
-pub const NUMBER_OF_AMPMETER: usize = 1;
+pub const NUMBER_OF_AMPMETER: usize = 0;
 
 /// Index de la sonde base-chambre (ds4) — cible du refroidissement.
 pub const CHAMBER_TEMP_IDX: usize = 4;
