@@ -10,11 +10,15 @@
 //! # Non porté
 //!
 //! `SensorSnapshot` ne modélise pas le BME280 (pas de case ambiante,
-//! humidité, pression atmosphérique) — la ligne BME280 et l'indicateur de
-//! sursaturation IPA de l'original (qui a besoin de la température
-//! ambiante) ne sont donc pas représentables tels quels. Omis plutôt que
-//! d'inventer une donnée. À revoir si `cloud_chamber_hal`/`SensorSnapshot`
-//! gagne un jour une catégorie de mesure ambiante dédiée.
+//! humidité, pression atmosphérique) : la ligne BME280 de l'original n'est
+//! pas représentable telle quelle. Omise plutôt que d'inventer une donnée.
+//! À revoir si `cloud_chamber_hal`/`SensorSnapshot` gagne un jour une
+//! catégorie de mesure ambiante dédiée.
+//!
+//! L'indicateur de sursaturation, lui, était dans le même cas et ne l'est
+//! plus : il prend ds3 (`ISO_TEMP_IDX`, sonde du thermostat feutre) comme
+//! point chaud au lieu de l'ambiante du BME280. Voir `logic::saturation`,
+//! qui porte aussi la réserve sur l'identité réelle de ds3.
 
 use core::fmt::Write as _;
 use heapless::String;
@@ -30,13 +34,15 @@ use embedded_graphics::{
 };
 
 use crate::{
-    cloud_chamber_hal::config::{CHAMBER_PRESSURE_IDX, CHAMBER_TEMP_IDX},
+    cloud_chamber_hal::config::{CHAMBER_PRESSURE_IDX, CHAMBER_TEMP_IDX, ISO_TEMP_IDX},
     config::operating::{SATURATION_TARGET_C, TARGET_CHAMBER_TEMP},
     config::wiring::TEMP_LABELS,
-    logic::{cooling::CoolingPhase, security::SafetyCause, stopping::StoppingPhase},
+    logic::{cooling::CoolingPhase, saturation, security::SafetyCause, stopping::StoppingPhase},
     shared::data::{SharedState, SystemTask},
     ui::theme,
 };
+
+use super::widgets::ProgressBar;
 
 fn phase_label(task: SystemTask) -> &'static str {
     use CoolingPhase::*;
@@ -183,8 +189,46 @@ impl<'a> StatsScreen<'a> {
                 .draw(display)?;
         }
 
-        // BME280 (ambiance) et sursaturation IPA : non représentables,
-        // cf. doc du module en tête de fichier.
+        // ─── Sursaturation ────────────────────────────────────────────────────
+        // Le seul indicateur qui réponde directement à « peut-on voir des
+        // traces maintenant » — d'où sa place en bas, en pleine largeur,
+        // lisible de loin. Cf. `logic::saturation` pour ce que vaut ce
+        // rapport, et pour la réserve sur l'identité réelle de ds3.
+        {
+            // Une seule sonde manquante suffit à tout annuler : une barre
+            // calculée sur une seule extrémité du gradient n'a aucun sens.
+            let ratio = match (snap.temps[ISO_TEMP_IDX], snap.temps[CHAMBER_TEMP_IDX]) {
+                (Some(warm), Some(cold)) => saturation::ratio(warm.value, cold.value),
+                _ => None,
+            };
+            let progress = ratio.and_then(saturation::scale);
+
+            let mut s: String<28> = String::new();
+            match ratio {
+                Some(r) => write!(s, "Sursaturation: x{:.0}", r),
+                None => write!(s, "Sursaturation: ---"),
+            }
+            .ok();
+            Text::new(s.as_str(), Point::new(4, 172), MonoTextStyle::new(&FONT_6X13, theme::TEXT_COLOR))
+                .draw(display)?;
+
+            // Vert seulement à 100 %, c'est-à-dire au point de
+            // fonctionnement — pas en route vers lui.
+            let color = match progress {
+                Some(p) if p >= 1.0 => theme::SUCCESS_COLOR,
+                _ => theme::WARNING_COLOR,
+            };
+            ProgressBar {
+                top_left: Point::new(4, 180),
+                size: Size::new(312, 16),
+                ratio: progress,
+                color,
+            }
+            .draw(display)?;
+        }
+
+        // BME280 (ambiance) : non représentable, cf. doc du module en tête
+        // de fichier.
 
         Ok(())
     }
@@ -197,8 +241,24 @@ mod tests {
     use super::*;
     use embedded_graphics_simulator::SimulatorDisplay;
 
+    use crate::cloud_chamber_hal::measurement::Measurement;
+    use crate::cloud_chamber_hal::timer::Instant;
+    use crate::cloud_chamber_hal::units::Celsius;
+    use crate::shared::data::SensorSnapshot;
+    use crate::shared::settings::with_isolated_settings;
+
     fn make_display() -> SimulatorDisplay<Rgb565> {
         SimulatorDisplay::new(Size::new(320, 240))
+    }
+
+    /// Chambre en cours de refroidissement : feutre à la consigne, plaque
+    /// à mi-chemin. Les deux sondes de `logic::saturation` sont renseignées.
+    fn cooling_snapshot() -> SensorSnapshot {
+        let mut snap = SensorSnapshot::default();
+        let now = Instant::from_micros(0);
+        snap.temps[ISO_TEMP_IDX] = Some(Measurement::new(now, Celsius(40.0)));
+        snap.temps[CHAMBER_TEMP_IDX] = Some(Measurement::new(now, Celsius(-30.0)));
+        snap
     }
 
     #[test]
@@ -232,5 +292,35 @@ mod tests {
             new_data: false,
         };
         StatsScreen { state: &state }.draw(&mut d).unwrap();
+    }
+
+    /// Le cas qui compte pour la barre : les deux sondes présentes. Les
+    /// autres tests de ce module tournent tous sur un snapshot vide, donc
+    /// sans jamais entrer dans le calcul de sursaturation.
+    #[test]
+    fn saturation_bar_screenshot() -> Result<(), core::convert::Infallible> {
+        use embedded_graphics_simulator::OutputSettingsBuilder;
+
+        // `saturation::scale` lit le static de réglages pour sa référence
+        // — verrou obligatoire, cf. `with_isolated_settings`.
+        with_isolated_settings(|| {
+            let mut display = make_display();
+            let state = SharedState {
+                snapshot: cooling_snapshot(),
+                task: SystemTask::Cooling(CoolingPhase::SaturatingAirWithIpa),
+                new_data: true,
+            };
+            StatsScreen { state: &state }.draw(&mut display)?;
+
+            let path = std::env::args_os()
+                .nth(1)
+                .unwrap_or_else(|| "screenshots/Stats.png".into());
+            display
+                .to_rgb_output_image(&OutputSettingsBuilder::new().build())
+                .save_png(&path)
+                .expect("failed to save screenshot");
+
+            Ok(())
+        })
     }
 }

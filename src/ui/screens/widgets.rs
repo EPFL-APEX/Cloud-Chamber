@@ -84,7 +84,6 @@ impl<const N_LINES: usize, const SEPARATOR: bool> StatusLines<N_LINES, SEPARATOR
     }
 }
 
-/// Dessine l'icône de statut. Fonction séparée (pas une branche de `match`
 /// Une ligne de réglage : libellé + valeur déjà formatée par l'appelant.
 /// La valeur est un `&str` et non un nombre — c'est l'écran qui sait dans
 /// quelle unité et avec combien de décimales l'afficher.
@@ -159,6 +158,44 @@ impl<'a, const N_LINES: usize> SettingLines<'a, N_LINES> {
         }
 
         Ok(())
+    }
+}
+
+/// Barre de progression horizontale.
+///
+/// `ratio` est un `Option` et non un `f32` : une barre pilotée par des
+/// capteurs doit pouvoir dire « je ne sais pas » sans que chaque appelant
+/// réinvente le cas. `None` dessine le fond seul, complètement vide — un
+/// zéro mesuré, lui, garde son liseré, ce qui distingue les deux à l'œil.
+pub struct ProgressBar {
+    pub top_left: Point,
+    pub size: Size,
+    pub ratio: Option<f32>,
+    pub color: Rgb565,
+}
+
+impl ProgressBar {
+    pub fn draw<D>(&self, display: &mut D) -> Result<(), D::Error>
+    where
+        D: DrawTarget<Color = Rgb565> + OriginDimensions,
+    {
+        Rectangle::new(self.top_left, self.size)
+            .into_styled(PrimitiveStyle::with_fill(theme::ACCENT_COLOR))
+            .draw(display)?;
+
+        let Some(ratio) = self.ratio else {
+            return Ok(());
+        };
+
+        // La conversion flottant → entier sature en Rust : un `NaN` qui
+        // aurait échappé à l'appelant donne 0, pas une largeur aberrante.
+        let filled = (ratio.clamp(0.0, 1.0) * self.size.width as f32) as u32;
+
+        // Un liseré d'un pixel même à 0 % : sans lui, « mesure à zéro » et
+        // « pas de mesure » se ressemblent trop à l'écran.
+        Rectangle::new(self.top_left, Size::new(filled.max(1), self.size.height))
+            .into_styled(PrimitiveStyle::with_fill(self.color))
+            .draw(display)
     }
 }
 
