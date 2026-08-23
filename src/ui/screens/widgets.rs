@@ -21,7 +21,12 @@ use crate::ui::theme;
 /// Avancement d'une étape.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
+    /// Pas encore atteinte.
     Pending,
+    /// En cours — l'étape sur laquelle la machine travaille en ce moment.
+    /// Distincte de `Pending` : sans elle, une checklist de séquence
+    /// n'indique pas où on en est, seulement ce qui est déjà fini.
+    Active,
     Done,
     Failed,
 }
@@ -41,6 +46,10 @@ const ICON_MARGIN_RIGHT: i32 = 10;
 /// (`SEPARATOR`). Taille fixée à la compilation — pas d'allocation heap.
 pub struct StatusLines<const N_LINES: usize, const SEPARATOR: bool> {
     pub lines: [StatusLine; N_LINES],
+    /// Ordonnée de la première ligne — même rôle que sur [`SettingLines`] :
+    /// l'écran place la liste sous sa bande de titre sans avoir à
+    /// envelopper la cible de dessin.
+    pub top: i32,
 }
 
 impl<const N_LINES: usize, const SEPARATOR: bool> StatusLines<N_LINES, SEPARATOR> {
@@ -55,7 +64,7 @@ impl<const N_LINES: usize, const SEPARATOR: bool> StatusLines<N_LINES, SEPARATOR
         let separator_style = PrimitiveStyle::with_stroke(theme::ACCENT_COLOR, 1);
 
         for (i, line) in self.lines.iter().enumerate() {
-            let y = i as i32 * Self::LINE_HEIGHT;
+            let y = self.top + i as i32 * Self::LINE_HEIGHT;
 
             if SEPARATOR {
                 Line::new(Point::new(0, y), Point::new(WIDTH, y))
@@ -63,7 +72,14 @@ impl<const N_LINES: usize, const SEPARATOR: bool> StatusLines<N_LINES, SEPARATOR
                     .draw(display)?;
             }
 
-            Text::with_text_style(line.label, Point::new(10, y + 4), char_style, text_style)
+            // L'étape en cours est la seule mise en avant : libellé en
+            // couleur de sélection, les autres en texte normal.
+            let label_style = if line.status == Status::Active {
+                MonoTextStyle::new(&FONT_6X13, theme::HIGHLIGHT_COLOR)
+            } else {
+                char_style
+            };
+            Text::with_text_style(line.label, Point::new(10, y + 4), label_style, text_style)
                 .draw(display)?;
 
             let icon_top_left = Point::new(
@@ -74,7 +90,7 @@ impl<const N_LINES: usize, const SEPARATOR: bool> StatusLines<N_LINES, SEPARATOR
         }
 
         if SEPARATOR {
-            let y = N_LINES as i32 * Self::LINE_HEIGHT;
+            let y = self.top + N_LINES as i32 * Self::LINE_HEIGHT;
             Line::new(Point::new(0, y), Point::new(WIDTH, y))
                 .into_styled(separator_style)
                 .draw(display)?;
@@ -84,7 +100,6 @@ impl<const N_LINES: usize, const SEPARATOR: bool> StatusLines<N_LINES, SEPARATOR
     }
 }
 
-/// Dessine l'icône de statut. Fonction séparée (pas une branche de `match`
 /// Une ligne de réglage : libellé + valeur déjà formatée par l'appelant.
 /// La valeur est un `&str` et non un nombre — c'est l'écran qui sait dans
 /// quelle unité et avec combien de décimales l'afficher.
@@ -163,7 +178,7 @@ impl<'a, const N_LINES: usize> SettingLines<'a, N_LINES> {
 }
 
 /// Dessine l'icône de statut. Fonction séparée (pas une branche de `match`
-/// qui retournerait une valeur `Drawable` commune) car les trois statuts
+/// qui retournerait une valeur `Drawable` commune) car les statuts
 /// dessinent des primitives de types concrets différents (`Circle` vs deux
 /// `Line`) — chaque branche appelle `.draw()` elle-même.
 fn draw_status_icon<D>(display: &mut D, top_left: Point, status: Status) -> Result<(), D::Error>
@@ -175,6 +190,12 @@ where
         // accès à une frame/au temps pour animer quoi que ce soit.
         Status::Pending => Circle::new(top_left, ICON_SIZE as u32)
             .into_styled(PrimitiveStyle::with_stroke(theme::DIM_COLOR, 2))
+            .draw(display),
+
+        // Même cercle que `Pending`, mais plein et en couleur d'alerte —
+        // se distingue au premier coup d'œil sans animation.
+        Status::Active => Circle::new(top_left, ICON_SIZE as u32)
+            .into_styled(PrimitiveStyle::with_fill(theme::WARNING_COLOR))
             .draw(display),
 
         Status::Done => {
@@ -215,9 +236,10 @@ mod tests {
         let widget = StatusLines::<3, false> {
             lines: [
                 StatusLine { label: "Etape 1", status: Status::Done },
-                StatusLine { label: "Etape 2", status: Status::Pending },
+                StatusLine { label: "Etape 2", status: Status::Active },
                 StatusLine { label: "Etape 3", status: Status::Failed },
             ],
+            top: 0,
         };
         widget.draw(&mut d).unwrap();
     }
@@ -230,6 +252,7 @@ mod tests {
                 StatusLine { label: "A", status: Status::Pending },
                 StatusLine { label: "B", status: Status::Pending },
             ],
+            top: 0,
         };
         widget.draw(&mut d).unwrap();
     }
@@ -237,8 +260,37 @@ mod tests {
     #[test]
     fn draws_empty_list() {
         let mut d = make_display();
-        let widget = StatusLines::<0, false> { lines: [] };
+        let widget = StatusLines::<0, false> { lines: [], top: 0 };
         widget.draw(&mut d).unwrap();
+    }
+
+    /// `top` décale toute la liste : une liste posée plus bas ne doit rien
+    /// dessiner au-dessus de son ordonnée de départ.
+    #[test]
+    fn top_offset_moves_the_whole_list_down() {
+        use embedded_graphics::{geometry::Point, pixelcolor::RgbColor};
+
+        let mut d = make_display();
+        let widget = StatusLines::<2, true> {
+            lines: [
+                StatusLine { label: "A", status: Status::Done },
+                StatusLine { label: "B", status: Status::Active },
+            ],
+            top: 100,
+        };
+        widget.draw(&mut d).unwrap();
+
+        // Rien n'est dessiné au-dessus de `top` (le simulateur initialise
+        // la surface en noir).
+        for y in 0..100 {
+            for x in 0..320 {
+                assert_eq!(
+                    d.get_pixel(Point::new(x, y)),
+                    Rgb565::BLACK,
+                    "pixel ({x}, {y}) dessine au-dessus de top",
+                );
+            }
+        }
     }
 
     #[test]
@@ -250,9 +302,10 @@ mod tests {
             lines: [
                 StatusLine { label: "Verification capteurs", status: Status::Done },
                 StatusLine { label: "Pre-refroidissement", status: Status::Done },
-                StatusLine { label: "Saturation IPA", status: Status::Pending },
-                StatusLine { label: "Haute tension", status: Status::Failed },
+                StatusLine { label: "Saturation IPA", status: Status::Active },
+                StatusLine { label: "Haute tension", status: Status::Pending },
             ],
+            top: 0,
         };
         widget.draw(&mut display)?;
 

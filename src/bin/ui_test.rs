@@ -39,14 +39,24 @@
 //!
 //! # Écrans qui vont paniquer (attendu, pas un bug matériel)
 //!
-//! `ui::router::Screens` a plusieurs branches `todo!()` pour des écrans pas
-//! encore construits (état actuel du repo, cf. `src/ui/router.rs`) :
-//! - Depuis le menu principal, seuls **Réglages** (Settings) et
-//!   **Statistiques** (Stats, affichage seul) sont sûrs à ouvrir.
-//! - Les 4 autres items du menu (Contrôle manuel, Refroidissement en
-//!   cours, Données, Info) panniquent dès leur premier `draw()`.
-//! - Une fois sur Stats, tourner ou cliquer panique aussi (`right_turn`/
-//!   `left_turn`/`click` pas encore câblés pour cet écran).
+//! `ui::router::Screens` a encore des branches `todo!()` pour des écrans pas
+//! construits (état actuel du repo, cf. `src/ui/router.rs`) :
+//! - Depuis le menu principal, **Démarrer** (1er item, ouvre le suivi de
+//!   cycle), **Refroidissement en cours** (même écran, sans rien démarrer),
+//!   **Statistiques** et **Réglages** sont sûrs à ouvrir — y compris en
+//!   tournant/cliquant dedans.
+//! - Les 2 items restants (Données, Info) paniquent dès leur premier
+//!   `draw()`.
+//!
+//! # Démarrage d'un cycle
+//!
+//! Cliquer sur le premier item du menu écrit
+//! `SystemTask::Cooling(SensorCheck)` dans `SHARED_STATE.task` et bascule
+//! sur l'écran de suivi. Ce bin n'exécute **pas**
+//! `logic::control_loop::run()` (pas de capteurs ni d'actionneurs réels
+//! câblés ici) : l'état écrit reste donc figé sur `SensorCheck` et aucune
+//! phase n'avance. C'est le comportement attendu de ce bring-up — il
+//! vérifie le chemin UI → état partagé, pas la machine à états.
 //!
 //! RP2040 uniquement pour l'instant, même limite que les autres bins de
 //! bring-up. Derrière la feature `bin-ui-test` (désactivée par défaut)
@@ -150,6 +160,18 @@ fn TIMER_IRQ_0() {
             }
             EncoderEvent::ButtonPressed => {
                 screens.click();
+
+                // Un clic peut demander un changement d'état (premier item
+                // du menu : démarrage d'un cycle). L'écran ne fait que le
+                // demander — c'est ici qu'on l'applique, en réutilisant le
+                // jeton `cs` déjà pris ci-dessus (pas de section critique
+                // imbriquée). `logic::control_loop::tick()` adopte cette
+                // écriture au tour suivant.
+                if let Some(task) = screens.take_task_request() {
+                    SHARED_STATE.borrow_ref_mut(cs).task = task;
+                    defmt::info!("demande operateur : nouvel etat systeme");
+                }
+
                 DIRTY.borrow(cs).set(true);
             }
             EncoderEvent::None => {}
