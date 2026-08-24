@@ -16,20 +16,15 @@ use super::probing::{MeasurementHistory, ProbingPlan};
 /// Panique si un capteur ne retourne aucune mesure valide à l'initialisation
 /// (cf. `are_all_some()` ci-dessous) — pas de démarrage dégradé pour l'instant.
 ///
-/// `between_ticks` est appelé une fois par tour, après l'application des
-/// actionneurs. C'est là que l'appelant place ce qui doit vivre sur le même
-/// cœur sans posséder la boucle — en pratique le rafraîchissement de l'UI
-/// (cf. `src/main.rs`). Il doit rendre la main vite : tant qu'il tourne,
-/// aucun capteur n'est sondé et aucune décision de sécurité n'est prise.
-/// Le laisser bloquer, c'est retarder la boucle de contrôle d'autant.
-pub fn run<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Clk, F>(
+/// Cette boucle possède le cœur sur lequel elle tourne et n'en rend jamais
+/// la main. Sur la carte réelle elle occupe le cœur 1, l'UI gardant le
+/// cœur 0 (cf. `src/main.rs`).
+pub fn run<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Clk>(
     mut sensors: Sensors<Ts, Ps>,
     mut actuators: Actuators<Hv, Cool, Iso, Pump, Lights, Glass>,
     clock: Clk,
-    mut between_ticks: F,
 ) -> !
 where
-    F: FnMut(),
     Ts: DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
     Ps: BatchSensor<HectoPascal, NUMBER_OF_PRESSURE_SENSOR>,
     Hv: BinaryActuator,
@@ -65,7 +60,6 @@ where
             &mut sensors, &mut actuators, &mut phase, &mut safety,
             &mut measurement_history, probing_plan,
         );
-        between_ticks();
     }
 }
 

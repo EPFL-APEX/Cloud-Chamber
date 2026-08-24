@@ -8,25 +8,37 @@
 //! soit — phases, sécurité, régulation, navigation UI — vit ailleurs et
 //! est testé sur hôte.
 //!
-//! # Répartition entre les deux contextes d'exécution
+//! # Répartition entre les deux cœurs
 //!
-//! Un seul cœur, deux contextes :
+//! - **Cœur 1 : la boucle de contrôle.** `control_loop::run()` y possède le
+//!   cœur — sondage des capteurs, machine à états, sécurité, actionneurs.
+//!   Sa cadence est dominée par le bit-banging 1-Wire des DS18B20.
+//! - **Cœur 0 : l'interface.** Scrutation de l'encodeur sous interruption
+//!   `TIMER_IRQ_0` (1 ms), puis boucle d'affichage. Son rythme est
+//!   totalement découplé de celui du contrôle : l'écran ne ralentit plus
+//!   quand une lecture de température s'éternise.
 //!
-//! - **Interruption `TIMER_IRQ_0`** (toutes les 1 ms) : scrutation de
-//!   l'encodeur et routage de l'événement dans [`UiApp`]. Elle reste
-//!   préemptive pendant un transfert SPI bloquant, ce qui garantit qu'aucun
-//!   cran ni clic n'est perdu même en plein redessin.
-//! - **Boucle principale** : `control_loop::run()`, qui sonde les capteurs,
-//!   décide, applique les actionneurs, puis appelle `between_ticks` — où
-//!   l'on redessine l'écran s'il a changé. Le transfert SPI n'a rien à
-//!   faire dans une interruption, il vit donc ici.
+//! Les deux cœurs ne se parlent qu'à travers `shared::data::SHARED_STATE` et
+//! `shared::settings`, tous deux protégés par `critical_section`.
 //!
-//! Conséquence à connaître : le rafraîchissement de l'écran est cadencé par
-//! la boucle de contrôle, pas par l'encodeur. Un tour de boucle est dominé
-//! par le bit-banging 1-Wire des DS18B20 (lecture de `NUMBER_OF_TEMP_SENSOR`
-//! scratchpads), soit typiquement quelques dizaines de ms. L'affichage
-//! suit donc à ce rythme. Les *entrées*, elles, ne sont jamais perdues
-//! (interruption), seul le retour visuel peut accuser ce retard.
+//! ## Le piège à connaître : le spinlock est global
+//!
+//! Sur RP2040, `critical-section-impl` n'est pas un simple masquage
+//! d'interruptions : c'est un **spinlock matériel partagé par les deux
+//! cœurs**. Une section critique tenue longtemps sur un cœur met l'autre en
+//! attente active. C'est pourquoi rien ici ne dessine ni ne fait d'E/S sous
+//! verrou :
+//!
+//! - l'interruption encodeur ne fait qu'empiler l'événement dans [`EVENTS`]
+//!   et rend la main ;
+//! - la boucle d'affichage prend une **copie** de `SharedState` sous verrou
+//!   court, puis dessine hors verrou ;
+//! - [`UiApp`] n'est plus partagé du tout : il appartient à la boucle du
+//!   cœur 0, qui est seule à le toucher.
+//!
+//! Tenir le verrou pendant un rendu plein écran (des dizaines de ms)
+//! bloquerait le cœur 1 d'autant — y compris au milieu d'une séquence
+//! 1-Wire, dont le décodage dépend d'un timing à la microseconde.
 //!
 //! # Ce qui n'est pas encore câblé ici
 //!
@@ -71,6 +83,7 @@ use rp2040_hal::{
         OutputDriveStrength, Pin, Pins, PullUp, SioInput, SioOutput, new_pin,
     },
     i2c::{ValidatedPinScl, ValidatedPinSda},
+    multicore::{Multicore, Stack},
     pac::{self, interrupt},
     spi::{Spi, ValidatedPinSck, ValidatedPinTx},
     timer::{Alarm, Alarm0},
@@ -97,14 +110,15 @@ use cloud_chamber_firmware::drivers::display::FramebufferedDisplay;
 use cloud_chamber_firmware::drivers::ds18b20::{
     Ds18b20Bus, Ds18b20Sensors, Resolution, rp2040_adapter::Rp2040OpenDrain,
 };
-use cloud_chamber_firmware::drivers::encoder::RotaryEncoder;
+use cloud_chamber_firmware::drivers::encoder::{EncoderEvent, RotaryEncoder};
 use cloud_chamber_firmware::drivers::heater::Heater;
 use cloud_chamber_firmware::drivers::lights::Lights;
 use cloud_chamber_firmware::drivers::pump::Pump;
 use cloud_chamber_firmware::drivers::window_heater::WindowHeater;
 use cloud_chamber_firmware::logic::control_loop;
-use cloud_chamber_firmware::shared::data::{SHARED_STATE, SystemTask};
+use cloud_chamber_firmware::shared::data::{SHARED_STATE, SharedState, SystemTask};
 use cloud_chamber_firmware::ui::app::UiApp;
+use cloud_chamber_firmware::ui::navigator::Screen;
 
 /// Fréquence du cristal externe du Pico — cf. `hal::clocks::init_clocks_and_plls`.
 const XOSC_CRYSTAL_FREQ: u32 = 12_000_000;
@@ -131,6 +145,17 @@ const SCREEN_SPI_HZ: u32 = 32_000_000;
 /// faire, toutes les sorties de puissance passent par cette constante.
 const RELAY_DRIVE_STRENGTH: OutputDriveStrength = OutputDriveStrength::EightMilliAmps;
 
+/// Profondeur de la file d'événements encodeur — cf. [`EventQueue`].
+const EVENT_QUEUE_LEN: usize = 32;
+
+/// Taille de la pile du cœur 1, en mots de 32 bits (soit 8 Ko).
+///
+/// La boucle de contrôle n'y alloue rien de volumineux : historique de
+/// mesures et état de phase sont des structures de quelques centaines
+/// d'octets, et l'appel le plus profond est le bit-banging 1-Wire. 8 Ko
+/// laisse une marge confortable sans mordre inutilement sur la RAM.
+const CORE1_STACK_WORDS: usize = 2048;
+
 /// Résolution des DS18B20. 12 bits est la valeur usine ; c'est aussi la
 /// plus lente à convertir, mais `probe()` ne bloque pas dessus (conversion
 /// lancée à un tour, résultat lu au suivant).
@@ -149,12 +174,75 @@ type Encoder = RotaryEncoder<EncPin, EncPin, EncPin>;
 /// n'étant démasquée qu'après, l'ISR ne peut pas observer ce `None`.
 static ENCODER: Mutex<RefCell<Option<Encoder>>> = Mutex::new(RefCell::new(None));
 static ALARM: Mutex<RefCell<Option<Alarm0>>> = Mutex::new(RefCell::new(None));
-/// Toute l'UI dans un seul static : mutée par l'ISR (événements encodeur),
-/// lue par la boucle principale (dessin).
-static UI: Mutex<RefCell<Option<UiApp>>> = Mutex::new(RefCell::new(None));
 
-/// Scrutation de l'encodeur, toutes les 1 ms, indépendamment de ce que fait
-/// la boucle principale — y compris pendant un transfert SPI.
+/// Événements d'encodeur en attente de traitement par la boucle du cœur 0.
+///
+/// L'interruption ne fait qu'empiler ici ; c'est la boucle qui les applique
+/// à `UiApp`. Ce découplage est ce qui permet à `UiApp` de n'être partagé
+/// avec personne (donc de se dessiner hors section critique) tout en
+/// gardant une scrutation à 1 ms qui ne rate jamais un cran.
+static EVENTS: Mutex<RefCell<EventQueue>> = Mutex::new(RefCell::new(EventQueue::new()));
+
+/// Pile du cœur 1. Vit en `.bss`, donc prise sur la RAM restante — la pile
+/// du cœur 0 garde tout le bas de la RAM, où loge le framebuffer de 150 Ko.
+static CORE1_STACK: Stack<CORE1_STACK_WORDS> = Stack::new();
+
+/// File circulaire d'événements encodeur, à taille fixe.
+///
+/// 32 places : à 1 ms de scrutation et un rendu de quelques dizaines de ms,
+/// une rotation même rapide en produit une poignée entre deux passages de
+/// la boucle. Le débordement est compté et journalisé plutôt que silencieux
+/// — perdre un cran doit se voir.
+struct EventQueue {
+    buffer: [EncoderEvent; EVENT_QUEUE_LEN],
+    head: usize,
+    len: usize,
+    dropped: u32,
+}
+
+impl EventQueue {
+    const fn new() -> Self {
+        Self {
+            buffer: [EncoderEvent::None; EVENT_QUEUE_LEN],
+            head: 0,
+            len: 0,
+            dropped: 0,
+        }
+    }
+
+    /// Empile un événement. Sur file pleine, le nouvel événement est
+    /// abandonné (plutôt que d'écraser le plus ancien) : réordonner les
+    /// entrées serait pire que d'en perdre une, un clic ne doit jamais
+    /// doubler une rotation qui l'a précédé.
+    fn push(&mut self, event: EncoderEvent) {
+        if self.len == EVENT_QUEUE_LEN {
+            self.dropped = self.dropped.saturating_add(1);
+            return;
+        }
+        let tail = (self.head + self.len) % EVENT_QUEUE_LEN;
+        self.buffer[tail] = event;
+        self.len += 1;
+    }
+
+    fn pop(&mut self) -> Option<EncoderEvent> {
+        if self.len == 0 {
+            return None;
+        }
+        let event = self.buffer[self.head];
+        self.head = (self.head + 1) % EVENT_QUEUE_LEN;
+        self.len -= 1;
+        Some(event)
+    }
+
+    /// Relève le compteur de débordements et le remet à zéro.
+    fn take_dropped(&mut self) -> u32 {
+        core::mem::take(&mut self.dropped)
+    }
+}
+
+/// Scrutation de l'encodeur, toutes les 1 ms sur le cœur 0. Ne fait
+/// qu'empiler : aucune section critique longue, donc aucun risque de faire
+/// attendre le cœur 1 sur le spinlock (cf. doc de module).
 #[interrupt]
 fn TIMER_IRQ_0() {
     critical_section::with(|cs| {
@@ -168,21 +256,10 @@ fn TIMER_IRQ_0() {
             None => return,
         };
 
-        let mut ui_ref = UI.borrow(cs).borrow_mut();
-        let Some(app) = ui_ref.as_mut() else { return };
-
-        // L'état courant sert à refuser un démarrage si la machine tourne
-        // déjà. L'emprunt partagé se termine avec l'instruction, avant
-        // l'emprunt mutable plus bas.
-        let current = SHARED_STATE.borrow_ref(cs).task;
-
-        // L'UI ne fait que *demander* un changement d'état ; c'est ici qu'on
-        // l'applique, en réutilisant le jeton `cs` déjà pris (pas de section
-        // critique imbriquée). `control_loop::tick()` adopte l'écriture au
-        // tour suivant, via son mécanisme de réconciliation.
-        if let Some(task) = app.handle_event(event, current) {
-            SHARED_STATE.borrow_ref_mut(cs).task = task;
-            defmt::info!("demande operateur : nouvel etat systeme");
+        // `None` est le cas de très loin le plus fréquent (1000 scrutations
+        // par seconde) : ne rien empiler évite de saturer la file pour rien.
+        if event != EncoderEvent::None {
+            EVENTS.borrow(cs).borrow_mut().push(event);
         }
     });
 }
@@ -209,7 +286,7 @@ fn main() -> ! {
     // au bit-banging 1-Wire — sans avoir à la partager derrière un mutex.
     let mut timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
 
-    let sio = Sio::new(pac.SIO);
+    let mut sio = Sio::new(pac.SIO);
     // `Pins::new` reste nécessaire même si son API typée n'est pas utilisée
     // ensuite : c'est cet appel qui sort IO_BANK0/PADS_BANK0 de reset.
     let _pins = Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
@@ -276,10 +353,14 @@ fn main() -> ! {
     critical_section::with(|cs| {
         ENCODER.borrow(cs).replace(Some(encoder));
         ALARM.borrow(cs).replace(Some(alarm));
-        UI.borrow(cs).replace(Some(UiApp::new()));
     });
 
-    // Sûr : ENCODER/ALARM/UI sont déposés juste au-dessus, avant que
+    // `UiApp` n'est volontairement pas un static : il appartient à la
+    // boucle du cœur 0, seule à le toucher. L'interruption ne communique
+    // avec lui que par la file d'événements.
+    let mut app = UiApp::new();
+
+    // Sûr : ENCODER/ALARM sont déposés juste au-dessus, avant que
     // l'interruption ne puisse se déclencher.
     unsafe {
         pac::NVIC::unmask(pac::Interrupt::TIMER_IRQ_0);
@@ -287,7 +368,9 @@ fn main() -> ! {
 
     // Premier rendu : l'opérateur voit le menu pendant la découverte des
     // capteurs, qui prend un instant.
-    redraw(&mut display, timer);
+    let initial_state = critical_section::with(|cs| *SHARED_STATE.borrow_ref(cs));
+    redraw(&mut display, &app, &initial_state, timer);
+    app.take_redraw_request();
 
     // ─── Températures : DS18B20 sur 1-Wire ─────────────────────────────────
     configure_onewire_pin(PIN_ONEWIRE);
@@ -359,70 +442,105 @@ fn main() -> ! {
         glass_heater: WindowHeater::new(configure_relay_pin(PIN_WINDOW_HEATER_RELAY)),
     };
 
-    defmt::info!("cloud-chamber : boucle de controle");
-
-    // ─── Boucle de contrôle, UI intercalée entre les tours ─────────────────
+    // ─── Cœur 1 : la boucle de contrôle ───────────────────────────────────
     //
-    // `last_task` sert à redessiner quand `logic/` fait avancer une phase :
-    // ce changement ne passe par aucun événement d'encodeur, l'écran de
-    // suivi resterait donc figé jusqu'au prochain geste de l'opérateur.
+    // Capteurs et actionneurs sont *déplacés* sur le cœur 1, qui en devient
+    // seul propriétaire : aucun partage, donc aucun verrou sur le chemin
+    // chaud du contrôle. Tout ce qui traverse est dans `SHARED_STATE`.
+    let mut multicore = Multicore::new(&mut pac.PSM, &mut pac.PPB, &mut sio.fifo);
+    let core1 = &mut multicore.cores()[1];
+    let stack = CORE1_STACK
+        .take()
+        .expect("la pile du coeur 1 n'est reclamee qu'ici");
+
+    if let Err(e) = core1.spawn(stack, move || {
+        control_loop::run(sensors, actuators, timer);
+    }) {
+        defmt::error!("echec lancement coeur 1 : {}", defmt::Debug2Format(&e));
+        panic!("boucle de controle indisponible");
+    }
+
+    defmt::info!("cloud-chamber : coeur 1 lance, UI sur coeur 0");
+
+    // ─── Cœur 0 : la boucle d'interface ───────────────────────────────────
+    //
+    // Rien ici ne dessine sous section critique : on prend une copie de
+    // l'état, puis on travaille dessus verrou relâché (cf. doc de module).
     let mut last_task = SystemTask::Idle;
 
-    control_loop::run(sensors, actuators, timer, move || {
-        let task = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).task);
-        if task != last_task {
-            last_task = task;
-            critical_section::with(|cs| {
-                if let Some(app) = UI.borrow(cs).borrow_mut().as_mut() {
-                    app.mark_dirty();
-                }
-            });
+    loop {
+        // Applique les événements empilés par l'interruption. L'état
+        // courant est relu à chaque fois : entre deux événements, le cœur 1
+        // peut avoir fait avancer la machine, et c'est lui qui décide si un
+        // démarrage est encore légitime.
+        while let Some(event) = critical_section::with(|cs| EVENTS.borrow(cs).borrow_mut().pop()) {
+            let current = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).task);
+            if let Some(task) = app.handle_event(event, current) {
+                critical_section::with(|cs| SHARED_STATE.borrow_ref_mut(cs).task = task);
+                defmt::info!("demande operateur : nouvel etat systeme");
+            }
         }
 
-        // Lecture-et-effacement en un seul appel : un événement arrivé
-        // entre les deux serait perdu si c'était en deux temps.
-        let needs_redraw = critical_section::with(|cs| {
-            let mut ui = UI.borrow(cs).borrow_mut();
-            let Some(app) = ui.as_mut() else { return false };
+        let dropped = critical_section::with(|cs| EVENTS.borrow(cs).borrow_mut().take_dropped());
+        if dropped > 0 {
+            defmt::warn!("{} evenement(s) encodeur perdus : file pleine", dropped);
+        }
 
-            // Faute d'implémentation flash pour le RP2040, une demande de
-            // sauvegarde est consommée et journalisée — sinon elle
-            // resterait en attente indéfiniment. Cf. doc de module.
-            if app.take_save_request().is_some() {
-                defmt::warn!("sauvegarde des reglages demandee mais pas encore implementee");
-            }
-
-            app.take_redraw_request()
+        // Copie de l'état sous verrou court, et acquittement des nouvelles
+        // mesures dans le même geste — le dessin qui suit se fait dessus,
+        // hors verrou.
+        let state = critical_section::with(|cs| {
+            let mut shared = SHARED_STATE.borrow_ref_mut(cs);
+            let copy = *shared;
+            shared.new_data = false;
+            copy
         });
 
-        if needs_redraw {
-            redraw(&mut display, timer);
+        // Un changement de phase décidé par le cœur 1 ne passe par aucun
+        // événement d'encodeur : sans ça l'écran de suivi resterait figé
+        // jusqu'au prochain geste de l'opérateur.
+        if state.task != last_task {
+            last_task = state.task;
+            app.mark_dirty();
         }
-    });
+
+        // Les mesures fraîches ne justifient un redessin que sur les écrans
+        // qui les affichent — redessiner le menu à chaque cycle de sondage
+        // ne ferait que consommer le cœur 0 pour rien.
+        if state.new_data && matches!(app.current_screen(), Screen::Stats | Screen::CurrentTask) {
+            app.mark_dirty();
+        }
+
+        // Faute d'implémentation flash pour le RP2040, une demande de
+        // sauvegarde est consommée et journalisée — sinon elle resterait en
+        // attente indéfiniment. Cf. doc de module.
+        if app.take_save_request().is_some() {
+            defmt::warn!("sauvegarde des reglages demandee mais pas encore implementee");
+        }
+
+        if app.take_redraw_request() {
+            redraw(&mut display, &app, &state, timer);
+        }
+    }
 }
 
-/// Redessine l'écran courant.
+/// Redessine l'écran courant, à partir d'un instantané déjà copié.
 ///
-/// Le dessin se fait dans le framebuffer RAM, interruptions coupées ; le
-/// transfert SPI, lui, a lieu après le retour de la fermeture passée à
-/// `render`, interruptions rouvertes — c'est ce qui permet à l'encodeur de
-/// rester scruté pendant le transfert.
-fn redraw<IFACE, RESET>(display: &mut FramebufferedDisplay<IFACE, RESET>, timer: hal::Timer)
-where
+/// Ne prend aucune section critique : `app` appartient au cœur 0 et `state`
+/// est une copie. C'est ce qui garantit qu'un rendu plein écran — des
+/// dizaines de millisecondes — ne fait jamais attendre le cœur 1 sur le
+/// spinlock global (cf. doc de module).
+fn redraw<IFACE, RESET>(
+    display: &mut FramebufferedDisplay<IFACE, RESET>,
+    app: &UiApp,
+    state: &SharedState,
+    timer: hal::Timer,
+) where
     IFACE: display_interface::WriteOnlyDataCommand,
     RESET: OutputPin,
 {
     let start = timer.get_counter();
-    let _ = display.render(|target| {
-        critical_section::with(|cs| {
-            if let Some(app) = UI.borrow(cs).borrow().as_ref() {
-                let state = SHARED_STATE.borrow(cs).borrow();
-                app.draw(target, &state)
-            } else {
-                Ok(())
-            }
-        })
-    });
+    let _ = display.render(|target| app.draw(target, state));
     let elapsed = timer.get_counter() - start;
     defmt::debug!("redraw termine en {} ms", elapsed.to_millis());
 }
