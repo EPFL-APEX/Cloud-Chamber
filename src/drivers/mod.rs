@@ -45,6 +45,10 @@ pub mod zero_cross_pwm;
 /// température cible.
 pub mod compressor;
 
+/// Driver chauffage résistif : relais GPIO régulé par hystérésis — jumeau
+/// de `compressor`, sens de régulation inversé.
+pub mod heater;
+
 /// Driver pompe : sortie GPIO tout-ou-rien (marche/arrêt).
 pub mod pump;
 

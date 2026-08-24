@@ -54,6 +54,11 @@ bin-screen-test = []
 # `cargo check` sur les autres cibles ne tentent pas de le construire.
 bin-ui-test = []
 
+# Firmware complet (`src/main.rs`). Même garde que les bins de bring-up :
+# RP2040 uniquement pour l'instant, donc pas construit par les jobs CI
+# `cargo check` des autres cibles.
+bin-cloud-chamber = []
+
 [[bin]]
 name = "identify_temp_sensors"
 path = "src/bin/identify_temp_sensors.rs"
@@ -162,3 +167,8 @@ rp235x-hal = { version = "0.4", features = ["rt", "critical-section-impl"] }
 debug     = 2
 lto       = true
 opt-level = "s"
+
+[[bin]]
+name = "cloud_chamber"
+path = "src/main.rs"
+required-features = ["bin-cloud-chamber"]

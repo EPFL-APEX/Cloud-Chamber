@@ -4,6 +4,9 @@
 //!
 //! - `right_turn()` / `left_turn()` (trait `Rotary`) : déplacent la sélection
 //!   dans la liste.
+//! - `click()` (trait `Click`) : ouvre l'écran correspondant. Le premier
+//!   item (`START`) fait en plus démarrer la machine — cf.
+//!   [`MainMenuScreen::take_task_request`].
 //!
 //! La liste est statique (`MAIN_MENU_SIZE`) — pas d'allocation heap.
 
@@ -21,6 +24,8 @@ use embedded_graphics::{
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use tinybmp::Bmp;
 
+use crate::logic::cooling::CoolingPhase;
+use crate::shared::data::SystemTask;
 use crate::ui::{
     interactions::{Click, NavAction, Rotary},
     navigator::Screen,
@@ -31,7 +36,8 @@ use crate::ui::{
 #[repr(u8)]
 #[derive(TryFromPrimitive, IntoPrimitive)]
 pub enum MainMenuItem {
-    CONTROL,
+    /// Démarre un cycle de refroidissement et ouvre l'écran de suivi.
+    START,
     STATS,
     SETTINGS,
     COOLDOWN,
@@ -41,9 +47,18 @@ pub enum MainMenuItem {
 
 const MAIN_MENU_SIZE: u8 = 6; // core::mem::variant_count::<MainMenuItem>() as u8;
 
+/// Première phase du cycle : celle par laquelle `logic::cooling` commence.
+/// Écrire cette valeur dans `SHARED_STATE.task`, c'est tout ce qu'il faut
+/// pour lancer la machine — `control_loop::tick()` adopte l'écriture au
+/// tour suivant et enchaîne les phases lui-même.
+const FIRST_COOLING_PHASE: SystemTask = SystemTask::Cooling(CoolingPhase::SensorCheck);
+
 /// Écran de menu principal.
 pub struct MainMenuScreen {
     pub selected: u8,
+    /// Changement d'état demandé par l'opérateur, en attente d'être
+    /// récupéré. Cf. [`MainMenuScreen::take_task_request`].
+    task_requested: Option<SystemTask>,
 }
 
 impl Rotary for MainMenuScreen {
@@ -61,11 +76,22 @@ impl Rotary for MainMenuScreen {
 }
 
 impl Click for MainMenuScreen {
+    /// Le premier item démarre en plus un cycle : il lève une demande d'état
+    /// (récupérée par la boucle principale via
+    /// [`MainMenuScreen::take_task_request`]) *et* ouvre l'écran de suivi.
+    /// L'écran décide, il n'agit pas — même séparation que
+    /// `ActuatorPlan`/`Actuators::apply` : c'est ce qui permet de tester le
+    /// démarrage sans toucher au `static` `SHARED_STATE`.
     fn click(&mut self) -> Option<NavAction> {
         let screen = match MainMenuItem::try_from(self.selected).ok()? {
-            MainMenuItem::CONTROL => Screen::ManualControl,
+            MainMenuItem::START => {
+                self.task_requested = Some(FIRST_COOLING_PHASE);
+                Screen::CurrentTask
+            }
             MainMenuItem::STATS => Screen::Stats,
             MainMenuItem::SETTINGS => Screen::Settings,
+            // Même écran que START, mais sans rien démarrer : consultation
+            // du cycle en cours (ou de son absence).
             MainMenuItem::COOLDOWN => Screen::CurrentTask,
             MainMenuItem::DATA => Screen::Data,
             MainMenuItem::INFO => Screen::Info,
@@ -76,7 +102,19 @@ impl Click for MainMenuScreen {
 
 impl MainMenuScreen {
     pub fn new() -> Self {
-        Self { selected: 0 }
+        Self { selected: 0, task_requested: None }
+    }
+
+    /// Récupère un changement d'état demandé par l'opérateur, et le consomme.
+    ///
+    /// L'écran n'écrit pas dans `SHARED_STATE` lui-même : c'est un `static`
+    /// partagé avec la boucle de contrôle, dont les écritures se
+    /// réconcilient par comparaison-échange (cf.
+    /// `logic::control_loop::tick`). Le faire depuis une ISR d'UI marcherait,
+    /// mais mettrait la politique de démarrage dans un écran — ici l'écran
+    /// se contente de lever le drapeau, l'appelant l'applique.
+    pub fn take_task_request(&mut self) -> Option<SystemTask> {
+        self.task_requested.take()
     }
 
     pub fn draw<D>(&self, display: &mut D) -> Result<(), D::Error>
@@ -214,13 +252,7 @@ impl MainMenuScreen {
 mod tests {
     use super::*;
 
-    use embedded_graphics::{
-        geometry::Size,
-        mono_font::{MonoTextStyle, ascii::FONT_6X9},
-        pixelcolor::Rgb565,
-        primitives::{Circle, Line, PrimitiveStyle, Rectangle},
-        text::Text,
-    };
+    use embedded_graphics::{geometry::Size, pixelcolor::Rgb565};
 
     use embedded_graphics_simulator::{OutputSettingsBuilder, SimulatorDisplay};
 
@@ -264,9 +296,42 @@ mod tests {
     }
 
     #[test]
-    fn click_on_first_item_pushes_control() {
+    fn click_on_first_item_opens_the_running_screen() {
         let mut menu = MainMenuScreen::new();
-        assert_eq!(menu.click(), Some(NavAction::Push(Screen::ManualControl)));
+        assert_eq!(menu.click(), Some(NavAction::Push(Screen::CurrentTask)));
+    }
+
+    #[test]
+    fn click_on_first_item_requests_the_start_of_a_cooling_cycle() {
+        let mut menu = MainMenuScreen::new();
+        assert_eq!(menu.take_task_request(), None, "rien de demande avant le clic");
+
+        menu.click();
+        assert_eq!(
+            menu.take_task_request(),
+            Some(SystemTask::Cooling(CoolingPhase::SensorCheck)),
+        );
+    }
+
+    #[test]
+    fn a_start_request_is_only_delivered_once() {
+        let mut menu = MainMenuScreen::new();
+        menu.click();
+        assert!(menu.take_task_request().is_some());
+        // Sinon la boucle principale relancerait un cycle à chaque tour.
+        assert_eq!(menu.take_task_request(), None);
+    }
+
+    /// Ouvrir l'écran de suivi depuis l'item COOLDOWN ne doit rien démarrer :
+    /// c'est une consultation, pas une commande.
+    #[test]
+    fn click_on_cooldown_opens_the_same_screen_without_starting_anything() {
+        let mut menu = MainMenuScreen::new();
+        for _ in 0..MainMenuItem::COOLDOWN as u8 {
+            menu.right_turn();
+        }
+        assert_eq!(menu.click(), Some(NavAction::Push(Screen::CurrentTask)));
+        assert_eq!(menu.take_task_request(), None);
     }
 
     #[test]
@@ -292,46 +357,10 @@ mod tests {
     //    todo!()
     //}
 
-    /// Fenêtre SDL2 interactive : flèches gauche/droite pour naviguer,
-    /// Entrée/Espace pour cliquer, fermer la fenêtre pour quitter.
-    ///
-    /// `cargo test --features live-menu-test main_menu_live` (nécessite
-    /// SDL2 installé et un affichage). `click()` ne pousse pas réellement
-    /// sur une pile de navigation ici (pas de `Navigator` dans ce test) —
-    /// la décision renvoyée est juste ignorée.
-    #[cfg(feature = "live-menu-test")]
-    #[test]
-    fn main_menu_live() {
-        use embedded_graphics_simulator::{SimulatorEvent, Window, sdl2::Keycode};
-
-        let mut display = make_display();
-        let mut menu = MainMenuScreen::new();
-        menu.draw(&mut display).unwrap();
-
-        let output_settings = OutputSettingsBuilder::new().scale(2).build();
-        let mut window = Window::new("Cloud Chamber - menu (live)", &output_settings);
-
-        'running: loop {
-            window.update(&display);
-            for event in window.events() {
-                match event {
-                    SimulatorEvent::Quit => break 'running,
-                    SimulatorEvent::KeyDown { keycode, .. } => {
-                        match keycode {
-                            Keycode::Right | Keycode::Down => menu.right_turn(),
-                            Keycode::Left | Keycode::Up => menu.left_turn(),
-                            Keycode::Return | Keycode::Space => {
-                                menu.click();
-                            }
-                            _ => continue,
-                        }
-                        menu.draw(&mut display).unwrap();
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
+    // Le harnais interactif SDL2 vit maintenant dans `ui::router` : il
+    // pilote le routeur complet (menu, réglages, stats, suivi de cycle) au
+    // lieu de ce seul écran, et applique réellement la navigation — ici,
+    // la décision renvoyée par `click()` était ignorée.
 
     #[test]
     fn main_menu_screenshot() -> Result<(), core::convert::Infallible> {

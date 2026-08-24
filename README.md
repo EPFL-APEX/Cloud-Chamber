@@ -382,10 +382,25 @@ la suite de tests.
 cargo test-live-ui-linux   # nécessite SDL2 installé sur la machine
 ```
 
-Ouvre une vraie fenêtre et permet de naviguer le menu au clavier
-(flèches, Entrée/Espace) — utile pour visualiser un écran sans repasser
-par une capture PNG à chaque fois. Feature `live-menu-test`, désactivée
-par défaut (dépendances SDL2 non nécessaires au reste du projet).
+Ouvre une vraie fenêtre sur le routeur complet (menu, réglages, stats,
+suivi de cycle) — utile pour visualiser un écran sans repasser par une
+capture PNG à chaque fois :
+
+| Touche | Effet |
+| --- | --- |
+| flèches ←/→ (ou ↑/↓) | tourner l'encodeur |
+| **Entrée / Espace** | cliquer — depuis le menu, le premier item démarre un cycle et ouvre son suivi |
+| `N` | faire avancer la machine simulée d'une phase (la checklist se remplit) |
+| `R` | remettre la machine à l'arrêt |
+| `Échap` / fermer | quitter |
+
+La fenêtre ne fait pas tourner `logic::control_loop` (ni capteurs ni
+actionneurs) : `N` est une doublure qui sert à voir l'écran de suivi
+progresser. La traduction « action opérateur → effet » est une fonction
+ordinaire (`apply_live_action`), couverte par les tests normaux — seuls
+le mapping clavier et le dessin dépendent de SDL2. Feature
+`live-menu-test`, désactivée par défaut (dépendances SDL2 non
+nécessaires au reste du projet).
 
 ---
 

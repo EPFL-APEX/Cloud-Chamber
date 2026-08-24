@@ -74,8 +74,14 @@ impl Default for SystemTask {
 }
 
 /// Publié par `logic::control_loop::run()` (seul écrivain) pour les
-/// lecteurs (UI...). Pas de boucle Core1 séparée — architecture abandonnée,
-/// cf. `logic::security`.
+/// lecteurs (UI...).
+///
+/// `Copy` à dessein : sur une machine bi-cœur, un lecteur en prend une
+/// copie sous section critique courte puis travaille dessus hors verrou.
+/// Tenir le verrou pendant tout un rendu d'écran bloquerait l'autre cœur —
+/// l'implémentation `critical-section` du RP2040 est un spinlock global,
+/// pas un simple masquage d'interruptions local.
+#[derive(Clone, Copy)]
 pub struct SharedState {
     pub snapshot: SensorSnapshot,
     pub task: SystemTask,

@@ -15,8 +15,14 @@ use super::probing::{MeasurementHistory, ProbingPlan};
 ///
 /// Panique si un capteur ne retourne aucune mesure valide à l'initialisation
 /// (cf. `are_all_some()` ci-dessous) — pas de démarrage dégradé pour l'instant.
+///
+/// Cette boucle possède le cœur sur lequel elle tourne et n'en rend jamais
+/// la main. Sur la carte réelle elle occupe le cœur 1, l'UI gardant le
+/// cœur 0 (cf. `src/main.rs`).
 pub fn run<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Clk>(
-    mut sensors: Sensors<Ts, Ps>, mut actuators: Actuators<Hv, Cool, Iso, Pump, Lights, Glass>, clock: Clk,
+    mut sensors: Sensors<Ts, Ps>,
+    mut actuators: Actuators<Hv, Cool, Iso, Pump, Lights, Glass>,
+    clock: Clk,
 ) -> !
 where
     Ts: DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,

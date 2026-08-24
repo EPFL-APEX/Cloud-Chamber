@@ -38,7 +38,10 @@ use crate::{
     ui::theme,
 };
 
-fn phase_label(task: SystemTask) -> &'static str {
+/// Libellé court de l'état courant. Partagé avec `screens::running`
+/// (même vocabulaire opérateur des deux côtés) — une seule table, pour
+/// qu'un renommage de phase ne laisse pas un écran en arrière.
+pub(super) fn phase_label(task: SystemTask) -> &'static str {
     use CoolingPhase::*;
     use StoppingPhase::*;
     match task {
