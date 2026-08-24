@@ -123,8 +123,29 @@ impl Screens {
     /// À appeler après [`Screens::click`] — l'appelant est seul à écrire
     /// dans `SHARED_STATE.task`, que `logic::control_loop::tick` adopte au
     /// tour suivant. Cf. [`super::screens::menu::MainMenuScreen::take_task_request`].
-    pub fn take_task_request(&mut self) -> Option<SystemTask> {
-        self.main_menu.take_task_request()
+    ///
+    /// `current` est l'état de la machine au moment de l'appel : **un
+    /// démarrage n'est accordé que depuis `Idle`**. Rappuyer sur le bouton
+    /// pendant qu'un cycle tourne ne le renvoie donc pas à sa première
+    /// phase — le clic a déjà fait son travail en basculant sur l'écran de
+    /// suivi. La garde vit ici et pas dans `logic/` : `control_loop::tick`
+    /// adopte *par conception* ce que l'UI écrit (c'est son mécanisme de
+    /// réconciliation), il ne peut pas distinguer un démarrage voulu d'un
+    /// redémarrage accidentel.
+    ///
+    /// La demande est consommée dans tous les cas, accordée ou non — sinon
+    /// elle se déclencherait plus tard, au premier retour à l'arrêt, sans
+    /// que personne ne l'ait redemandée.
+    pub fn take_task_request(&mut self, current: SystemTask) -> Option<SystemTask> {
+        let requested = self.main_menu.take_task_request()?;
+        match requested {
+            // La garde ne porte que sur le démarrage. Elle est écrite en
+            // fonction de la demande, pas appliquée à tout : un futur
+            // bouton d'arrêt passera par ce même canal et ne doit
+            // évidemment pas exiger d'être déjà à l'arrêt.
+            SystemTask::Cooling(_) => (current == SystemTask::Idle).then_some(requested),
+            other => Some(other),
+        }
     }
 
     /// Dessine l'écran actuellement affiché. `state` sert aux écrans
@@ -156,6 +177,7 @@ mod tests {
     use crate::cloud_chamber_hal::timer::Instant;
     use crate::cloud_chamber_hal::units::Celsius;
     use crate::logic::cooling::CoolingPhase;
+    use crate::logic::security::SafetyCause;
     use crate::logic::stopping::StoppingPhase;
     use crate::shared::data::SensorSnapshot;
     use embedded_graphics::geometry::Size;
@@ -174,12 +196,12 @@ mod tests {
     #[test]
     fn clicking_the_first_menu_item_starts_a_cycle_and_shows_it() {
         let mut screens = Screens::new();
-        assert_eq!(screens.take_task_request(), None);
+        assert_eq!(screens.take_task_request(SystemTask::Idle), None);
 
         screens.click();
 
         assert_eq!(
-            screens.take_task_request(),
+            screens.take_task_request(SystemTask::Idle),
             Some(SystemTask::Cooling(CoolingPhase::SensorCheck)),
         );
 
@@ -208,10 +230,11 @@ mod tests {
         let mut d = make_display();
         screens.draw(&mut d, &state).unwrap();
 
-        // De retour au menu, le premier item peut relancer un cycle.
+        // De retour au menu, le premier item peut relancer un cycle — la
+        // machine est repassée à l'arrêt entre-temps.
         screens.click();
         assert_eq!(
-            screens.take_task_request(),
+            screens.take_task_request(SystemTask::Idle),
             Some(SystemTask::Cooling(CoolingPhase::SensorCheck)),
         );
     }
@@ -227,7 +250,62 @@ mod tests {
         for _ in 0..10 {
             screens.left_turn();
         }
-        assert_eq!(screens.take_task_request(), None);
+        assert_eq!(screens.take_task_request(SystemTask::Idle), None);
+    }
+
+    // ─── Garde « on ne redémarre pas un cycle en cours » ─────────────────
+
+    /// Le cas qui motive la garde : rappuyer sur le bouton pendant que la
+    /// machine tourne ne doit pas la renvoyer à la première phase.
+    #[test]
+    fn pressing_start_again_mid_cycle_does_not_restart_the_sequence() {
+        let mut screens = Screens::new();
+        screens.click(); // démarrage depuis l'arrêt
+        assert_eq!(
+            screens.take_task_request(SystemTask::Idle),
+            Some(SystemTask::Cooling(CoolingPhase::SensorCheck)),
+        );
+
+        // La machine a avancé ; l'opérateur revient au menu et re-clique.
+        let running = SystemTask::Cooling(CoolingPhase::HighVoltage);
+        screens.click(); // suivi -> menu
+        screens.click(); // menu -> suivi, avec demande de démarrage
+        assert_eq!(screens.take_task_request(running), None, "pas de redemarrage");
+
+        // …mais l'écran de suivi est bien affiché, et il se dessine.
+        assert_eq!(screens.current(), Screen::CurrentTask);
+        let mut d = make_display();
+        screens.draw(&mut d, &state_with(running)).unwrap();
+    }
+
+    /// Aucun état autre qu'`Idle` n'autorise un démarrage.
+    #[test]
+    fn no_state_other_than_idle_grants_a_start() {
+        for busy in [
+            SystemTask::Cooling(CoolingPhase::SensorCheck),
+            SystemTask::Cooling(CoolingPhase::FinalCheckBeforeStabilising),
+            SystemTask::Stabilising,
+            SystemTask::Stopping(StoppingPhase::CutHighVoltage),
+            SystemTask::Tripped(SafetyCause::CompressorOverheat),
+        ] {
+            let mut screens = Screens::new();
+            screens.click();
+            assert_eq!(screens.take_task_request(busy), None, "{busy:?}");
+        }
+    }
+
+    /// Une demande refusée est quand même consommée : sinon elle
+    /// s'appliquerait toute seule au prochain retour à l'arrêt.
+    #[test]
+    fn a_refused_request_is_not_kept_for_later() {
+        let mut screens = Screens::new();
+        screens.click();
+        let running = SystemTask::Cooling(CoolingPhase::SaturatingAirWithIpa);
+        assert_eq!(screens.take_task_request(running), None);
+
+        // Machine revenue à l'arrêt, sans nouveau clic : rien ne doit
+        // démarrer.
+        assert_eq!(screens.take_task_request(SystemTask::Idle), None);
     }
 
     // ─── Harnais interactif ──────────────────────────────────────────────
@@ -318,7 +396,7 @@ mod tests {
             LiveAction::RotateLeft => screens.left_turn(),
             LiveAction::Click => {
                 screens.click();
-                if let Some(task) = screens.take_task_request() {
+                if let Some(task) = screens.take_task_request(state.task) {
                     state.task = task;
                 }
             }
@@ -342,6 +420,28 @@ mod tests {
         apply_live_action(&mut screens, &mut state, LiveAction::Click);
 
         assert_eq!(state.task, SystemTask::Cooling(CoolingPhase::SensorCheck));
+        assert_eq!(screens.current(), Screen::CurrentTask);
+    }
+
+    /// Le même scénario vu depuis le harnais : une fois la machine lancée,
+    /// re-cliquer sur le premier item ne la ramène pas au début — c'est ce
+    /// qu'on veut pouvoir constater à l'œil dans la fenêtre.
+    #[test]
+    fn live_pressing_start_again_does_not_rewind_the_machine() {
+        let mut screens = Screens::new();
+        let mut state = state_with(SystemTask::Idle);
+
+        apply_live_action(&mut screens, &mut state, LiveAction::Click);
+        apply_live_action(&mut screens, &mut state, LiveAction::AdvancePhase);
+        apply_live_action(&mut screens, &mut state, LiveAction::AdvancePhase);
+        let advanced = state.task;
+        assert_ne!(advanced, SystemTask::Cooling(CoolingPhase::SensorCheck));
+
+        // Retour au menu, puis nouveau clic sur le premier item.
+        apply_live_action(&mut screens, &mut state, LiveAction::Click);
+        apply_live_action(&mut screens, &mut state, LiveAction::Click);
+
+        assert_eq!(state.task, advanced, "la machine n'a pas ete rembobinee");
         assert_eq!(screens.current(), Screen::CurrentTask);
     }
 

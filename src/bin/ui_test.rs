@@ -167,7 +167,13 @@ fn TIMER_IRQ_0() {
                 // jeton `cs` déjà pris ci-dessus (pas de section critique
                 // imbriquée). `logic::control_loop::tick()` adopte cette
                 // écriture au tour suivant.
-                if let Some(task) = screens.take_task_request() {
+                //
+                // L'état courant est relu d'abord : le routeur s'en sert
+                // pour refuser un démarrage si la machine tourne déjà (cf.
+                // `Screens::take_task_request`). L'emprunt partagé se
+                // termine avec l'instruction, avant l'emprunt mutable.
+                let current = SHARED_STATE.borrow_ref(cs).task;
+                if let Some(task) = screens.take_task_request(current) {
                     SHARED_STATE.borrow_ref_mut(cs).task = task;
                     defmt::info!("demande operateur : nouvel etat systeme");
                 }
