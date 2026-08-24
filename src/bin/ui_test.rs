@@ -1,7 +1,16 @@
 //! Sanity check de bring-up : câble l'écran ILI9341 et l'encodeur rotatif
-//! réels sur `ui::router::Screens` — le vrai routeur de navigation, pas un
-//! mock — pour vérifier l'UI de bout en bout (tourner/cliquer, écrans qui
-//! s'affichent) avant intégration dans `logic::control_loop`.
+//! réels sur `ui::app::UiApp` — la vraie UI, pas un mock — pour la
+//! vérifier de bout en bout (tourner/cliquer, écrans qui s'affichent,
+//! démarrage d'un cycle) avant intégration dans `logic::control_loop`.
+//!
+//! # Répartition du travail
+//!
+//! Ce fichier ne contient plus que ce qui est propre à la puce : le
+//! bring-up matériel, les statics partagés, l'ISR, et le `loop {}`. Tout
+//! ce qui est décidable sans matériel — quel événement fait quoi, quand
+//! redessiner, quand un démarrage est légitime — vit dans `ui::app`, testé
+//! sur hôte. Voir sa documentation de module pour le pourquoi de ce
+//! découpage.
 //!
 //! Combine les deux bring-up précédents (`screen_test`, `encoder_test`) :
 //! mêmes broches (`config::wiring::PIN_SCREEN_*`/`PIN_ENCODER_*`), mêmes
@@ -70,7 +79,7 @@
 #![no_std]
 #![no_main]
 
-use core::cell::{Cell, RefCell};
+use core::cell::RefCell;
 
 use defmt_rtt as _;
 use panic_probe as _;
@@ -98,9 +107,9 @@ use cloud_chamber_firmware::config::wiring::{
     PIN_SCREEN_RESET, PIN_SCREEN_SCK,
 };
 use cloud_chamber_firmware::drivers::display::FramebufferedDisplay;
-use cloud_chamber_firmware::drivers::encoder::{EncoderEvent, RotaryEncoder};
+use cloud_chamber_firmware::drivers::encoder::RotaryEncoder;
 use cloud_chamber_firmware::shared::data::SHARED_STATE;
-use cloud_chamber_firmware::ui::router::Screens;
+use cloud_chamber_firmware::ui::app::UiApp;
 
 /// Fréquence du cristal externe du Pico — cf. `hal::clocks::init_clocks_and_plls`.
 const XOSC_CRYSTAL_FREQ: u32 = 12_000_000;
@@ -119,20 +128,17 @@ type Encoder = RotaryEncoder<EncPin, EncPin, EncPin>;
 /// `main()`'s setup, l'interruption n'étant démasquée qu'après).
 static ENCODER: Mutex<RefCell<Option<Encoder>>> = Mutex::new(RefCell::new(None));
 static ALARM: Mutex<RefCell<Option<Alarm0>>> = Mutex::new(RefCell::new(None));
-/// Écrans + pile de navigation : mutée uniquement par l'ISR (right_turn/
-/// left_turn/click), lue par la boucle principale pour dessiner. Un seul
-/// `Screens` partagé plutôt que des compteurs d'événements en attente :
-/// aucune raison de rejouer les événements côté boucle principale, l'ISR
-/// peut appliquer la navigation directement.
-static SCREENS: Mutex<RefCell<Option<Screens>>> = Mutex::new(RefCell::new(None));
-/// Mis à `true` par l'ISR dès que `SCREENS` a changé ; la boucle principale
-/// le lit puis le remet à `false` avant de redessiner.
-static DIRTY: Mutex<Cell<bool>> = Mutex::new(Cell::new(false));
+/// Toute l'UI — écrans, pile de navigation, drapeau de redessin — dans un
+/// seul static : mutée par l'ISR (événements encodeur), lue par la boucle
+/// principale (dessin). Un seul `UiApp` partagé plutôt que des compteurs
+/// d'événements en attente : aucune raison de rejouer les événements côté
+/// boucle principale, l'ISR peut appliquer la navigation directement.
+static UI: Mutex<RefCell<Option<UiApp>>> = Mutex::new(RefCell::new(None));
 
 /// Routine d'interruption : appelée toutes les 1 ms par l'alarme 0 du
 /// `TIMER`, indépendamment de ce que fait `main()` (y compris pendant un
-/// blocage SPI). Fait le travail minimal — poller l'encodeur, router
-/// l'événement, réarmer l'alarme — puis rend la main.
+/// blocage SPI). Fait le travail minimal — poller l'encodeur, lui faire
+/// router l'événement, réarmer l'alarme — puis rend la main.
 #[interrupt]
 fn TIMER_IRQ_0() {
     critical_section::with(|cs| {
@@ -146,41 +152,22 @@ fn TIMER_IRQ_0() {
             None => return,
         };
 
-        let mut screens_ref = SCREENS.borrow(cs).borrow_mut();
-        let Some(screens) = screens_ref.as_mut() else { return };
+        let mut ui_ref = UI.borrow(cs).borrow_mut();
+        let Some(app) = ui_ref.as_mut() else { return };
 
-        match event {
-            EncoderEvent::RotateClockwise => {
-                screens.right_turn();
-                DIRTY.borrow(cs).set(true);
-            }
-            EncoderEvent::RotateCounterClockwise => {
-                screens.left_turn();
-                DIRTY.borrow(cs).set(true);
-            }
-            EncoderEvent::ButtonPressed => {
-                screens.click();
+        // L'état courant est relu d'abord : `UiApp` s'en sert pour refuser
+        // un démarrage si la machine tourne déjà. L'emprunt partagé se
+        // termine avec l'instruction, avant l'emprunt mutable plus bas.
+        let current = SHARED_STATE.borrow_ref(cs).task;
 
-                // Un clic peut demander un changement d'état (premier item
-                // du menu : démarrage d'un cycle). L'écran ne fait que le
-                // demander — c'est ici qu'on l'applique, en réutilisant le
-                // jeton `cs` déjà pris ci-dessus (pas de section critique
-                // imbriquée). `logic::control_loop::tick()` adopte cette
-                // écriture au tour suivant.
-                //
-                // L'état courant est relu d'abord : le routeur s'en sert
-                // pour refuser un démarrage si la machine tourne déjà (cf.
-                // `Screens::take_task_request`). L'emprunt partagé se
-                // termine avec l'instruction, avant l'emprunt mutable.
-                let current = SHARED_STATE.borrow_ref(cs).task;
-                if let Some(task) = screens.take_task_request(current) {
-                    SHARED_STATE.borrow_ref_mut(cs).task = task;
-                    defmt::info!("demande operateur : nouvel etat systeme");
-                }
-
-                DIRTY.borrow(cs).set(true);
-            }
-            EncoderEvent::None => {}
+        // Un clic peut demander un changement d'état (premier item du menu :
+        // démarrage d'un cycle). L'UI ne fait que le demander — c'est ici
+        // qu'on l'applique, en réutilisant le jeton `cs` déjà pris ci-dessus
+        // (pas de section critique imbriquée).
+        // `logic::control_loop::tick()` adopte l'écriture au tour suivant.
+        if let Some(task) = app.handle_event(event, current) {
+            SHARED_STATE.borrow_ref_mut(cs).task = task;
+            defmt::info!("demande operateur : nouvel etat systeme");
         }
     });
 }
@@ -276,10 +263,10 @@ fn main() -> ! {
     critical_section::with(|cs| {
         ENCODER.borrow(cs).replace(Some(encoder));
         ALARM.borrow(cs).replace(Some(alarm));
-        SCREENS.borrow(cs).replace(Some(Screens::new()));
+        UI.borrow(cs).replace(Some(UiApp::new()));
     });
 
-    // Sûr : ENCODER/ALARM/SCREENS sont déposés juste au-dessus, avant que
+    // Sûr : ENCODER/ALARM/UI sont déposés juste au-dessus, avant que
     // l'interruption ne puisse jamais se déclencher.
     unsafe {
         pac::NVIC::unmask(pac::Interrupt::TIMER_IRQ_0);
@@ -287,8 +274,12 @@ fn main() -> ! {
 
     defmt::info!("ui_test demarre — premier rendu (MainMenu)");
 
-    // `Screens`/`SHARED_STATE` sont partagés avec l'ISR : empruntés depuis
-    // la fermeture passée à `render`, rappelée une fois par bande.
+    // `UiApp`/`SHARED_STATE` sont partagés avec l'ISR : empruntés depuis la
+    // fermeture passée à `render`, rappelée une fois par bande. Le dessin
+    // se fait dans le framebuffer RAM, interruptions coupées ; le transfert
+    // SPI, lui, a lieu après le retour de cette fermeture, interruptions
+    // rouvertes — c'est ce qui permet à l'encodeur de rester lu pendant le
+    // transfert.
     //
     // Chronométrage : `Timer` est `Copy` (juste un accès aux registres
     // matériels), capturer une copie dans la fermeture ne pose pas de
@@ -301,9 +292,9 @@ fn main() -> ! {
         let start = timer.get_counter();
         let _ = display.render(|target| {
             critical_section::with(|cs| {
-                if let Some(screens) = SCREENS.borrow(cs).borrow().as_ref() {
+                if let Some(app) = UI.borrow(cs).borrow().as_ref() {
                     let state = SHARED_STATE.borrow(cs).borrow();
-                    screens.draw(target, &state)
+                    app.draw(target, &state)
                 } else {
                     Ok(())
                 }
@@ -316,13 +307,16 @@ fn main() -> ! {
     redraw(&mut display);
 
     loop {
-        let dirty = critical_section::with(|cs| {
-            let was_dirty = DIRTY.borrow(cs).get();
-            DIRTY.borrow(cs).set(false);
-            was_dirty
+        // Lecture-et-effacement en un seul appel : un événement arrivé
+        // entre les deux serait perdu si c'était en deux temps.
+        let needs_redraw = critical_section::with(|cs| {
+            UI.borrow(cs)
+                .borrow_mut()
+                .as_mut()
+                .is_some_and(UiApp::take_redraw_request)
         });
 
-        if dirty {
+        if needs_redraw {
             redraw(&mut display);
         }
     }

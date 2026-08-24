@@ -119,6 +119,6 @@ fn main() -> ! {
             let _ = if on { relay.set_high() } else { relay.set_low() };
         }
         defmt::info!("relais = {}", on);
-        timer.delay_ms(3_000);
+        timer.delay_ms(10_000);
     }
 }

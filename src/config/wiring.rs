@@ -21,8 +21,6 @@ pub const PIN_I2C_SDA: u8 = 20;
 pub const PIN_I2C_SCL: u8 = 21;
 /// GPIO de sortie pour le relais de sécurité compresseur
 pub const PIN_COMPRESSOR_RELAY: u8 = 5;
-/// TODO CÂBLAGE : broches provisoires (GP17/GP18, suite de
-/// `PIN_COMPRESSOR_RELAY`), jamais vérifiées sur le montage réel — à
 /// confirmer avant tout bring-up matériel.
 pub const PIN_HV_RELAY: u8 = 14;
 pub const PIN_ISO_HEATER_RELAY: u8 = 9;
@@ -33,7 +31,54 @@ pub const PIN_ISO_HEATER_RELAY: u8 = 9;
 /// avant tout bring-up matériel, comme les broches ci-dessus.
 pub const PIN_PUMP_RELAY: u8 = 7;
 pub const PIN_LIGHTS_RELAY: u8 = 8;
-pub const PIN_WINDOW_HEATER_RELAY: u8 = 21;
+pub const PIN_WINDOW_HEATER_RELAY: u8 = 10;
+
+/// Toutes les broches attribuées ci-dessus, avec le rôle qui les réclame.
+///
+/// Sert uniquement au contrôle d'unicité juste en dessous — deux rôles sur
+/// la même broche ne peuvent pas fonctionner, et rien dans le typage ne
+/// l'empêche : `gpio::new_pin` prend un numéro, pas un jeton unique.
+/// Ce tableau doit rester en phase avec les constantes ; une broche ajoutée
+/// et oubliée ici n'est simplement pas vérifiée.
+const ASSIGNED_PINS: [(&str, u8); 17] = [
+    ("PIN_ONEWIRE", PIN_ONEWIRE),
+    ("PIN_I2C_SDA", PIN_I2C_SDA),
+    ("PIN_I2C_SCL", PIN_I2C_SCL),
+    ("PIN_COMPRESSOR_RELAY", PIN_COMPRESSOR_RELAY),
+    ("PIN_HV_RELAY", PIN_HV_RELAY),
+    ("PIN_ISO_HEATER_RELAY", PIN_ISO_HEATER_RELAY),
+    ("PIN_PUMP_RELAY", PIN_PUMP_RELAY),
+    ("PIN_LIGHTS_RELAY", PIN_LIGHTS_RELAY),
+    ("PIN_WINDOW_HEATER_RELAY", PIN_WINDOW_HEATER_RELAY),
+    ("PIN_ENCODER_A", PIN_ENCODER_A),
+    ("PIN_ENCODER_B", PIN_ENCODER_B),
+    ("PIN_ENCODER_SW", PIN_ENCODER_SW),
+    ("PIN_SCREEN_SCK", PIN_SCREEN_SCK),
+    ("PIN_SCREEN_MOSI", PIN_SCREEN_MOSI),
+    ("PIN_SCREEN_CS", PIN_SCREEN_CS),
+    ("PIN_SCREEN_DC", PIN_SCREEN_DC),
+    ("PIN_SCREEN_RESET", PIN_SCREEN_RESET),
+];
+
+/// Échoue **à la compilation** si deux rôles se partagent une broche.
+///
+/// A rattrapé un vrai conflit : `PIN_WINDOW_HEATER_RELAY` valait 21, comme
+/// `PIN_I2C_SCL`. Configurer la broche en sortie relais aurait coupé le bus
+/// I²C — donc le capteur de pression, donc la surveillance de sécurité HP —
+/// et ça ne se serait vu qu'au bring-up, sous forme d'un I²C muet.
+const _: () = {
+    let mut i = 0;
+    while i < ASSIGNED_PINS.len() {
+        let mut j = i + 1;
+        while j < ASSIGNED_PINS.len() {
+            if ASSIGNED_PINS[i].1 == ASSIGNED_PINS[j].1 {
+                panic!("deux roles sont cables sur la meme broche GPIO");
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+};
 
 /// Encodeur rotatif de l'UI (quadrature) — cf. `drivers::encoder`.
 pub const PIN_ENCODER_A: u8 = 26;
