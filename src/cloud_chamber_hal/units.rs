@@ -14,3 +14,6 @@ pub struct Volt(pub f32);
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct Ampere(pub f32);
+
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+pub struct Percentage(pub f32);

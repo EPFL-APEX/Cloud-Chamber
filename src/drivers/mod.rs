@@ -32,6 +32,36 @@ pub mod bme280;
 /// Driver ABP2 : capteur de pression Honeywell via I²C.
 pub mod abp2;
 
+/// Driver écran ILI9341 (SPI) avec framebuffer RAM bandé pour un rendu
+/// rapide — cf. doc de module pour le détail.
+pub mod display;
+
+/// Fonctions de régulation (hystérésis, PID)
+pub mod regulate_method;
+
+pub mod zero_cross_pwm;
+
+/// Driver compresseur : relais GPIO régulé par hystérésis autour d'une
+/// température cible.
+pub mod compressor;
+
+/// Driver chauffage résistif : relais GPIO régulé par hystérésis — jumeau
+/// de `compressor`, sens de régulation inversé.
+pub mod heater;
+
+/// Driver pompe : sortie GPIO tout-ou-rien (marche/arrêt).
+pub mod pump;
+
+/// Driver éclairage : sortie GPIO tout-ou-rien (marche/arrêt).
+pub mod lights;
+
+/// Driver chauffage de la vitre supérieure : sortie GPIO tout-ou-rien (marche/arrêt).
+pub mod window_heater;
+
+/// Stockage persistant des réglages (`config::settings::Settings`) dans la
+/// flash interne, sans système de fichiers.
+pub mod flash_store;
+
 /// Capteurs mock (température/pression/tension) pour les tests — pas de
 /// matériel, valeurs configurables. Compilé uniquement sous `cargo test`.
 #[cfg(test)]

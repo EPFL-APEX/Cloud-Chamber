@@ -30,14 +30,18 @@ use embedded_graphics::{
 };
 
 use crate::{
-    cloud_chamber_hal::config::{BP_PRESSURE_IDX, CHAMBER_TEMP_IDX, HP_PRESSURE_IDX},
-    config::{SATURATION_TARGET_C, TARGET_CHAMBER_TEMP, TEMP_LABELS},
+    cloud_chamber_hal::config::{CHAMBER_PRESSURE_IDX, CHAMBER_TEMP_IDX},
+    config::operating::{SATURATION_TARGET_C, TARGET_CHAMBER_TEMP},
+    config::wiring::TEMP_LABELS,
     logic::{cooling::CoolingPhase, security::SafetyCause, stopping::StoppingPhase},
     shared::data::{SharedState, SystemTask},
     ui::theme,
 };
 
-fn phase_label(task: SystemTask) -> &'static str {
+/// Libellé court de l'état courant. Partagé avec `screens::running`
+/// (même vocabulaire opérateur des deux côtés) — une seule table, pour
+/// qu'un renommage de phase ne laisse pas un écran en arrière.
+pub(super) fn phase_label(task: SystemTask) -> &'static str {
     use CoolingPhase::*;
     use StoppingPhase::*;
     match task {
@@ -60,8 +64,6 @@ fn alert_message(cause: SafetyCause) -> &'static str {
     match cause {
         SafetyCause::CompressorOverheat => "SURCHAUFFE COMPRESSEUR",
         SafetyCause::CompressorSensorLost => "SONDE COMPRESSEUR PERDUE",
-        SafetyCause::PressureHigh => "PRESSION HP TROP HAUTE",
-        SafetyCause::PressureLow => "PRESSION BP TROP BASSE",
     }
 }
 
@@ -100,7 +102,7 @@ impl<'a> StatsScreen<'a> {
         D: DrawTarget<Color = Rgb565> + OriginDimensions,
     {
         let snap = &self.state.snapshot;
-        let task = self.state.system_state;
+        let task = self.state.task;
 
         let bg = PrimitiveStyleBuilder::new().fill_color(theme::BACKGROUND_COLOR).build();
         Rectangle::new(Point::zero(), Size::new(320, 240)).into_styled(bg).draw(display)?;
@@ -173,14 +175,12 @@ impl<'a> StatsScreen<'a> {
             Text::new(text, Point::new(x, y), MonoTextStyle::new(&FONT_6X10, color)).draw(display)?;
         }
 
-        // ─── Pression BP / HP ─────────────────────────────────────────────────
+        // ─── Pression chambre ─────────────────────────────────────────────────
         {
             let mut s: String<32> = String::new();
-            let bp = snap.press[BP_PRESSURE_IDX].map(|m| m.value.0);
-            let hp = snap.press[HP_PRESSURE_IDX].map(|m| m.value.0);
-            match (bp, hp) {
-                (Some(bp), Some(hp)) => { write!(s, "BP:{:5.2}bar  HP:{:5.2}bar", bp, hp).ok(); }
-                _ => { write!(s, "BP: ---       HP: ---").ok(); }
+            match snap.press[CHAMBER_PRESSURE_IDX].map(|m| m.value.0) {
+                Some(p) => { write!(s, "Pression: {:5.2}bar", p).ok(); }
+                None => { write!(s, "Pression: ---").ok(); }
             }
             Text::new(s.as_str(), Point::new(4, 150), MonoTextStyle::new(&FONT_6X10, theme::TEXT_COLOR))
                 .draw(display)?;
@@ -209,7 +209,7 @@ mod tests {
         let mut d = make_display();
         let state = SharedState {
             snapshot: Default::default(),
-            system_state: SystemTask::Idle,
+            task: SystemTask::Idle,
             new_data: false,
         };
         StatsScreen { state: &state }.draw(&mut d).unwrap();
@@ -220,7 +220,7 @@ mod tests {
         let mut d = make_display();
         let state = SharedState {
             snapshot: Default::default(),
-            system_state: SystemTask::Tripped(SafetyCause::CompressorOverheat),
+            task: SystemTask::Tripped(SafetyCause::CompressorOverheat),
             new_data: false,
         };
         StatsScreen { state: &state }.draw(&mut d).unwrap();
@@ -231,7 +231,7 @@ mod tests {
         let mut d = make_display();
         let state = SharedState {
             snapshot: Default::default(),
-            system_state: SystemTask::Cooling(CoolingPhase::HighVoltage),
+            task: SystemTask::Cooling(CoolingPhase::HighVoltage),
             new_data: false,
         };
         StatsScreen { state: &state }.draw(&mut d).unwrap();

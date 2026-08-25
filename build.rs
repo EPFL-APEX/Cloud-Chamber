@@ -60,7 +60,7 @@ fn main() {
     let config_toml = read_to_string(".cargo/config.toml")
         .expect("failed to read .cargo/config.toml");
 
-    let re_target = Regex::new(r"target = .*").unwrap();
+    let re_target = Regex::new(r"target = [^\r\n]*").unwrap();
     let result = re_target.replace(&config_toml, format!("target = \"{}\"", target));
 
     // Replace the chip in every probe-rs runner line.

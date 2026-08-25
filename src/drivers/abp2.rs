@@ -80,7 +80,7 @@ pub struct Abp2Driver<I> {
 impl<I: I2cTrait> Abp2Driver<I> {
     /// Crée un nouveau driver.
     ///
-    /// - `addr`  : adresse I2C 7 bits (depuis `config::ABP2_BP_ADDR` / `ABP2_HP_ADDR`)
+    /// - `addr`  : adresse I2C 7 bits (depuis `config::wiring::ABP2_ADDR`)
     /// - `p_min` : borne basse de la plage de pression en bar
     /// - `p_max` : borne haute de la plage de pression en bar
     pub fn new(i2c: I, addr: u8, p_min: f32, p_max: f32) -> Self {
@@ -158,6 +158,6 @@ impl<I: I2cTrait, C: MonotonicTimer> Sensor<Measurement<HectoPascal>> for Abp2Se
     /// Lit la pression et la convertit en hectopascal (1 bar = 1000 hPa).
     fn read(&mut self) -> Result<Measurement<HectoPascal>, Self::Error> {
         let hpa = self.driver.read()?.pressure_bar * 1000.0;
-        Ok(Measurement::new(self.clock.get_counter_us(), HectoPascal(hpa)))
+        Ok(Measurement::new(self.clock.now(), HectoPascal(hpa)))
     }
 }

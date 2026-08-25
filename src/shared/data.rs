@@ -24,9 +24,9 @@ use critical_section::Mutex;
 
 use crate::{
     cloud_chamber_hal::measurement::Measurement,
-    cloud_chamber_hal::units::{Celsius, HectoPascal, Volt},
+    cloud_chamber_hal::units::{Celsius, HectoPascal},
     cloud_chamber_hal::config::{
-        NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_VOLTMETER,
+        NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR,
     }, logic::{
         cooling::CoolingPhase,
         stopping::StoppingPhase,
@@ -41,8 +41,6 @@ pub struct SensorSnapshot {
     pub temps: [Option<Measurement<Celsius>>; NUMBER_OF_TEMP_SENSOR],
     /// Pressions mesurées.
     pub press: [Option<Measurement<HectoPascal>>; NUMBER_OF_PRESSURE_SENSOR],
-    /// Tensions mesurées.
-    pub volts: [Option<Measurement<Volt>>; NUMBER_OF_VOLTMETER],
     /// `true` si la chambre est physiquement fermée (capteur de fermeture).
     pub is_closed: bool,
 }
@@ -51,13 +49,11 @@ impl SensorSnapshot {
     pub fn are_all_none(&self) -> bool {
         self.temps.iter().all(Option::is_none)
             && self.press.iter().all(Option::is_none)
-            && self.volts.iter().all(Option::is_none)
     }
 
     pub fn are_all_some(&self) -> bool {
         self.temps.iter().all(Option::is_some)
             && self.press.iter().all(Option::is_some)
-            && self.volts.iter().all(Option::is_some)
     }
 }
 
@@ -77,26 +73,33 @@ impl Default for SystemTask {
     }
 }
 
-/// Données échangées entre Core1 (producteur) et Core0 (consommateur).
+/// Publié par `logic::control_loop::run()` (seul écrivain) pour les
+/// lecteurs (UI...).
+///
+/// `Copy` à dessein : sur une machine bi-cœur, un lecteur en prend une
+/// copie sous section critique courte puis travaille dessus hors verrou.
+/// Tenir le verrou pendant tout un rendu d'écran bloquerait l'autre cœur —
+/// l'implémentation `critical-section` du RP2040 est un spinlock global,
+/// pas un simple masquage d'interruptions local.
+#[derive(Clone, Copy)]
 pub struct SharedState {
     pub snapshot: SensorSnapshot,
-    pub system_state: SystemTask,
-    /// Mis à `true` par Core1 quand de nouvelles données sont disponibles.
+    pub task: SystemTask,
+    /// Mis à `true` quand de nouvelles données de capteur sont disponibles.
     pub new_data: bool,
 }
 
 // ─── Point de partage global ─────────────────────────────────────────────────
-/// Static partagé entre Core0 et Core1.
+/// Static partagé entre le cœur de contrôle et ses lecteurs (UI...).
 ///
-/// Toujours accéder via `critical_section::with(|cs| { SHARED.borrow(cs)... })`.
-pub static SHARED: Mutex<RefCell<SharedState>> = Mutex::new(RefCell::new(SharedState {
-    snapshot: SensorSnapshot { 
+/// Toujours accéder via `critical_section::with(|cs| { SHARED_STATE.borrow(cs)... })`.
+pub static SHARED_STATE: Mutex<RefCell<SharedState>> = Mutex::new(RefCell::new(SharedState {
+    snapshot: SensorSnapshot {
             temps: [None; NUMBER_OF_TEMP_SENSOR],
             press: [None; NUMBER_OF_PRESSURE_SENSOR],
-            volts: [None; NUMBER_OF_VOLTMETER],
-            is_closed: false 
+            is_closed: false
     },
-    system_state: SystemTask::Idle,
+    task: SystemTask::Idle,
     new_data: false,
 }));
 
@@ -117,12 +120,11 @@ mod tests {
         let s = SensorSnapshot::default();
         for &t in &s.temps { assert!(t.is_none()); }
         for &p in &s.press { assert!(p.is_none()); }
-        for &v in &s.volts { assert!(v.is_none()); }
         assert!(!s.is_closed);
     }
 
     #[test]
-    fn system_state_variants_are_distinct() {
+    fn system_task_variants_are_distinct() {
         assert_ne!(SystemTask::Idle, SystemTask::Stabilising);
         assert_ne!(SystemTask::Idle, SystemTask::Cooling(CoolingPhase::SensorCheck));
         assert_ne!(

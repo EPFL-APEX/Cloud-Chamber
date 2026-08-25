@@ -16,6 +16,10 @@
 
 use core::fmt::Debug;
 
+use crate::cloud_chamber_hal::measurement::Measurement;
+use crate::cloud_chamber_hal::ring_buffer::RingBuffer;
+use crate::cloud_chamber_hal::units::Celsius;
+
 /// Actionneur tout-ou-rien (relais, GPIO simple).
 pub trait BinaryActuator {
     type Error: Debug;
@@ -25,6 +29,16 @@ pub trait BinaryActuator {
 
     /// Désactive la sortie.
     fn turn_off(&mut self) -> Result<(), Self::Error>;
+}
+
+
+/// Actionneur qui régule lui-même son état par rapport à une cible et un
+/// historique de mesures — la politique (hystérésis, PID...) est un détail
+/// d'implémentation du driver. `target: None` = coupure forcée, indépendamment de toute mesure.
+pub trait TargetActuator<Unit: Copy, const N: usize> {
+    type Error: Debug;
+
+    fn regulate(&mut self, hist: &RingBuffer<Measurement<Unit>, N>, target: Option<Unit>) -> Result<(), Self::Error>;
 }
 
 /// Actionneur à sortie continue dans l'unité physique `Unit` (ex. tension
@@ -51,33 +65,41 @@ pub trait AnalogActuator<Unit> {
     fn get_setpoint(&self) -> Result<Unit, Self::Error>;
 }
 
-/// Regroupe les trois actionneurs de la chambre. Ne décide rien — exécute
-/// seulement ce qu'on lui demande via `apply()`.
+/// Ce qu'on demande aux six actionneurs pour un cycle.
+/// `cooling`/`iso_heater` sont des objectifs (`Option<Celsius>`): `logic/` décide *quoi* atteindre (une température), pas
+/// *comment* — la régulation (hystérésis, PID...) est un détail
+/// d'implémentation du driver, appliquée par `TargetActuator::regulate`.
+/// `None` = coupure forcée, indépendante de toute mesure. Les autres
+/// actionneurs sont de simples `bool` tout-ou-rien : il n'y a pas de notion
+/// de "maintenir" une haute tension, une pompe, un éclairage ou un
+/// chauffage vitre, juste de l'appliquer ou non.
 ///
-/// Prend trois booléens plutôt qu'un `logic::ActuatorPlan` : le HAL ne
-/// dépend jamais de la logique métier (principe d'inversion de dépendance
-/// du projet — cf. `security_loop` historiquement, `logic/` aujourd'hui,
-/// qui dépendent tous deux de `cloud_chamber_hal`, jamais l'inverse).
-/// L'appelant décompose son `ActuatorPlan` au point d'appel.
-pub struct Actuators<Hv, Comp, Iso> {
-    pub high_voltage: Hv,
-    pub compressor: Comp,
-    pub iso_heater: Iso,
+/// `iso_pump`/`lights`/`glass_heater` : câblés dans la structure mais
+/// aucune phase de `logic::cooling`/`logic::stopping`/`logic::control_loop`
+/// ne décide encore de leur valeur (toujours `false` pour l'instant, cf.
+/// commentaires `TODO politique` sur chaque site de construction) — la
+/// politique par phase reste à définir.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ActuatorPlan {
+    pub cooling: Option<Celsius>,
+    pub iso_heater: Option<Celsius>,
+    pub high_voltage: bool,
+    pub iso_pump: bool,
+    pub lights: Option<bool>,
+    pub glass_heater: bool,
 }
 
-impl<Hv, Comp, Iso> Actuators<Hv, Comp, Iso>
-where
-    Hv: BinaryActuator,
-    Comp: BinaryActuator,
-    Iso: BinaryActuator,
-{
-    pub fn apply(&mut self, high_voltage: bool, compressor: bool, iso_heater: bool) {
-        let _ = Self::set(&mut self.high_voltage, high_voltage);
-        let _ = Self::set(&mut self.compressor, compressor);
-        let _ = Self::set(&mut self.iso_heater, iso_heater);
-    }
-
-    fn set<A: BinaryActuator>(actuator: &mut A, on: bool) -> Result<(), A::Error> {
-        if on { actuator.turn_on() } else { actuator.turn_off() }
-    }
+/// Regroupe les six actionneurs de la chambre. Ne décide rien — exécute
+/// seulement ce qu'on lui demande.
+pub struct Actuators<Hv, Cool, Iso, Pump, Lights, Glass> {
+    pub high_voltage: Hv,
+    pub cooling: Cool,
+    pub iso_heater: Iso,
+    /// Pompe de circulation de l'isopropanol.
+    pub iso_pump: Pump,
+    /// Éclairage de la chambre (deux ampoules sur le même circuit, pilotées
+    /// comme un seul actionneur).
+    pub lights: Lights,
+    /// Chauffage anti-buée de la vitre supérieure.
+    pub glass_heater: Glass,
 }
