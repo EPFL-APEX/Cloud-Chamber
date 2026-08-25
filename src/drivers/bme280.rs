@@ -14,9 +14,12 @@ use embedded_hal::delay::DelayNs;
 use crate::cloud_chamber_hal::sensors::{Sensor, DeferredSensor};
 use crate::cloud_chamber_hal::measurement::Measurement;
 use crate::cloud_chamber_hal::timer::{Duration, MonotonicTimer};
-use crate::cloud_chamber_hal::units::Celsius;
+use crate::cloud_chamber_hal::units::{Celsius, HectoPascal};
 
 const BME_ADDR:       u8 = 0x76;
+
+/// Durée d'une mesure forcée (§9.1 de la datasheet, marge incluse).
+const BME280_MEASURE_MS: u32 = 15;
 const REG_CHIP_ID:    u8 = 0xD0;
 const REG_CALIB_T:    u8 = 0x88;
 const REG_CALIB_H:    u8 = 0xE1;
@@ -242,12 +245,37 @@ impl<I: I2cTrait, D: DelayNs, C: MonotonicTimer> Sensor<Measurement<Celsius>> fo
     }
 }
 
+/// Pression **atmosphérique absolue** (~1013 hPa au niveau de la mer).
+///
+/// À ne pas confondre avec ce que mesure `drivers::abp2` : celui-ci lit la
+/// pression d'un circuit de la chambre sur une plage 0–1 bar. Les deux
+/// remplissent aujourd'hui le même créneau `SensorSnapshot::press`, mais ne
+/// décrivent pas la même grandeur physique — si une sécurité pression est
+/// ajoutée un jour, elle devra savoir lequel des deux elle lit.
+///
+/// Une seule mesure forcée sert les deux grandeurs (le BME280 convertit
+/// température, pression et humidité en un cycle) : lire la pression coûte
+/// donc le même ~15 ms que lire la température, pas le double.
+impl<I: I2cTrait, D: DelayNs, C: MonotonicTimer> Sensor<Measurement<HectoPascal>>
+    for Bme280Sensor<I, D, C>
+{
+    type Error = Bme280Error;
+
+    fn read(&mut self) -> Result<Measurement<HectoPascal>, Self::Error> {
+        self.driver.trigger_measurement()?;
+        self.delay.delay_ms(BME280_MEASURE_MS);
+        self.driver.fetch_raw()?;
+        let hpa = self.driver.read_pressure_hpa()?;
+        Ok(Measurement::new(self.clock.now(), HectoPascal(hpa)))
+    }
+}
+
 impl<I: I2cTrait, D: DelayNs, C: MonotonicTimer> DeferredSensor<Measurement<Celsius>> for Bme280Sensor<I, D, C> {
     fn start_conversion(&mut self) -> Result<(), Self::Error> {
         self.driver.trigger_measurement()
     }
 
-    fn conversion_time_ms(&self) -> Duration { Duration::from_millis(15) }
+    fn conversion_time_ms(&self) -> Duration { Duration::from_millis(BME280_MEASURE_MS as u64) }
 
     fn read_result(&mut self) -> Result<Measurement<Celsius>, Self::Error> {
         self.driver.fetch_raw()?;

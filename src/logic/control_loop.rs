@@ -37,7 +37,23 @@ where
 {
     // Initial values, mais est-ce qu'on veut vraiment ça ?
     let latest_measurement = sensors.probe_all();
-    if !latest_measurement.are_all_some() {panic!("Not every sensor returned a valid measurement, something goes wrong...")};
+    if !latest_measurement.are_all_some() {
+        // Le message d'origine ne disait pas *lequel* manquait, ce qui est
+        // pourtant la seule information utile : elle désigne le faisceau à
+        // aller vérifier. Un masque de bits plutôt qu'un libellé par
+        // capteur — `logic/` ne connaît pas le câblage, et ce module reste
+        // sans dépendance à une pile de traces pour rester testable sur
+        // hôte.
+        panic!(
+            "Demarrage impossible : capteurs muets au premier sondage. \
+             Temperatures manquantes (bit i = index i) : {:#b} sur {}, \
+             pressions : {:#b} sur {}.",
+            missing_mask(&latest_measurement.temps),
+            NUMBER_OF_TEMP_SENSOR,
+            missing_mask(&latest_measurement.press),
+            NUMBER_OF_PRESSURE_SENSOR,
+        );
+    }
 
     update_global_state(&latest_measurement);
 
@@ -126,6 +142,19 @@ where
     phase.current().create_probing_plan(measurement_history)
 }
 
+
+/// Masque des index sans mesure : bit `i` à 1 = capteur `i` muet.
+///
+/// Sert au diagnostic de démarrage ci-dessus.
+fn missing_mask<T>(readings: &[Option<T>]) -> u32 {
+    let mut mask = 0;
+    for (i, reading) in readings.iter().enumerate() {
+        if reading.is_none() {
+            mask |= 1 << i;
+        }
+    }
+    mask
+}
 
 /// Can be expensive due to using the critical section so avoid using it if there is no update.
 fn update_global_state(latest_measurement:&SensorSnapshot) {
@@ -441,6 +470,28 @@ mod tests {
         fn write_shared_task(&self, task: SystemTask) {
             critical_section::with(|cs| SHARED_STATE.borrow_ref_mut(cs).task = task);
         }
+    }
+
+    // ─── Diagnostic de démarrage ─────────────────────────────────────────
+
+    #[test]
+    fn missing_mask_flags_each_silent_sensor_by_index() {
+        // Bit i à 1 = capteur i muet. C'est ce masque que le message de
+        // panique affiche, et qui désigne le faisceau à vérifier.
+        let readings = [Some(1u8), None, Some(3), None];
+        assert_eq!(missing_mask(&readings), 0b1010);
+    }
+
+    #[test]
+    fn missing_mask_is_zero_when_every_sensor_answers() {
+        let readings = [Some(1u8), Some(2), Some(3)];
+        assert_eq!(missing_mask(&readings), 0);
+    }
+
+    #[test]
+    fn missing_mask_flags_everything_when_nothing_answers() {
+        let readings: [Option<u8>; 3] = [None, None, None];
+        assert_eq!(missing_mask(&readings), 0b111);
     }
 
     // ─── F — Base ─────────────────────────────────────────────────────────
