@@ -178,8 +178,11 @@ impl<'a> StatsScreen<'a> {
         // ─── Pression chambre ─────────────────────────────────────────────────
         {
             let mut s: String<32> = String::new();
+            // `HectoPascal` porte bien des hPa (`Abp2Sensor` convertit les
+            // bar du capteur, `Bme280Sensor` lit déjà des hPa) — l'ancien
+            // libellé « bar » affichait donc la valeur 1000× trop grande.
             match snap.press[CHAMBER_PRESSURE_IDX].map(|m| m.value.0) {
-                Some(p) => { write!(s, "Pression: {:5.2}bar", p).ok(); }
+                Some(p) => { write!(s, "Pression: {:7.1} hPa", p).ok(); }
                 None => { write!(s, "Pression: ---").ok(); }
             }
             Text::new(s.as_str(), Point::new(4, 150), MonoTextStyle::new(&FONT_6X10, theme::TEXT_COLOR))

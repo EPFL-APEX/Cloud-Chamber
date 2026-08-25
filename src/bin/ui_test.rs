@@ -106,7 +106,7 @@ use cloud_chamber_firmware::config::wiring::{
     PIN_ENCODER_A, PIN_ENCODER_B, PIN_ENCODER_SW, PIN_SCREEN_CS, PIN_SCREEN_DC, PIN_SCREEN_MOSI,
     PIN_SCREEN_RESET, PIN_SCREEN_SCK,
 };
-use cloud_chamber_firmware::drivers::display::FramebufferedDisplay;
+use cloud_chamber_firmware::drivers::display::{self, FramebufferedDisplay};
 use cloud_chamber_firmware::drivers::encoder::RotaryEncoder;
 use cloud_chamber_firmware::shared::data::SHARED_STATE;
 use cloud_chamber_firmware::ui::app::UiApp;
@@ -248,7 +248,8 @@ fn main() -> ! {
             }
         }
     };
-    let mut display = FramebufferedDisplay::new(ili9341_display);
+    let framebuffer = display::take_framebuffer().expect("le framebuffer n'est reclame qu'ici");
+    let mut display = FramebufferedDisplay::new(ili9341_display, framebuffer);
 
     // ─── Encodeur (A/B/SW, pull-up interne) — piloté par interruption ──────
     let pin_a = configure_input_pin(PIN_ENCODER_A);
