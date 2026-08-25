@@ -19,21 +19,36 @@
 //! Le framebuffer fait 320×240×2 = 150 Ko — plein écran, pas bandé.
 //! `BAND_HEIGHT` reste paramétrable (mécanisme conservé pour re-réduire la
 //! RAM utilisée si besoin un jour), mais vaut aujourd'hui [`SCREEN_HEIGHT`]
-//! (une seule "bande" = l'écran entier, une seule transaction SPI). Vérifié
-//! par lecture directe des symboles `_stack_start`/`_stack_end` du linker
-//! sur un binaire réel (`ui_test`) : rp-hal place `.data`/`.bss`/`.uninit`
-//! en haut de la RAM et laisse tout le bas à la pile (pour qu'un
-//! débordement de pile tombe en mémoire non mappée plutôt que d'écraser
-//! les statics) — même avec les 150 Ko du plein écran, la marge de pile
-//! restante est d'environ 104 Ko, largement suffisante. L'ancienne version
-//! à deux bandes rejouait `draw_fn` deux fois par redessin (une fois par
-//! bande) ; en plein écran, une seule fois.
+//! (une seule "bande" = l'écran entier, une seule transaction SPI).
+//! L'ancienne version à deux bandes rejouait `draw_fn` deux fois par
+//! redessin ; en plein écran, une seule fois.
+//!
+//! # Pourquoi le framebuffer est un `static` et non un champ par valeur
+//!
+//! Il vit en `.bss` et se réclame une fois via [`take_framebuffer`], plutôt
+//! que d'être construit dans [`FramebufferedDisplay::new`].
+//!
+//! La version précédente le construisait par valeur — `Self { framebuffer:
+//! [0; N], .. }` — et **plantait la carte en `--release` comme en debug
+//! selon le profil** : un tableau de 150 Ko construit dans la frame de
+//! `new()` puis renvoyé par valeur demande une copie, donc 300 Ko de pile
+//! au moment de l'appel, pour 246 Ko disponibles. En `--release` le
+//! compilateur élide la copie et ça passe ; en debug il ne l'élide pas, et
+//! la pile déborde — HardFault au démarrage, sans message. Constaté sur
+//! matériel réel.
+//!
+//! Passer par un `static` supprime la question : plus aucune copie, plus
+//! aucune dépendance au profil de compilation ni aux optimisations du
+//! compilateur pour que le firmware démarre. C'est aussi ce qui rend le
+//! coût visible — 150 Ko en `.bss` apparaissent dans `size`, alors qu'une
+//! grosse allocation de pile ne se voit nulle part avant de déborder.
 //!
 //! # Utilisation
 //!
 //! ```ignore
 //! let ili9341_display = Ili9341::new(iface, reset_pin, &mut delay, Orientation::Landscape, DisplaySize240x320)?;
-//! let mut display = FramebufferedDisplay::new(ili9341_display);
+//! let framebuffer = display::take_framebuffer().expect("un seul ecran");
+//! let mut display = FramebufferedDisplay::new(ili9341_display, framebuffer);
 //!
 //! // `draw_fn` doit être pure/idempotente (dessiner un état donné, pas des
 //! // effets de bord cumulatifs) : appelée une fois par bande, avec le même
@@ -41,6 +56,9 @@
 //! // écrit contre `DrawTarget` normalement (ex. Screens::draw).
 //! display.render(|target| screens.draw(target, &state))?;
 //! ```
+
+use core::cell::Cell;
+use critical_section::Mutex;
 
 use display_interface::WriteOnlyDataCommand;
 use embedded_hal::digital::OutputPin;
@@ -58,10 +76,38 @@ pub const SCREEN_HEIGHT: usize = 240;
 /// RAM redevient contrainte.
 pub const BAND_HEIGHT: usize = SCREEN_HEIGHT;
 
-/// Écran ILI9341 avec framebuffer RAM bandé — cf. doc de module.
+/// Le tampon lui-même — cf. doc de module pour la raison de ce type.
+pub type Framebuffer = [u16; SCREEN_WIDTH * BAND_HEIGHT];
+
+/// Le framebuffer, en `.bss`. Réclamé une seule fois via
+/// [`take_framebuffer`], jamais accédé autrement.
+static mut FRAMEBUFFER: Framebuffer = [0; SCREEN_WIDTH * BAND_HEIGHT];
+
+/// Vrai dès que [`take_framebuffer`] a rendu la main sur `FRAMEBUFFER`.
+static FRAMEBUFFER_TAKEN: Mutex<Cell<bool>> = Mutex::new(Cell::new(false));
+
+/// Réclame le framebuffer statique. Renvoie `None` au deuxième appel.
+///
+/// C'est cette unicité qui rend sûre la référence `&'static mut` distribuée
+/// ici : un seul appelant peut l'obtenir, donc il n'existe jamais deux
+/// chemins d'écriture vers le même tampon. Le drapeau est lu et posé sous
+/// section critique, donc l'unicité tient aussi entre les deux cœurs.
+pub fn take_framebuffer() -> Option<&'static mut Framebuffer> {
+    let already_taken = critical_section::with(|cs| FRAMEBUFFER_TAKEN.borrow(cs).replace(true));
+    if already_taken {
+        return None;
+    }
+    // Sûr : le drapeau ci-dessus garantit qu'on ne passe ici qu'une fois,
+    // donc cette référence exclusive est la seule qui existera. `&raw mut`
+    // évite de créer une référence intermédiaire vers le `static mut`
+    // (interdit en édition 2024).
+    Some(unsafe { &mut *(&raw mut FRAMEBUFFER) })
+}
+
+/// Écran ILI9341 avec framebuffer RAM — cf. doc de module.
 pub struct FramebufferedDisplay<IFACE, RESET> {
     display: Ili9341<IFACE, RESET>,
-    framebuffer: [u16; SCREEN_WIDTH * BAND_HEIGHT],
+    framebuffer: &'static mut Framebuffer,
 }
 
 impl<IFACE, RESET> FramebufferedDisplay<IFACE, RESET>
@@ -69,8 +115,10 @@ where
     IFACE: WriteOnlyDataCommand,
     RESET: OutputPin,
 {
-    pub fn new(display: Ili9341<IFACE, RESET>) -> Self {
-        Self { display, framebuffer: [0; SCREEN_WIDTH * BAND_HEIGHT] }
+    /// `framebuffer` vient de [`take_framebuffer`] — cf. doc de module
+    /// pour pourquoi il n'est pas construit ici.
+    pub fn new(display: Ili9341<IFACE, RESET>, framebuffer: &'static mut Framebuffer) -> Self {
+        Self { display, framebuffer }
     }
 
     /// Dessine l'écran en appelant `draw_fn` une fois par bande verticale
@@ -89,12 +137,12 @@ where
     {
         let mut band_start_y = 0;
         while band_start_y < SCREEN_HEIGHT {
-            let mut target = FbTarget { pixels: &mut self.framebuffer, band_start_y };
+            let mut target = FbTarget { pixels: self.framebuffer, band_start_y };
             draw_fn(&mut target)?;
 
             let y0 = band_start_y as u16;
             let y1 = (band_start_y + BAND_HEIGHT - 1) as u16;
-            let _ = self.display.draw_raw_slice(0, y0, (SCREEN_WIDTH - 1) as u16, y1, &self.framebuffer);
+            let _ = self.display.draw_raw_slice(0, y0, (SCREEN_WIDTH - 1) as u16, y1, self.framebuffer);
 
             band_start_y += BAND_HEIGHT;
         }

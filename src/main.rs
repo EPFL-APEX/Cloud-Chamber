@@ -98,15 +98,15 @@ use cloud_chamber_firmware::cloud_chamber_hal::sensors::{IndependentSensors, Sen
 use cloud_chamber_firmware::cloud_chamber_hal::units::Celsius;
 use cloud_chamber_firmware::config::operating::REGULATION_BAND_C;
 use cloud_chamber_firmware::config::wiring::{
-    ABP2_ADDR, CHAMBER_PRESSURE_MAX, CHAMBER_PRESSURE_MIN, PIN_COMPRESSOR_RELAY, PIN_ENCODER_A,
+    PIN_COMPRESSOR_RELAY, PIN_ENCODER_A,
     PIN_ENCODER_B, PIN_ENCODER_SW, PIN_HV_RELAY, PIN_I2C_SCL, PIN_I2C_SDA, PIN_ISO_HEATER_RELAY,
     PIN_LIGHTS_RELAY, PIN_ONEWIRE, PIN_PUMP_RELAY, PIN_SCREEN_CS, PIN_SCREEN_DC, PIN_SCREEN_MOSI,
     PIN_SCREEN_RESET, PIN_SCREEN_SCK, PIN_WINDOW_HEATER_RELAY,
 };
-use cloud_chamber_firmware::drivers::abp2::{Abp2Driver, Abp2Sensor};
+use cloud_chamber_firmware::drivers::bme280::{Bme280Driver, Bme280Sensor};
 use cloud_chamber_firmware::drivers::breaker::GpioBreaker;
 use cloud_chamber_firmware::drivers::compressor::Compressor;
-use cloud_chamber_firmware::drivers::display::FramebufferedDisplay;
+use cloud_chamber_firmware::drivers::display::{self, FramebufferedDisplay};
 use cloud_chamber_firmware::drivers::ds18b20::{
     Ds18b20Bus, Ds18b20Sensors, Resolution, rp2040_adapter::Rp2040OpenDrain,
 };
@@ -337,7 +337,8 @@ fn main() -> ! {
             panic!("ecran indisponible");
         }
     };
-    let mut display = FramebufferedDisplay::new(ili);
+    let framebuffer = display::take_framebuffer().expect("le framebuffer n'est reclame qu'ici");
+    let mut display = FramebufferedDisplay::new(ili, framebuffer);
 
     // ─── Encodeur (A/B/SW, pull-up interne) — piloté par interruption ──────
     let encoder = RotaryEncoder::new(
@@ -394,7 +395,7 @@ fn main() -> ! {
         }
     };
 
-    // ─── Pression : ABP2 sur I²C0 ──────────────────────────────────────────
+    // ─── Pression : BME280 sur I²C0 ────────────────────────────────────────
     let sda = unsafe { new_pin(DynPinId { bank: DynBankId::Bank0, num: PIN_I2C_SDA }) }
         .try_into_function::<FunctionI2c>()
         .ok()
@@ -415,10 +416,23 @@ fn main() -> ! {
 
     let i2c = I2C::new_controller(pac.I2C0, sda, scl, 400.kHz(), &mut pac.RESETS, clocks.system_clock.freq());
 
-    let pressure_source = IndependentSensors([Abp2Sensor::new(
-        Abp2Driver::new(i2c, ABP2_ADDR, CHAMBER_PRESSURE_MIN, CHAMBER_PRESSURE_MAX),
-        timer,
-    )]);
+    // Source de pression : BME280, pas ABP2. C'est ce qui est câblé sur ce
+    // montage — l'ABP2 (pression d'un circuit de la chambre, 0–1 bar) n'y
+    // est pas monté. Le BME280 mesure la pression **atmosphérique absolue**
+    // (~1013 hPa) : il remplit le créneau `press` mais ne décrit pas la même
+    // grandeur, et une sécurité pression ajoutée un jour devra en tenir
+    // compte. Le driver ABP2 reste dans l'arbre, prêt à reprendre ce rôle.
+    let mut bme = Bme280Sensor::new(Bme280Driver::new(i2c), timer, timer);
+    if let Err(e) = bme.init() {
+        // Sans init, les coefficients de compensation ne sont pas chargés et
+        // toutes les lectures seraient fausses — mieux vaut le dire ici que
+        // laisser `control_loop` paniquer sur un capteur muet.
+        defmt::error!("echec init BME280 (adresse 0x76) : {}", defmt::Debug2Format(&e));
+        panic!("capteur de pression indisponible");
+    }
+    defmt::info!("BME280 initialise — source de pression");
+
+    let pressure_source = IndependentSensors([bme]);
 
     let sensors = Sensors::new(temperature_source, pressure_source);
 

@@ -1,453 +1,246 @@
 # Cloud Chamber — Firmware
 
-Firmware embarqué pour une chambre à brouillard, écrit en Rust `no_std`.
-Cible principale : **RP2040** (Raspberry Pi Pico), support **RP2350** (Pico 2) prévu par construction.
+Firmware embarqué pour une chambre à brouillard, en Rust `no_std`.
+Cible : **RP2040** (Pico), support **RP2350** (Pico 2) prévu par construction.
 
----
-
-## Table des matières
-
-1. [Vue d'ensemble](#vue-densemble)
-2. [Matériel requis](#matériel-requis)
-3. [Prérequis logiciels](#prérequis-logiciels)
-4. [Mise en route](#mise-en-route)
-5. [Architecture du projet](#architecture-du-projet)
-6. [La boucle de contrôle](#la-boucle-de-contrôle)
-7. [`cloud_chamber_hal` — traits et inversion de dépendance](#cloud_chamber_hal--traits-et-inversion-de-dépendance)
-8. [Drivers disponibles](#drivers-disponibles)
-9. [Interface utilisateur](#interface-utilisateur)
-10. [Tests](#tests)
-11. [État du projet / limites connues](#état-du-projet--limites-connues)
+> ### /!\ Projet en cours — ne pas faire tourner sans surveillance
+>
+> Le firmware démarre, s'affiche et lance un cycle, mais il n'est **ni
+> terminé ni validé**, et il pilote une haute tension. Manques les plus
+> structurants :
+>
+> - une panique du cœur de contrôle **laisse les relais en l'état**, et
+>   l'écran continue comme si de rien n'était ;
+> - la seule sécurité active est la température de sortie compresseur —
+>   **aucune surveillance de pression ni de surintensité** ;
+> - après un déclenchement, seul un reflash réarme la machine ;
+> - plusieurs broches et seuils sont encore `TODO CÂBLAGE` / `TODO CALIBRAGE`.
+>
+> Détail complet : [État du projet](#état-du-projet).
 
 ---
 
 ## Vue d'ensemble
 
-Le firmware tourne sur un **seul cœur**. Il n'y a pas de boucle de sécurité
-séparée à 100 Hz sur un second cœur : la sécurité est une source de
-transition prioritaire évaluée à chaque tour de la boucle de contrôle
-principale, au même titre que la logique de phase.
+Le firmware occupe **les deux cœurs**, avec une frontière nette :
 
 ```
-logic::control_loop::run()
-  └─ boucle : sonde les capteurs
-              → réconcilie l'état avec SHARED_STATE (écritures externes de l'UI)
-              → sécurité (priorité absolue) ou logique de phase
-              → applique le plan aux actionneurs
-              → publie l'état (si rien n'a changé entre-temps côté SHARED_STATE)
-                    ↕ SHARED_STATE : Mutex<RefCell<SharedState>>
-                                     lu par l'UI (et tout autre lecteur)
+Cœur 1 — contrôle                     Cœur 0 — interface
+control_loop::run()                   TIMER_IRQ_0 (1 ms) : scrute l'encodeur
+  sonde → réconcilie → décide            → empile dans EVENTS
+  → applique aux actionneurs           boucle : dépile → UiApp → redessine
+  → publie l'état
+            ↕                                      ↕
+     SHARED_STATE (critical_section::Mutex<RefCell<_>>) + shared::settings
 ```
 
-`SHARED_STATE` reste un `static` partagé façon multi-cœur (`critical_section::Mutex<RefCell<_>>`)
-même si tout tourne aujourd'hui sur un seul cœur — ça garde la porte ouverte
-à un futur retour à un second cœur sans revoir le modèle de données, et ça
-donne déjà une frontière claire entre « ce qui contrôle » (`control_loop`)
-et « ce qui lit » (l'UI, ou tout autre consommateur).
+Le cœur 1 possède capteurs et actionneurs, le cœur 0 possède l'écran :
+rien n'est partagé hors de `SHARED_STATE`. La sécurité n'est pas une boucle
+séparée, c'est une transition prioritaire évaluée à chaque tour du contrôle.
+
+> **Piège.** Sur RP2040, `critical-section-impl` est un **spinlock matériel
+> partagé par les deux cœurs**, pas un masquage d'interruptions local : une
+> section critique tenue longtemps d'un côté met l'autre en attente active.
+> D'où la règle — **rien ne dessine ni ne fait d'E/S sous verrou**. La boucle
+> d'affichage copie `SharedState` sous verrou court, puis dessine hors
+> verrou. Sinon un rendu plein écran bloquerait le cœur 1 en pleine séquence
+> 1-Wire, dont le décodage dépend d'un timing à la microseconde.
 
 ---
 
-## Matériel requis
+## Matériel
 
-| Composant | Broche | Constante (`config.rs`) |
-|-----------|--------|--------------------------|
-| 5× DS18B20 (1-Wire, température) | GP15 — pull-up 4,7 kΩ vers 3,3 V obligatoire | `PIN_ONEWIRE` |
-| ABP2 basse pression 0–1 bar (I²C) | SDA → GP4, SCL → GP5, adresse `0x28` | `ABP2_BP_ADDR` |
-| ABP2 haute pression 0–12 bar (I²C) | SDA → GP4, SCL → GP5, adresse `0x38` | `ABP2_HP_ADDR` |
-| Relais compresseur | GP16 | `PIN_COMPRESSOR_RELAY` |
-| Relais haute tension | GP17 *provisoire, jamais vérifié sur le montage réel* | `PIN_HV_RELAY` |
-| Relais chauffage isopropanol | GP18 *provisoire, jamais vérifié sur le montage réel* | `PIN_ISO_HEATER_RELAY` |
+Câblage réel dans [`src/config/wiring.rs`](src/config/wiring.rs), qui
+**vérifie à la compilation** qu'aucune broche n'est réclamée deux fois.
 
-L'ordre de découverte des 5 sondes DS18B20 sur le bus 1-Wire (SEARCH ROM)
-n'est pas garanti fixe d'un montage à l'autre — vérifier au boot (logs
-`INFO ds{i}`) avant de faire confiance aux index (`CHAMBER_TEMP_IDX`,
-`COMPRESSOR_OUT_IDX`, `ISO_TEMP_IDX` dans `cloud_chamber_hal/config.rs`).
+| Rôle | Broche | Constante |
+|------|--------|-----------|
+| Bus 1-Wire, 8× DS18B20 | GP23 — pull-up 4,7 kΩ **obligatoire** | `PIN_ONEWIRE` |
+| I²C0 — BME280 pression (`0x76`, ambiant absolu) | SDA GP20 / SCL GP21 | `PIN_I2C_*` |
+| Relais compresseur | GP5 | `PIN_COMPRESSOR_RELAY` |
+| Relais haute tension | GP14 | `PIN_HV_RELAY` |
+| Relais chauffage isopropanol | GP9 | `PIN_ISO_HEATER_RELAY` |
+| Relais pompe / éclairage / chauffage vitre | GP7 / GP8 / GP10 | `PIN_PUMP_RELAY`… |
+| Encodeur A / B / bouton | GP26 / GP27 / GP28 | `PIN_ENCODER_*` |
+| Écran ILI9341 — SCK / MOSI (SPI0) | GP18 / GP19 | `PIN_SCREEN_*` |
+| Écran — CS / DC / RESET (GPIO) | GP22 / GP16 / GP17 | `PIN_SCREEN_*` |
 
-Un ampèremètre (`NUMBER_OF_AMPMETER`) est prévu dans la forme du HAL mais
-n'est pas encore câblé dans `Sensors`/`SensorSnapshot` — pas de protection
-surintensité logicielle pour l'instant.
+**Sorties de puissance à 8 mA** (`RELAY_DRIVE_STRENGTH`), pas les 4 mA par
+défaut : le MOC3043 demande jusqu'à 5 mA dans sa LED, et à 4 mA la tension
+de sortie s'effondre sous ~10 mA — amorçage aléatoire. La valeur est relue
+depuis le registre au démarrage et journalisée. Les broches de l'écran
+gardent 4 mA (entrées CMOS, à côté d'un SPI à 32 MHz).
 
----
+### Drivers
 
-## Prérequis logiciels
+Intégrés : **DS18B20** (1-Wire, accès registre direct, clones supportés) ·
+**BME280** (pression I²C) · **ILI9341** (SPI + framebuffer RAM) · **rotary encodeur** (bouton débruité) · relais **compresseur** et
+**chauffage** (hystérésis, sens opposés) · relais tout-ou-rien
+(**haute tension**, **pompe**, **éclairage**, **chauffage vitre**).
 
-### Rust et cibles embarquées
+Présents mais non câblés : **ABP2** · **ADC** tension/courant ·
+**capteur de fermeture** · **triac zero-cross PIO** · **stockage flash**
+(trait `FlashOps` sans implémentation RP2040).
 
-```bash
-rustup target add thumbv6m-none-eabi          # RP2040
-rustup target add thumbv8m.main-none-eabihf   # RP2350 (Cortex-M33)
-rustup target add riscv32imac-unknown-none-elf # RP2350 (mode RISC-V)
-```
-
-### Outils de flash et de débogage
-
-```bash
-cargo install flip-link       # linker wrapper (protection stack overflow)
-cargo install probe-rs-tools  # flash + logs via sonde SWD
-```
-
-### Sélectionner la puce cible
-
-```bash
-echo rp2040 > .pico-rs        # Raspberry Pi Pico
-echo rp2350 > .pico-rs        # Raspberry Pi Pico 2 (Cortex-M33)
-echo rp2350-riscv > .pico-rs  # Raspberry Pi Pico 2 (RISC-V)
-```
-
-`build.rs` lit ce fichier à chaque build et met à jour `.cargo/config.toml`
-(cible, linker script, `cfg(rp2040)`/`cfg(rp2350)`) en conséquence.
+**Index des sondes** : l'ordre SEARCH ROM n'est pas garanti d'un montage à
+l'autre — le vérifier avec `identify_temp_sensors` avant de se fier à
+`CHAMBER_TEMP_IDX` & co. (`cloud_chamber_hal/config.rs`).
 
 ---
 
-## Mise en route
+## Démarrage
 
 ```bash
-git clone <url-du-repo>
-cd Cloud-Chamber
-echo rp2040 > .pico-rs
-cargo check
+rustup target add thumbv6m-none-eabi            # RP2040
+cargo install flip-link probe-rs-tools
+
+echo rp2040 > .pico-rs   # ou rp2350 / rp2350-riscv ; build.rs en déduit la cible
+
+cargo run --release --target thumbv6m-none-eabi \
+    --features bin-cloud-chamber --bin cloud_chamber
 ```
 
-> **Pas encore de firmware flashable.** Il n'existe aujourd'hui aucun
-> `src/main.rs` ni binaire enregistré (`autobins = false`, aucun `[[bin]]`
-> dans `Cargo.toml`) : rien ne construit encore les `Pins`/`I2c`/ADC réels
-> ni n'assemble `Sensors`/`Actuators` pour appeler `logic::control_loop::run()`.
-> Toute la logique de contrôle est écrite et testée (voir
-> [État du projet](#état-du-projet--limites-connues)), mais le bring-up
-> matériel reste à faire.
+`flip-link` n'est pas optionnel : il place la pile pour qu'un débordement
+tombe en mémoire non mappée (HardFault net) plutôt que d'écraser les
+`static`.
 
-En attendant, la boucle de contrôle se vérifie desktop (sans matériel) :
+> **Toujours flasher en `--release`.** En debug, `embedded-graphics` est
+> beaucoup plus lent : un rendu plein écran passe de quelques dizaines de ms à
+> plusieurs secondes. Les deux profils fonctionnent, mais l'UI est
+> inutilisable en debug.
+
+Le firmware **panique volontairement** si un capteur ne répond pas au
+premier sondage ; le message donne le masque des index muets. Il faut donc
+les **9 capteurs présents** (8 températures + 1 pression) pour démarrer.
+
+> La pression vient aujourd'hui du **BME280**, qui mesure l'ambiant absolu
+> (~1013 hPa) — pas la pression d'un circuit de la chambre.
+
+Sans matériel :
 
 ```bash
-cargo test-host-linux   # cargo test --target x86_64-unknown-linux-gnu --lib
+cargo test-host-linux      # suite complète, aucune cible embarquée requise
+cargo test-live-ui-linux   # fenêtre SDL2 sur l'UI réelle (optionnel)
 ```
+
+Binaires de bring-up, chacun derrière `--features bin-<nom>` : `blinky`,
+`identify_temp_sensors`, `relay_test`, `bme_test`, `screen_test`,
+`encoder_test`, `ui_test`.
 
 ---
 
-## Architecture du projet
+## Architecture
 
 ```
 src/
-├── lib.rs                     — Racine de la lib, réexporte les modules publics
-├── config.rs                  — Broches GPIO, adresses I²C, seuils, timings de phase
-├── comm/                      — Liaison série USB (feature "usb-comm", cf. limites connues)
+├── main.rs              — Point de composition : matériel réel, lancement des deux cœurs
+├── config/              — Propre à CETTE installation : wiring, operating, settings
 │
-├── cloud_chamber_hal/         — Traits abstraits (interfaces matériel), génériques
-│   ├── sensors.rs             — Sensor, DeferredSensor, BatchSensor, DeferredBatchSensor, Sensors<..>
-│   ├── actuators.rs           — BinaryActuator, AnalogActuator<Unit>, Actuators<..>, ActuatorPlan
-│   ├── timer.rs                — MonotonicTimer, WatchdogFeed, Instant, Duration
-│   ├── measurement.rs         — Measurement<Unit> (valeur + horodatage)
-│   ├── units.rs                — Celsius, HectoPascal, Volt...
-│   └── config.rs               — Forme des tableaux Sensors/SensorSnapshot (NUMBER_OF_*, index par rôle)
+├── cloud_chamber_hal/   — Traits abstraits, génériques (aucune dépendance vers logic/)
+│   ├── sensors.rs       — Sensor, BatchSensor, DeferredBatchSensor, Sensors<Tmp, Prs>
+│   ├── actuators.rs     — BinaryActuator, TargetActuator, Actuators<..>, ActuatorPlan
+│   └── timer.rs, measurement.rs, ring_buffer.rs, units.rs, config.rs
 │
-├── drivers/                   — Implémentations concrètes des traits ci-dessus
-│   ├── ds18b20.rs             — Température 1-Wire (accès registre direct, clones supportés)
-│   ├── bme280.rs               — Température/humidité/pression I²C (non intégré à Sensors, cf. limites)
-│   ├── abp2.rs                  — Pression Honeywell I²C
-│   ├── adc.rs                  — Tension/courant via l'ADC embarqué
-│   ├── breaker.rs               — Relais GPIO (implémente BinaryActuator)
-│   ├── closure.rs               — Détection fermeture de chambre (contact sec)
-│   ├── encoder.rs               — Encodeur rotatif quadrature + bouton
-│   └── mock.rs                  — Mocks (capteurs, actionneur, horloge) — `#[cfg(test)]` uniquement
+├── drivers/             — Implémentations concrètes (cf. liste ci-dessous)
 │
-├── logic/                     — Machine à états et boucle de contrôle (le cœur du firmware)
-│   ├── control_loop.rs        — Point d'entrée `run()` + `tick()` (un tour de boucle, testable)
-│   ├── cooling.rs              — Séquence de démarrage (6 phases), pur
-│   ├── stopping.rs             — Séquence d'arrêt (3 phases), pur
-│   ├── phase_clock.rs           — Durées/timeouts par phase, `PhaseClock<Clk>`, `advance()`
-│   ├── security.rs              — Seuils de sécurité, `SafetyMonitor` (anti-rebond, verrouillage)
-│   └── probing.rs               — Plan de sondage, `MeasurementHistory` (ring buffers horodatés)
+├── logic/               — Machine à états (le cœur du firmware), pur et testé
+│   ├── control_loop.rs  — run() + tick() (un tour, testable)
+│   ├── cooling.rs       — Séquence de démarrage (6 phases) · stopping.rs (3 phases)
+│   ├── phase_clock.rs   — Durées/timeouts par phase, advance()
+│   └── security.rs, probing.rs, timing.rs
 │
-├── shared/                    — État partagé entre le contrôle et ses lecteurs (UI...)
-│   ├── data.rs                 — SharedState, SHARED_STATE (static), SensorSnapshot, SystemTask
-│   └── ring_buffer.rs           — Buffer circulaire générique horodaté
-│
-└── ui/                         — Interface graphique (écran ILI9341 320×240, encodeur rotatif)
-    ├── navigator.rs             — Pile de navigation entre écrans (Screen, const generic DEPTH)
-    ├── interactions.rs           — Traits Rotary / Click
-    ├── theme.rs                  — Palette de couleurs et styles
-    └── screens/                  — Écrans concrets (menu principal, statistiques, graphe température)
+├── shared/              — Frontière entre les deux cœurs : data.rs, settings.rs
+├── ui/                  — app.rs (sommet), router.rs, navigator.rs, screens/
+└── comm/                — Liaison USB (feature `usb-comm`, cassée)
 ```
 
-### Principe d'inversion de dépendance
+### Inversion de dépendance
 
-```
-logic/  ──depends on──>  cloud_chamber_hal (traits, génériques)
-                                 ↑
-                          drivers/ (implémentations concrètes)
-```
+`logic/` ne connaît que des traits, jamais un driver concret :
+`control_loop::run()` est générique sur `Sensors<Tmp, Prs>`,
+`Actuators<Hv, Cool, Iso, Pump, Lights, Glass>` et `Clk`. Toute la logique
+se teste donc avec des mocks, sans matériel. `cloud_chamber_hal` ne dépend
+jamais de `logic/`, un type qui doit vivre dans le HAL pour l'ergonomie de
+l'API (ex. `ActuatorPlan`) y est déplacé, jamais importé à l'envers.
 
-`logic/` ne connaît que des traits (`Sensor`, `BinaryActuator`,
-`MonotonicTimer`...), jamais un driver concret — `control_loop::run()` est
-générique sur `Sensors<Ts,Ps,Vs>`, `Actuators<Hv,Comp,Iso>` et `Clk`. On
-peut donc tester toute la logique avec des mocks (`drivers::mock`) sans
-aucun accès matériel, et substituer un driver réel sans toucher à `logic/`.
+### Décision / application, à tous les étages
 
-`cloud_chamber_hal` ne dépend jamais de `logic/` : quand un type a besoin de
-vivre dans le HAL pour des raisons d'ergonomie d'API (ex. `ActuatorPlan`,
-pour que `Actuators::apply()` le prenne directement), il est déplacé *dans*
-le HAL plutôt qu'importé depuis `logic/` — la dépendance reste à sens
-unique, jamais l'inverse.
+Une phase décide sa transition **et** construit son `ActuatorPlan`, sans
+toucher au matériel ; `Actuators::apply()` ne fait qu'exécuter. Même
+principe côté UI : un écran renvoie une décision (`NavAction`, demande
+d'état) et n'agit jamais lui-même. C'est ce qui rend les deux couches
+testables sans matériel ni `static`.
 
 ---
 
 ## La boucle de contrôle
 
-`SystemTask` (`shared/data.rs`) est la machine à états de haut niveau :
-
 ```rust
 pub enum SystemTask {
     Idle,
-    Cooling(CoolingPhase),   // SensorCheck → PreCoolingThePlate → StartingIpaCirculation
-                              //   → SaturatingAirWithIpa → HighVoltage → FinalCheckBeforeStabilising
+    Cooling(CoolingPhase),   // SensorCheck → PreCooling → IpaCirculation
+                             //   → Saturation → HighVoltage → FinalCheck
     Stabilising,             // régime permanent, pas de sortie automatique
-    Stopping(StoppingPhase), // CutHighVoltage → CutCompressor → WaitPressureEquilibrium
-    Tripped(SafetyCause),    // coupure de sécurité, verrouillé jusqu'à réarmement opérateur
+    Stopping(StoppingPhase), // CutHighVoltage → CutCompressor → WaitPressure
+    Tripped(SafetyCause),    // verrouillé jusqu'à réarmement opérateur
 }
 ```
 
-### Décision / application, séparées partout
+L'UI écrit dans `SHARED_STATE.task` pour demander un démarrage — pas de
+canal séparé. Deux règles protègent contre les races : `tick()` **adopte**
+en début de tour toute écriture externe, et **publie** en fin de tour par
+compare-and-swap (si l'UI a écrit entre-temps, la décision calculée sur la
+base périmée est abandonnée). Conséquence : une transition décidée par le
+contrôleur lui-même prime toujours sur une valeur restée en retard, sans
+cas particulier par phase.
 
-Chaque phase de `cooling.rs`/`stopping.rs` a une seule responsabilité :
-décider la transition **et** construire son propre `ActuatorPlan` (quels
-actionneurs allumer), sans jamais toucher au matériel. `Actuators::apply()`
-(dans le HAL) ne fait qu'exécuter ce plan — aucune logique dedans. Ce même
-principe décision/application se retrouve à chaque étage :
-
-- `react_to(task, history) -> (SystemTask, ActuatorPlan)` : décision pure,
-  basée uniquement sur les mesures.
-- `advance(task, history, elapsed_ms, chamber_stale_ms) -> (SystemTask, ActuatorPlan)`
-  (`phase_clock.rs`) : ajoute la priorité mesure > abandon perte-capteur >
-  délai/timeout — toujours pure, ne possède rien.
-- `PhaseClock<Clk>` : possède l'horloge de l'appareil (`Clk: MonotonicTimer`)
-  et sait uniquement « quelle phase, depuis quand » — pas de logique de
-  décision.
-- `control_loop::tick()` : orchestre explicitement l'enchaînement (sécurité
-  en priorité absolue, sinon `advance()`, puis `Actuators::apply()`, puis
-  publication) — l'orchestration reste visible dans ce fichier, jamais
-  cachée dans une méthode d'un autre type.
-
-### Réconciliation avec `SHARED_STATE`
-
-L'UI peut écrire directement dans `SHARED_STATE.task` pour demander un
-démarrage, un arrêt, ou acquitter un `Tripped` — pas de canal séparé. Deux
-règles, dans les deux sens, protègent contre les races :
-
-1. **En début de tour**, `tick()` relit `SHARED_STATE.task` et l'adopte
-   (`PhaseClock::set`, no-op si la valeur n'a pas changé) — donc une
-   écriture externe survenue depuis le tour précédent est prise en compte
-   avant de décider quoi que ce soit.
-2. **En fin de tour**, la publication de la nouvelle tâche est un
-   *compare-and-swap* atomique (une seule section critique) : elle
-   n'écrit `next` que si `SHARED_STATE` vaut encore exactement ce qui a
-   été lu en début de tour. Si l'UI a écrit entre-temps, `next` (calculé
-   sur une base désormais périmée) est abandonné, et le tour suivant
-   repart de la vraie valeur de `SHARED_STATE`.
-
-Conséquence : **toute transition décidée par le contrôleur lui-même**
-(avancement normal, abandon perte-capteur, timeout, fin de cycle) est
-toujours prioritaire sur une valeur de `SHARED_STATE` restée en retard —
-aucun cas particulier à coder phase par phase, la règle générale suffit.
-
----
-
-## `cloud_chamber_hal` — traits et inversion de dépendance
-
-| Trait | Rôle |
-|-------|------|
-| `Sensor<T>` / `DeferredSensor<T>` | Lecture simple / lecture différée (conversion à attendre, ex. DS18B20) |
-| `BatchSensor<Unit, N>` / `DeferredBatchSensor<Unit, N>` | Lecture groupée de `N` capteurs de la même catégorie |
-| `IndependentSensors<S, N>` | Enrobe `N` capteurs indépendants derrière l'interface `BatchSensor` |
-| `BinaryActuator` | Sortie tout-ou-rien (`turn_on`/`turn_off`) — relais HV/compresseur/iso |
-| `AnalogActuator<Unit>` | Sortie continue dans une unité physique (réutilisable si l'iso passe en PWM) |
-| `MonotonicTimer` | Horloge monotone (`now() -> Instant`, `elapsed_since()` par défaut) |
-
-`Instant`/`Duration` (`cloud_chamber_hal::timer`) sont en microsecondes sur
-`u64` — pas de débordement avant des centaines de milliers d'années, utile
-puisque `Stabilising` (régime permanent) peut durer des jours en usage réel.
-
-`Sensors<Tmp, Prs, Vlt>` et `Actuators<Hv, Comp, Iso>` regroupent les trois
-sources/sorties de la chambre ; tous deux génériques, tous deux traités de
-façon symétrique (pas de logique dans `Actuators`, juste l'exécution du
-plan).
-
----
-
-## Drivers disponibles
-
-### DS18B20 — Température 1-Wire
-
-```rust
-use cloud_chamber_firmware::drivers::ds18b20::{Ds18b20Sensors, Resolution};
-```
-
-Protocole 1-Wire implémenté directement (sans crate externe), accès
-registre SIO pour tenir la fenêtre de lecture (~10µs) sur les clones
-DS18B20 testés sur ce montage — une version générique `embedded-hal`
-`OutputPin` ne suffisait pas (pousse activement un niveau haut au lieu de
-relâcher la ligne en open-drain). Découverte SEARCH ROM au boot.
-
-| Résolution | Précision  | Durée de conversion max |
-|------------|------------|--------------------------|
-| `Bits9`    | ± 0,5 °C   | 150 ms |
-| `Bits10`   | ± 0,25 °C  | 240 ms |
-| `Bits11`   | ± 0,125 °C | 430 ms |
-| `Bits12`   | ± 0,0625 °C| 800 ms |
-
-### ABP2 — Pression Honeywell (I²C)
-
-```rust
-use cloud_chamber_firmware::drivers::abp2::Abp2Sensor;
-use cloud_chamber_firmware::config::{ABP2_BP_ADDR, BP_PRESSURE_MIN, BP_PRESSURE_MAX};
-```
-
-Conversion selon l'Application Note Honeywell AN-1728. Deux capteurs
-distincts (basse/haute pression), pas de partage de bus particulier au-delà
-de l'I²C standard.
-
-### ADC — Tension / courant
-
-```rust
-use cloud_chamber_firmware::drivers::adc::{AdcVoltageSensor, AdcCurrentSensor};
-```
-
-Couche `AdcChannel` séparée de la conversion (tension/courant), pour
-pouvoir tester la logique de conversion avec `MockChannel` sans ADC réel.
-
-### Relais (`BinaryActuator`)
-
-```rust
-use cloud_chamber_firmware::drivers::breaker::GpioBreaker;
-```
-
-Un seul driver générique pour les trois relais (HV, compresseur, iso) —
-`active_high` gère les deux sens de câblage sans dupliquer la logique.
-
-### BME280 — Non intégré
-
-Le driver existe (`drivers/bme280.rs`, température/humidité/pression I²C)
-mais n'est pas câblé dans `Sensors`/`SensorSnapshot` : cette structure ne
-modélise aujourd'hui aucune catégorie de mesure ambiante. À intégrer si
-besoin d'afficher/utiliser une mesure BME280 (ambiance, sursaturation IPA).
-
----
-
-## Interface utilisateur
-
-Écran ILI9341 320×240, navigation par encodeur rotatif quadrature
-(`drivers::encoder`) — pas de tactile.
-
-- `ui::navigator::Navigator<DEPTH>` : pile de navigation générique (`Screen`
-  comme simple étiquette), testée en isolation.
-- `ui::interactions::{Rotary, Click}` : traits que chaque écran implémente
-  pour réagir à la rotation/au clic.
-- `ui::screens::menu` : menu principal.
-- `ui::screens::stats` : écran de statistiques en direct (phase courante,
-  cause de trip, températures, pressions, sorties actionneurs attendues).
-- `ui::screens::temp` : graphe de température (ring buffer horodaté).
+Garde symétrique côté UI (`ui::router`) : un démarrage n'est accordé que
+depuis `Idle` — rappuyer sur le bouton pendant un cycle affiche le suivi
+sans relancer la séquence.
 
 ---
 
 ## Tests
 
-```bash
-cargo test-host-linux   # cargo test --target x86_64-unknown-linux-gnu --lib
-```
+187 tests, tous sur poste (`#![cfg_attr(not(test), no_std)]`) :
 
-`#![cfg_attr(not(test), no_std)]` : en mode test, la lib compile avec `std`
-disponible (nécessaire pour `critical_section` sur desktop et pour les
-tests interactifs SDL2). Aucune cible embarquée n'est requise pour lancer
-la suite de tests.
-
-### Ce qui est testé, et où
-
-- **Logique pure** (`cooling.rs`, `stopping.rs`, `phase_clock.rs`,
-  `security.rs`, `probing.rs`) : chaque condition de transition, chaque
-  timeout, `SafetyMonitor` (anti-rebond, verrouillage, réarmement) —
-  testés isolément, sans mock, ce sont des fonctions/structures pures.
-- **`logic::control_loop`** : `run()` boucle indéfiniment (`-> !`), donc
-  non testable directement — son corps de boucle est extrait dans
-  `tick()`, testable. Une suite d'intégration (`drivers::mock` +
-  `Harness` de test) enchaîne `tick()` sur plusieurs tours comme en usage
-  réel : cycle complet Idle → Stabilising → Idle, abandons par
-  timeout/perte-capteur, priorité sécurité, réconciliation `SHARED_STATE`
-  dans les deux sens (y compris un test dédié à la race condition entre
-  publication et écriture externe), robustesse aux échecs de sondage.
-- **UI** : captures d'écran headless (`embedded-graphics-simulator`) pour
-  chaque écran.
-
-### Test interactif SDL2 (optionnel)
-
-```bash
-cargo test-live-ui-linux   # nécessite SDL2 installé sur la machine
-```
-
-Ouvre une vraie fenêtre sur le routeur complet (menu, réglages, stats,
-suivi de cycle) — utile pour visualiser un écran sans repasser par une
-capture PNG à chaque fois :
-
-| Touche | Effet |
-| --- | --- |
-| flèches ←/→ (ou ↑/↓) | tourner l'encodeur |
-| **Entrée / Espace** | cliquer — depuis le menu, le premier item démarre un cycle et ouvre son suivi |
-| `N` | faire avancer la machine simulée d'une phase (la checklist se remplit) |
-| `R` | remettre la machine à l'arrêt |
-| `Échap` / fermer | quitter |
-
-La fenêtre ne fait pas tourner `logic::control_loop` (ni capteurs ni
-actionneurs) : `N` est une doublure qui sert à voir l'écran de suivi
-progresser. La traduction « action opérateur → effet » est une fonction
-ordinaire (`apply_live_action`), couverte par les tests normaux — seuls
-le mapping clavier et le dessin dépendent de SDL2. Feature
-`live-menu-test`, désactivée par défaut (dépendances SDL2 non
-nécessaires au reste du projet).
+- **Logique pure** — chaque transition, chaque timeout, `SafetyMonitor`.
+- **`control_loop`** — `run()` boucle indéfiniment, donc son corps est
+  extrait dans `tick()`. Une suite d'intégration (mocks + `Harness`)
+  enchaîne les tours comme en usage réel : cycle complet Idle →
+  Stabilising → Idle, abandons timeout/perte-capteur, priorité sécurité,
+  réconciliation dans les deux sens (dont la race publication/écriture UI).
+- **UI** — navigation, garde de démarrage, mapping événement → action,
+  captures d'écran headless.
+- **Drivers** — décodage encodeur (rebond, faux appuis), hystérésis,
+  framebuffer, stockage flash, conversions.
 
 ---
 
-## État du projet / limites connues
+## État du projet
 
-La logique de contrôle (démarrage, sécurité, arrêt, réconciliation UI) est
-considérée fonctionnellement terminée et testée. Ce qui reste, avant un
-firmware réellement flashable :
+L'architecture (séparation HAL/logic, décision/application, réconciliation,
+répartition bi-cœur) est traitée comme stable. Le reste est du travail
+d'intégration et de durcissement.
 
-- **Aucun bring-up matériel** : pas de `src/main.rs`, aucun `[[bin]]`
-  enregistré. Rien ne construit encore les `Pins`/`I2c`/ADC réels ni
-  n'assemble `Sensors::new(...)` + `Actuators { ... }` pour appeler
-  `control_loop::run(...)`.
-- **Signal UI → contrôle pas câblé** : `SHARED_STATE.task` peut recevoir
-  une écriture externe (le mécanisme de réconciliation est prêt et testé),
-  mais aucun écran n'écrit encore dedans — pas d'écran "Contrôle"
-  (démarrage/arrêt) construit sur cette branche.
-- **`SafetyMonitor::reset()` jamais appelé** : une fois `Tripped`, le
-  système y reste verrouillé indéfiniment — le réarmement opérateur
-  (bouton, écran dédié) reste à concevoir et câbler. Comportement actuel
-  volontairement testé et documenté (`control_loop::tests::safety_trip_*`),
-  pas un oubli silencieux.
-- **`comm/` (liaison USB) désactivé et cassé** : la feature `usb-comm`
-  n'est pas déclarée dans `Cargo.toml` (le module ne compile donc jamais
-  actuellement), et son code référence des fonctions de `phase_clock.rs`
-  qui ont été retirées pendant la refonte de `PhaseClock`. Portée
-  initiale (commande `CYCLE` uniquement) toujours valable si repris,
-  mais nécessite une remise à niveau avant de rendre la feature à nouveau
-  compilable.
-- **`ui/screens/status.rs`** : fichier présent mais non déclaré dans
-  `screens/mod.rs` (orphelin) — écran remplacé par `ui/screens/stats.rs`.
-- **`examples/ui_simulator.rs`** : obsolète, référence des types qui
-  n'existent plus (`SystemState`, `StatusScreen`...) — pas mis à jour.
-- **3 tests connus en échec**, sans rapport avec le contrôle :
-  `ui::screens::menu::tests::{select_next_at_top_stays,
-  select_previous_at_bottom_stays, select_previous_increments}` —
-  incohérence entre les assertions et l'implémentation de la navigation,
-  pas encore corrigée.
-- **Ampèremètre non intégré** : pas de protection surintensité logicielle.
-- **`SAFETY_HP_MAX` (14.0 bar)** au-dessus de la plage physique du capteur
-  ABP2 HP (0–12 bar) — ce seuil ne peut donc jamais se déclencher tel
-  quel. Valeur volontairement pas corrigée : il faut la vraie limite
-  mécanique du circuit, pas un chiffre deviné sur un seuil de sécurité.
-- **Broches `PIN_HV_RELAY`/`PIN_ISO_HEATER_RELAY`** provisoires (GP17/18),
-  jamais vérifiées sur le montage réel.
+### Sécurité
 
-L'architecture elle-même (séparation HAL/logic, décision/application,
-`PhaseClock` propriétaire de son horloge, réconciliation `SHARED_STATE`)
-est traitée comme stable — les points ci-dessus sont des travaux
-d'intégration/bring-up restants, pas des refontes prévues.
+- **Une panique du cœur 1 ne coupe rien** : les relais restent en l'état
+  (HV éventuellement enclenchée) et le cœur 0 continue d'afficher une
+  machine normale. Il faudrait un gestionnaire de panique qui force les
+  sorties au niveau bas et le signale à l'écran.
+- **Surveillance réduite à la température compresseur.** Aucune sur la
+  pression, aucune sur le courant.
+- **`SafetyMonitor::reset()` n'est jamais appelé** : `Tripped` est définitif
+  jusqu'au reflash. Testé et documenté, mais le réarmement reste à concevoir.
+- **Broches et seuils provisoires** (`TODO CÂBLAGE`, `IPA_HEATER_TARGET_C`).
+
+### Manquant
+
+- **Pas d'arrêt depuis l'UI.** Le canal existe (`take_task_request` renvoie
+  un `SystemTask`), il reste à câbler un bouton.
+- **Réglages non persistants** : pas d'implémentation `FlashOps` pour RP2040.
+- **Écrans incomplets** : `ui::router` a des `todo!()` sur `Idle`,
+  `ManualControl`, `Data`, `Info` — les ouvrir fait paniquer le cœur 0.
+- **`comm/` ne compile pas** sous `usb-comm` (4 erreurs : `request_start` /
+  `request_stop` inexistants, `PhaseClock` via un ré-export privé).
