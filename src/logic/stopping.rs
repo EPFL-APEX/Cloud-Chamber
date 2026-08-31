@@ -23,6 +23,8 @@ use crate::shared::settings;
 pub enum StoppingPhase {
     /// HV coupée immédiatement ; court délai de décharge géré par l'appelant.
     CutHighVoltage,
+
+    CutIsoprop,
     /// Compresseur coupé.
     CutCompressor,
     /// Attente d'équilibrage pression — purement temporisée (pas de capteur
@@ -41,6 +43,7 @@ impl StoppingPhase {
         use StoppingPhase::*;
         match self {
             CutHighVoltage          => cut_high_voltage(history),
+            CutIsoprop              => cut_isoprop(history),
             CutCompressor           => cut_compressor(history),
             WaitPressureEquilibrium => wait_pressure_equilibrium(history),
         }
@@ -56,7 +59,16 @@ fn cut_high_voltage(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan)
     // circuler pendant la décharge) ; chauffage IPA coupé.
     (SystemTask::Stopping(StoppingPhase::CutHighVoltage), ActuatorPlan {
         cooling: Some(settings::get().saturation_target), iso_heater: None, high_voltage: false,
-        iso_pump: false, lights: None, glass_heater: false,
+        iso_pump: true, lights: None, glass_heater: true,
+    })
+}
+
+fn cut_isoprop(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
+    // Est-ce qu'on gère ça par un délais ou est-ce qu'on passe direct à la suite ?
+
+    (SystemTask::Stopping(StoppingPhase::CutCompressor), ActuatorPlan{
+        cooling: Some(settings::get().saturation_target), iso_heater:None, high_voltage: false,
+        iso_pump: false, lights: None, glass_heater: true,
     })
 }
 

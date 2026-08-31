@@ -46,18 +46,14 @@ impl CoolingPhase {
     }
 }
 
-// `iso_pump`/`lights`/`glass_heater` : toujours `false` ci-dessous — aucune
-// politique par phase définie pour l'instant, cf. doc de `ActuatorPlan`.
-// `iso_pump` est le candidat le plus évident pour `StartingIpaCirculation`
-// (la phase existe justement pour faire circuler l'IPA) mais pas câblé sans
-// confirmation : rien n'indique si la pompe doit rester active au-delà du
-// démarrage de la circulation (`SaturatingAirWithIpa` et suivants).
-
 fn sensor_check(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
     let plan = ActuatorPlan {
         cooling: None, iso_heater: None, high_voltage: false,
         iso_pump: false, lights: None, glass_heater: false,
     };
+
+    // Ajouter le check des autres sensors ?
+    // #todo
     match history.temps[CHAMBER_TEMP_IDX].get(0) {
         Ok(m) if !m.value.0.is_nan() => (SystemTask::Cooling(CoolingPhase::PreCoolingThePlate), plan),
         _ => (SystemTask::Cooling(CoolingPhase::SensorCheck), plan),
@@ -85,7 +81,7 @@ fn starting_ipa_circulation(_history: &MeasurementHistory) -> (SystemTask, Actua
         cooling: Some(settings.precool_target),
         iso_heater: Some(settings.ipa_heater_target),
         high_voltage: false,
-        iso_pump: false, lights: None, glass_heater: false,
+        iso_pump: true, lights: None, glass_heater: true,
     })
 }
 
@@ -95,8 +91,9 @@ fn saturating_air_with_ipa(history: &MeasurementHistory) -> (SystemTask, Actuato
         cooling: Some(settings.saturation_target),
         iso_heater: Some(settings.ipa_heater_target),
         high_voltage: false,
-        iso_pump: false, lights: None, glass_heater: false,
+        iso_pump: true, lights: None, glass_heater: true,
     };
+    // #todo faire une vrai estimation de la saturation....
     match history.temps[CHAMBER_TEMP_IDX].get(0) {
         Ok(m) if !m.value.0.is_nan() && m.value.0 <= settings.saturation_target.0 =>
             (SystemTask::Cooling(CoolingPhase::HighVoltage), plan),
@@ -110,8 +107,10 @@ fn high_voltage(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
         cooling: Some(settings.saturation_target),
         iso_heater: Some(settings.ipa_heater_target),
         high_voltage: true,
-        iso_pump: false, lights: Some(true), glass_heater: false,
+        iso_pump: true, lights: Some(true), glass_heater: true,
     };
+
+    // Est-ce qu'on veut vraiment check la stabilité ? Ou est-ce qu'on veut juste allumer le HV
     match history.temp_stable(CHAMBER_TEMP_IDX, STABLE_WINDOW_MS, STABLE_TOLERANCE_C) {
         true  => (SystemTask::Cooling(CoolingPhase::FinalCheckBeforeStabilising), plan),
         false => (SystemTask::Cooling(CoolingPhase::HighVoltage), plan),
@@ -124,8 +123,10 @@ fn final_check_before_stabilising(history: &MeasurementHistory) -> (SystemTask, 
         cooling: Some(settings.saturation_target),
         iso_heater: Some(settings.ipa_heater_target),
         high_voltage: true,
-        iso_pump: false, lights: None, glass_heater: false,
+        iso_pump: true, lights: Some(true), glass_heater: true,
     };
+
+    // Qu'est-ce qu'on veut check ici ??
     match history.temps[CHAMBER_TEMP_IDX].get(0) {
         Ok(m) if !m.value.0.is_nan() && m.value.0 <= settings.saturation_target.0 + 2.0 =>
             (SystemTask::Stabilising, plan),

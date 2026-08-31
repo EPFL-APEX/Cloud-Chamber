@@ -21,6 +21,7 @@ use crate::logic::probing::MeasurementHistory;
 use crate::logic::stopping::StoppingPhase;
 use crate::shared::data::SystemTask;
 
+// #todo Est-ce qu'on utilise les unités définies dans le hal ?
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhaseDurations {
     Duration(u64),
@@ -74,6 +75,7 @@ impl SystemTask {
             SystemTask::Stabilising => PhaseDurations::unbounded(),
 
             SystemTask::Stopping(CutHighVoltage) => PhaseDurations::timed(STOP_HV_SETTLE_MS),
+            SystemTask::Stopping(CutIsoprop) => todo!(), // #todo, choisir combien on met de temps
             SystemTask::Stopping(CutCompressor) => {
                 PhaseDurations::timed(STOP_COMPRESSOR_SETTLE_MS)
             }
