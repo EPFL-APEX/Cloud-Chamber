@@ -4,24 +4,28 @@
 //! vérité pour ces valeurs par défaut, pas pour l'état courant modifié en
 //! session (qui vit dans l'écran lui-même).
 
+use core::time::Duration;
+
+use crate::cloud_chamber_hal::units::Celsius;
+
 // ─── Seuils de sécurité ───────────────────────────────────────────────────────
 
-pub const SAFETY_TEMP_COMPRESSOR_MAX: f32 = 120.0;
-pub const TARGET_CHAMBER_TEMP: f32 = -40.0;
+pub const SAFETY_TEMP_COMPRESSOR_MAX: Celsius = Celsius::new(120.0);
+pub const TARGET_CHAMBER_TEMP: Celsius = Celsius::new(-40.0);
 
 // ─── Séquence de refroidissement (logic::cooling) ──────────────────────────────
 // Valeurs initiales, à calibrer sur la chambre réelle.
 
 /// PreCoolingThePlate → StartingIpaCirculation quand ds4 ≤ ce seuil.
-pub const PRECOOL_TARGET_C: f32 = -20.0;
+pub const PRECOOL_TARGET_C: Celsius = Celsius::new(-20.0);
 /// SaturatingAirWithIpa → HighVoltage quand ds4 ≤ ce seuil.
-pub const SATURATION_TARGET_C: f32 = -35.0;
+pub const SATURATION_TARGET_C: Celsius = Celsius::new(-35.0);
 /// Fenêtre de stabilité pour valider la phase HighVoltage — durée
 /// d'observation à calibrer avec `STABLE_TOLERANCE_C`, pas un timeout de
 /// boucle de contrôle : reste ici plutôt que dans `logic::timing`.
-pub const STABLE_WINDOW_MS: u64 = 60_000;
+pub const STABLE_WINDOW_MS: Duration = Duration::from_millis(60_000);
 /// Tolérance de variation de ds4 sur la fenêtre de stabilité.
-pub const STABLE_TOLERANCE_C: f32 = 1.0;
+pub const STABLE_TOLERANCE_C: Celsius = Celsius::new(1.0);
 
 /// Demi-largeur de la bande d'hystérésis des actionneurs régulés (froid,
 /// chauffage IPA). Distincte de `STABLE_TOLERANCE_C` : même valeur de
@@ -30,11 +34,11 @@ pub const STABLE_TOLERANCE_C: f32 = 1.0;
 /// restent égales si l'une est recalibrée plus tard. TODO : pas encore
 /// consommée — aucun bring-up ne construit encore les actionneurs régulés
 /// avec cette valeur.
-pub const REGULATION_BAND_C: f32 = 1.0;
+pub const REGULATION_BAND_C: Celsius = Celsius::new(1.0);
 
 /// TODO CALIBRAGE : cible du thermostat chauffage isopropanol (ds3, cf.
 /// `cloud_chamber_hal::config::ISO_TEMP_IDX`) — aucune valeur physique de
 /// référence disponible pour l'instant. Valeur volontairement haute plutôt
 /// qu'un chiffre qui aurait l'air raisonnable sans l'être — à vérifier sur
 /// le montage réel avant tout bring-up.
-pub const IPA_HEATER_TARGET_C: f32 = 40.0;
+pub const IPA_HEATER_TARGET_C: Celsius = Celsius::new(40.0);

@@ -20,7 +20,9 @@
 //! qu'il est censé fournir.
 
 use crate::cloud_chamber_hal::config::COMPRESSOR_OUT_IDX;
+use crate::cloud_chamber_hal::units::Celsius;
 use crate::config::operating::SAFETY_TEMP_COMPRESSOR_MAX;
+use crate::drivers::regulate_method::Unit; // #todo bouger ça dans hal ?
 use crate::logic::timing::SENSOR_LOSS_MS;
 use crate::logic::probing::MeasurementHistory;
 
@@ -47,27 +49,27 @@ pub enum SafetyCause {
 /// Configuration des seuils.
 ///
 /// Pas de seuil de pression ici : l'unique capteur de pression restant
-/// mesure la chambre (`CHAMBER_PRESSURE_IDX`), pas le circuit réfrigérant —
-/// les anciens seuils HP/BP (risque mécanique / perte de réfrigérant)
-/// n'ont plus de capteur pour les alimenter et ont été retirés plutôt que
-/// réappliqués à une grandeur physique différente.
+/// mesure la chambre (`CHAMBER_PRESSURE_IDX`), pas le circuit réfrigérant
 #[derive(Debug, Clone, Copy)]
 pub struct SafetyConfig {
     /// T° sortie compresseur (°C) — surchauffe.
-    pub temp_compressor_warn: f32,
-    pub temp_compressor_alarm: f32,
+    pub temp_compressor_warn: Celsius,
+    pub temp_compressor_alarm: Celsius,
 }
 
 impl Default for SafetyConfig {
     fn default() -> Self {
         Self {
-            temp_compressor_warn: 100.0,
+            temp_compressor_warn: Celsius::new(100.0), // #todo Constante dans le fichier de config
             temp_compressor_alarm: SAFETY_TEMP_COMPRESSOR_MAX,
         }
     }
 }
 
-fn check_high(value: f32, warn: f32, alarm: f32) -> Severity {
+fn check_high<U>(value: U, warn: U, alarm: U) -> Severity
+where
+    U: Unit
+{
     if value > alarm { Severity::Alarm }
     else if value > warn { Severity::Warning }
     else { Severity::Normal }
@@ -83,7 +85,7 @@ fn evaluate(history: &MeasurementHistory, config: &SafetyConfig) -> (Severity, O
 
     if let Ok(m) = history.temps[COMPRESSOR_OUT_IDX].get(0) {
         if !m.value.0.is_nan() {
-            let s = check_high(m.value.0, config.temp_compressor_warn, config.temp_compressor_alarm);
+            let s = check_high(Celsius::new(m.value.0), config.temp_compressor_warn, config.temp_compressor_alarm);
             if s > worst_sev { worst_sev = s; worst_cause = Some(SafetyCause::CompressorOverheat); }
         }
     }
@@ -97,32 +99,36 @@ pub struct SafetyMonitor {
     alarm_cycles: u8,
     tripped: bool,
     trip_cause: Option<SafetyCause>,
-    last_compressor_valid_ms: u64,
+    last_compressor_valid: Instant,
 }
 
 impl SafetyMonitor {
-    pub fn new(config: SafetyConfig, now_ms: u64) -> Self {
+    pub fn new(config: SafetyConfig, now: Instant) -> Self {
         Self {
             config,
             alarm_cycles: 0,
             tripped: false,
             trip_cause: None,
-            last_compressor_valid_ms: now_ms,
+            last_compressor_valid: now,
         }
     }
 
     /// À appeler à chaque cycle. Retourne `Some(cause)` si le disjoncteur
     /// doit être (ou rester) déclenché.
-    pub fn check(&mut self, history: &MeasurementHistory, now_ms: u64) -> Option<SafetyCause> {
+    pub fn check(&mut self, history: &MeasurementHistory, now: Instant) -> Option<SafetyCause> {
         let compressor_valid = matches!(
             history.temps[COMPRESSOR_OUT_IDX].get(0),
             Ok(m) if !m.value.0.is_nan()
         );
         if compressor_valid {
-            self.last_compressor_valid_ms = now_ms;
+            self.last_compressor_valid = now;
         }
-        let compressor_lost = now_ms.saturating_sub(self.last_compressor_valid_ms) > SENSOR_LOSS_MS;
+        // #todo implémenter saturating_sub pour Instant ? c'était implémenté en u64 mais autant
+        // être sérieux sur ce qu'on fait...
+        let compressor_lost = now.saturating_sub(self.last_compressor_valid) > SENSOR_LOSS_MS;
 
+        // Est-ce que c'est pas un peu mal foutu de faire une fonction evaluate et après de faire le
+        // check à la main pour le compresseur ? Il faut arranger ça... #todo
         let (sev, cause) = evaluate(history, &self.config);
         let (sev, cause) = if compressor_lost && sev < Severity::Alarm {
             (Severity::Alarm, Some(SafetyCause::CompressorSensorLost))
@@ -130,6 +136,8 @@ impl SafetyMonitor {
             (sev, cause)
         };
 
+        // Comment on trip ça comme il faut ? Est-ce que c'est la bonne manière de faire ou est-ce
+        // qu'il y aurait une manière plus efficace et propre de le faire ? #todo
         if sev == Severity::Alarm {
             self.alarm_cycles = self.alarm_cycles.saturating_add(1);
             if self.alarm_cycles >= TRIP_CYCLES {
