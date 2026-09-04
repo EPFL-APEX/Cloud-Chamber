@@ -7,7 +7,7 @@ use crate::cloud_chamber_hal::config::{
 use crate::logic::timing::CONTROL_LOOP_HISTORY_SIZE;
 use crate::shared::data::{SystemTask, SensorSnapshot};
 use crate::cloud_chamber_hal::ring_buffer::RingBuffer;
-use crate::cloud_chamber_hal::timer::Instant;
+use crate::cloud_chamber_hal::timer::{Instant, Duration};
 
 /// Décide quelles catégories de capteurs sonder ce cycle.
 ///
@@ -48,7 +48,7 @@ impl SystemTask {
 
 #[derive(Debug)]
 pub struct MeasurementHistory {
-    // pub(crate) : indexation directe depuis logic::cooling/logic::stopping
+    // indexation directe depuis logic::cooling/logic::stopping
     // via les constantes d'index de cloud_chamber_hal::config (pas
     // d'accesseurs par capteur, cf. décisions de conception de logic/).
     pub temps: [RingBuffer<Measurement<Celsius>, CONTROL_LOOP_HISTORY_SIZE>; NUMBER_OF_TEMP_SENSOR],
@@ -80,22 +80,23 @@ impl MeasurementHistory {
     /// référence temporelle est l'échantillon le plus récent lui-même, pour
     /// rester appelable depuis `logic::cooling` sans lui donner accès à
     /// l'horloge.
-    pub fn temp_stable(&self, idx: usize, window_ms: u64, tolerance: f32) -> bool {
+    pub fn is_temp_stable(&self, idx: usize, window: Duration, tolerance: Celsius) -> bool {
         if idx >= NUMBER_OF_TEMP_SENSOR {
             return false;
         }
         let Ok(newest) = self.temps[idx].get(0) else { return false };
-        if newest.value.0.is_nan() {
+        if newest.value.is_nan() {
             return false;
         }
-        let cutoff_ms = newest.time.as_millis().saturating_sub(window_ms);
+        let cutoff_ms = newest.time.as_millis().saturating_sub(window.as_millis());
 
+        // #todo unités... et logique
         let mut n: usize = 0;
         let mut min = f32::INFINITY;
         let mut max = f32::NEG_INFINITY;
         for i in 0..CONTROL_LOOP_HISTORY_SIZE {
             let Ok(m) = self.temps[idx].get(i) else { break };
-            if m.value.0.is_nan() || m.time.as_millis() < cutoff_ms {
+            if m.value.is_nan() || m.time.as_millis() < cutoff_ms {
                 break;
             }
             min = min.min(m.value.0);
@@ -103,8 +104,8 @@ impl MeasurementHistory {
             n += 1;
         }
 
-        let expected = (window_ms / 1_000) as usize;
-        n >= expected.saturating_mul(4) / 5 && n >= 2 && (max - min) <= tolerance
+        let expected = (window.as_secs() as usize);
+        n >= expected.saturating_mul(4) / 5 && n >= 2 && (max - min) <= tolerance.0
     }
 
     /// Depuis combien de temps la sonde base-chambre n'a pas fourni de
@@ -114,7 +115,8 @@ impl MeasurementHistory {
     /// cherchée. `0` si jamais aucune lecture (buffer encore à sa valeur
     /// par défaut `Instant::from_micros(0)`) — traité comme "infiniment
     /// périmé" par l'appelant via `now_ms - 0`.
-    pub fn chamber_stale_ms(&self, now_ms: u64) -> u64 {
+    /// #todo changer unités et réfléchir à la nécessité.
+    pub fn chamber_stale_duration(&self, now_ms: Instant) -> Duration {
         let last_valid_ms = self.temps[CHAMBER_TEMP_IDX]
             .get(0)
             .map(|m| m.time.as_millis())
