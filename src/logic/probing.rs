@@ -1,6 +1,6 @@
 use crate::cloud_chamber_hal::sensors::{BatchSensor, DeferredBatchSensor, Sensors};
 use crate::cloud_chamber_hal::measurement::Measurement;
-use crate::cloud_chamber_hal::units::{Celsius, HectoPascal};
+use crate::cloud_chamber_hal::units::{Celsius, HectoPascal, Unit};
 use crate::cloud_chamber_hal::config::{
     CHAMBER_TEMP_IDX, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_PRESSURE_SENSOR,
 };
@@ -74,12 +74,25 @@ impl MeasurementHistory {
     }
 
     /// `true` si la température `idx` est restée dans une bande de
-    /// `tolerance` sur les `window_ms` précédant son échantillon le plus
-    /// récent, avec une couverture de données suffisante (≥ 80% des
-    /// échantillons attendus). Pas de paramètre `now` externe : la
-    /// référence temporelle est l'échantillon le plus récent lui-même, pour
-    /// rester appelable depuis `logic::cooling` sans lui donner accès à
-    /// l'horloge.
+    /// `tolerance` sur les `window` précédant son échantillon le plus
+    /// récent. Pas de paramètre `now` externe : la référence temporelle est
+    /// l'échantillon le plus récent lui-même, pour rester appelable depuis
+    /// `logic::cooling` sans lui donner accès à l'horloge.
+    ///
+    /// # Ce que « couvrir la fenêtre » veut dire
+    ///
+    /// Le critère porte donc sur l'étendue réelle des données : on remonte
+    /// l'historique tant que les échantillons sont valides et dans la
+    /// fenêtre, et la couverture n'est acquise que si l'on atteint un
+    /// échantillon *antérieur* au bord de la fenêtre. Autrement dit, il
+    /// faut une chaîne ininterrompue de lectures valides qui enjambe toute
+    /// la fenêtre, vrai quelle que soit la cadence, et faux dès qu'il
+    /// manque des données au milieu.
+    ///
+    /// Fail-closed sur les trous : un `NaN` (lecture jamais faite, ou case
+    /// encore à sa valeur d'initialisation) interrompt le balayage et fait
+    /// échouer la couverture. Sur une chambre sous haute tension, refuser
+    /// d'avancer faute de données est le défaut sûr.
     pub fn is_temp_stable(&self, idx: usize, window: Duration, tolerance: Celsius) -> bool {
         if idx >= NUMBER_OF_TEMP_SENSOR {
             return false;
@@ -88,15 +101,26 @@ impl MeasurementHistory {
         if newest.value.is_nan() {
             return false;
         }
-        let cutoff_ms = newest.time.as_millis().saturating_sub(window.as_millis());
+        let cutoff = newest.time.saturating_sub(window);
 
-        // #todo unités... et logique
         let mut n: usize = 0;
         let mut min = f32::INFINITY;
         let mut max = f32::NEG_INFINITY;
+        // Passe à `true` seulement si le balayage atteint un échantillon
+        // antérieur au bord de la fenêtre, c'est *la* preuve de couverture.
+        // Sortir de la boucle autrement (NaN, fin du buffer) le laisse à
+        // `false`, et la fenêtre est déclarée non couverte.
+        let mut spans_window = false;
+
         for i in 0..CONTROL_LOOP_HISTORY_SIZE {
             let Ok(m) = self.temps[idx].get(i) else { break };
-            if m.value.is_nan() || m.time.as_millis() < cutoff_ms {
+            if m.value.is_nan() {
+                break;
+            }
+            // Le ring buffer est ordonné du plus récent au plus ancien :
+            // le premier échantillon hors fenêtre borne le balayage.
+            if m.time < cutoff {
+                spans_window = true;
                 break;
             }
             min = min.min(m.value.0);
@@ -104,24 +128,29 @@ impl MeasurementHistory {
             n += 1;
         }
 
-        let expected = (window.as_secs() as usize);
-        n >= expected.saturating_mul(4) / 5 && n >= 2 && (max - min) <= tolerance.0
+        // `n >= 2` : garde-fou contre une fenêtre nulle ou minuscule, que
+        // `spans_window` seul laisserait passer avec un unique échantillon.
+        spans_window && n >= 2 && (max - min) <= tolerance.0
     }
 
     /// Depuis combien de temps la sonde base-chambre n'a pas fourni de
     /// lecture. Pas de champ dédié à maintenir ailleurs : le ring buffer ne
     /// se met à jour que sur une lecture réussie (`push_if_newer` ignore
     /// les absences), son horodatage le plus récent EST la fraîcheur
-    /// cherchée. `0` si jamais aucune lecture (buffer encore à sa valeur
-    /// par défaut `Instant::from_micros(0)`) — traité comme "infiniment
-    /// périmé" par l'appelant via `now_ms - 0`.
-    /// #todo changer unités et réfléchir à la nécessité.
-    pub fn chamber_stale_duration(&self, now_ms: Instant) -> Duration {
-        let last_valid_ms = self.temps[CHAMBER_TEMP_IDX]
+    /// cherchée.
+    ///
+    /// Aucune lecture depuis le démarrage ⇒ l'horodatage vaut encore
+    /// `Instant::from_micros(0)`, et le résultat est donc l'uptime complet :
+    /// « infiniment périmé » du point de vue de l'appelant, sans cas
+    /// particulier à traiter chez lui. C'est cette convention que la méthode
+    /// encapsule, sa raison d'exister, plutôt que d'exposer l'horodatage
+    /// brut et de laisser chaque appelant la réinventer.
+    pub fn chamber_stale_duration(&self, now: Instant) -> Duration {
+        let last_valid = self.temps[CHAMBER_TEMP_IDX]
             .get(0)
-            .map(|m| m.time.as_millis())
-            .unwrap_or(0);
-        now_ms.saturating_sub(last_valid_ms)
+            .map(|m| m.time)
+            .unwrap_or(Instant::from_micros(0));
+        now.since(last_valid)
     }
 }
 
@@ -183,25 +212,120 @@ where
 mod tests {
     use super::*;
 
+    fn at_secs(s: u64) -> Instant {
+        Instant::from_micros(s * 1_000_000)
+    }
+
+    // ─── chamber_stale_duration ─────────────────────────────────────────
+
     #[test]
-    fn chamber_stale_ms_is_infinite_when_never_read() {
+    fn chamber_stale_is_the_full_uptime_when_never_read() {
         let history = MeasurementHistory::new();
-        assert_eq!(history.chamber_stale_ms(60_000), 60_000);
+        assert_eq!(history.chamber_stale_duration(at_secs(60)), Duration::from_secs(60));
     }
 
     #[test]
-    fn chamber_stale_ms_reflects_last_valid_reading() {
+    fn chamber_stale_reflects_last_valid_reading() {
         let mut history = MeasurementHistory::new();
-        history.temps[CHAMBER_TEMP_IDX]
-            .push(Measurement::new(Instant::from_micros(10_000_000), Celsius(-20.0))); // 10s
-        assert_eq!(history.chamber_stale_ms(15_000), 5_000);
+        history.temps[CHAMBER_TEMP_IDX].push(Measurement::new(at_secs(10), Celsius(-20.0)));
+        assert_eq!(history.chamber_stale_duration(at_secs(15)), Duration::from_secs(5));
     }
 
     #[test]
-    fn chamber_stale_ms_zero_right_after_a_reading() {
+    fn chamber_stale_is_zero_right_after_a_reading() {
         let mut history = MeasurementHistory::new();
+        history.temps[CHAMBER_TEMP_IDX].push(Measurement::new(at_secs(10), Celsius(-20.0)));
+        assert!(history.chamber_stale_duration(at_secs(10)).is_zero());
+    }
+
+    // ─── is_temp_stable ─────────────────────────────────────────────────
+
+    /// Remplit `CHAMBER_TEMP_IDX` avec `count` echantillons espaces de
+    /// `step_s`, du plus ancien au plus recent, en terminant a `t = 0 +
+    /// count * step_s`.
+    fn fill_chamber(history: &mut MeasurementHistory, count: u64, step_s: u64, value_c: f32) {
+        for i in 1..=count {
+            history.temps[CHAMBER_TEMP_IDX]
+                .push(Measurement::new(at_secs(i * step_s), Celsius(value_c)));
+        }
+    }
+
+    #[test]
+    fn stable_when_an_unbroken_chain_spans_the_window() {
+        let mut history = MeasurementHistory::new();
+        // 80 echantillons a 1 s : la chaine enjambe largement 60 s.
+        fill_chamber(&mut history, 80, 1, -40.0);
+        assert!(history.is_temp_stable(
+            CHAMBER_TEMP_IDX, Duration::from_secs(60), Celsius(1.0)
+        ));
+    }
+
+    #[test]
+    fn unstable_when_the_data_does_not_reach_back_far_enough() {
+        let mut history = MeasurementHistory::new();
+        // 10 echantillons a 1 s : rien avant t = 1 s, donc la fenetre de
+        // 60 s n'est pas couverte, meme si la valeur ne bouge pas.
+        fill_chamber(&mut history, 10, 1, -40.0);
+        assert!(!history.is_temp_stable(
+            CHAMBER_TEMP_IDX, Duration::from_secs(60), Celsius(1.0)
+        ));
+    }
+
+    /// Le point de la reecriture : la couverture ne suppose plus un
+    /// echantillon par seconde. Quatre echantillons a 30 s d'intervalle
+    /// enjambent une fenetre de 60 s — l'ancienne regle (80 % de 60
+    /// echantillons) les aurait rejetes.
+    #[test]
+    fn coverage_does_not_assume_one_sample_per_second() {
+        let mut history = MeasurementHistory::new();
+        fill_chamber(&mut history, 4, 30, -40.0);
+        assert!(history.is_temp_stable(
+            CHAMBER_TEMP_IDX, Duration::from_secs(60), Celsius(1.0)
+        ));
+    }
+
+    #[test]
+    fn unstable_when_the_spread_exceeds_the_tolerance() {
+        let mut history = MeasurementHistory::new();
+        fill_chamber(&mut history, 80, 1, -40.0);
+        history.temps[CHAMBER_TEMP_IDX].push(Measurement::new(at_secs(81), Celsius(-35.0)));
+        assert!(!history.is_temp_stable(
+            CHAMBER_TEMP_IDX, Duration::from_secs(60), Celsius(1.0)
+        ));
+    }
+
+    #[test]
+    fn a_nan_in_the_window_fails_closed() {
+        let mut history = MeasurementHistory::new();
+        fill_chamber(&mut history, 40, 1, -40.0);
         history.temps[CHAMBER_TEMP_IDX]
-            .push(Measurement::new(Instant::from_micros(10_000_000), Celsius(-20.0))); // 10s
-        assert_eq!(history.chamber_stale_ms(10_000), 0);
+            .push(Measurement::new(at_secs(41), Celsius(f32::NAN)));
+        fill_chamber_from(&mut history, 42, 80, -40.0);
+        assert!(!history.is_temp_stable(
+            CHAMBER_TEMP_IDX, Duration::from_secs(60), Celsius(1.0)
+        ));
+    }
+
+    fn fill_chamber_from(history: &mut MeasurementHistory, from_s: u64, to_s: u64, value_c: f32) {
+        for i in from_s..=to_s {
+            history.temps[CHAMBER_TEMP_IDX]
+                .push(Measurement::new(at_secs(i), Celsius(value_c)));
+        }
+    }
+
+    #[test]
+    fn a_fresh_history_is_never_stable() {
+        let history = MeasurementHistory::new();
+        assert!(!history.is_temp_stable(
+            CHAMBER_TEMP_IDX, Duration::from_secs(60), Celsius(1.0)
+        ));
+    }
+
+    #[test]
+    fn an_out_of_range_index_is_never_stable() {
+        let history = MeasurementHistory::new();
+        assert!(!history.is_temp_stable(
+            NUMBER_OF_TEMP_SENSOR, Duration::from_secs(60), Celsius(1.0)
+        ));
     }
 }
