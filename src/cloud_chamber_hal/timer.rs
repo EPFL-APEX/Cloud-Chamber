@@ -63,7 +63,7 @@ impl Instant {
         Duration::from_micros(self.0.saturating_sub(earlier.0))
     }
 
-    /// Instant antérieur de `earlier` — le bord d'une fenêtre glissante.
+    /// Instant antérieur de `earlier`, le bord d'une fenêtre glissante.
     /// Sature à l'instant 0 (le démarrage), pas de temps négatif.
     ///
     /// À ne pas confondre avec [`Instant::since`] : ici on recule d'une

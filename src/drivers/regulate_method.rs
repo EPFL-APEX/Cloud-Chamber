@@ -1,9 +1,8 @@
 //! Fonctions de régulation pures — hystérésis et PID.
-use core::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 
 use crate::cloud_chamber_hal::measurement::Measurement;
 use crate::cloud_chamber_hal::ring_buffer::RingBuffer;
-use crate::cloud_chamber_hal::units::{Celsius, Unit};
+use crate::cloud_chamber_hal::units::Unit;
 
 pub enum RegulationDirection {
     Upward,

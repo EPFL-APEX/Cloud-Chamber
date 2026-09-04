@@ -4,8 +4,7 @@
 //! vérité pour ces valeurs par défaut, pas pour l'état courant modifié en
 //! session (qui vit dans l'écran lui-même).
 
-use core::time::Duration;
-
+use crate::cloud_chamber_hal::timer::Duration;
 use crate::cloud_chamber_hal::units::Celsius;
 
 // ─── Seuils de sécurité ───────────────────────────────────────────────────────
@@ -23,7 +22,7 @@ pub const SATURATION_TARGET_C: Celsius = Celsius::new(-35.0);
 /// Fenêtre de stabilité pour valider la phase HighVoltage — durée
 /// d'observation à calibrer avec `STABLE_TOLERANCE_C`, pas un timeout de
 /// boucle de contrôle : reste ici plutôt que dans `logic::timing`.
-pub const STABLE_WINDOW_MS: Duration = Duration::from_millis(60_000);
+pub const STABLE_WINDOW: Duration = Duration::from_millis(60_000);
 /// Tolérance de variation de ds4 sur la fenêtre de stabilité.
 pub const STABLE_TOLERANCE_C: Celsius = Celsius::new(1.0);
 
