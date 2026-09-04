@@ -62,6 +62,33 @@ impl Instant {
     pub fn since(&self, earlier: Instant) -> Duration {
         Duration::from_micros(self.0.saturating_sub(earlier.0))
     }
+
+    /// Instant antérieur de `earlier` — le bord d'une fenêtre glissante.
+    /// Sature à l'instant 0 (le démarrage), pas de temps négatif.
+    ///
+    /// À ne pas confondre avec [`Instant::since`] : ici on recule d'une
+    /// durée et on obtient un instant, là on mesure l'écart entre deux
+    /// instants et on obtient une durée. Même distinction que
+    /// `std::time::Instant::checked_sub` face à `duration_since`.
+    pub const fn saturating_sub(self, earlier: Duration) -> Instant {
+        Instant(self.0.saturating_sub(earlier.as_micros()))
+    }
+
+    /// Comme [`Instant::saturating_sub`], mais `None` si le résultat
+    /// passerait avant le démarrage.
+    pub const fn checked_sub(self, earlier: Duration) -> Option<Instant> {
+        match self.0.checked_sub(earlier.as_micros()) {
+            Some(us) => Some(Instant(us)),
+            None => None,
+        }
+    }
+}
+
+impl core::ops::Sub<Duration> for Instant {
+    type Output = Instant;
+    fn sub(self, rhs: Duration) -> Instant {
+        self.saturating_sub(rhs)
+    }
 }
 
 impl core::ops::Sub for Instant {

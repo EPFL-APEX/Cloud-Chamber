@@ -3,6 +3,8 @@
 //! `Eq`/`Ord` ne sont pas dérivables ici : `f32` ne les implémente pas
 //! (NaN casse toute relation d'ordre total).
 
+use core::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
+
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct Celsius(pub f32);
 
@@ -35,6 +37,13 @@ pub trait Unit:
     fn is_nan(&self) -> bool;
 }
 
+impl Celsius {
+    /// Constructeur `const` — le tuple `Celsius(x)` marche aussi, mais une
+    /// constante de configuration se lit mieux en `Celsius::new(-40.0)`.
+    pub const fn new(degrees: f32) -> Self {
+        Self(degrees)
+    }
+}
 
 impl Add for Celsius {
     type Output = Self;
