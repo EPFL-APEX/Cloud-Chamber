@@ -123,7 +123,7 @@ impl SafetyMonitor {
         if compressor_valid {
             self.last_compressor_valid = now;
         }
-            let compressor_lost =
+        let compressor_lost =
             now.since(self.last_compressor_valid).as_millis() > SENSOR_LOSS_MS;
 
         // Est-ce que c'est pas un peu mal foutu de faire une fonction evaluate et après de faire le

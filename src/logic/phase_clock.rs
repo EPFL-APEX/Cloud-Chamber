@@ -140,7 +140,7 @@ fn timed_transition(task: SystemTask, elapsed_ms: u64) -> Option<SystemTask> {
 /// `control_loop.rs::run()`), ne sait rien d'une horloge — juste des
 /// durées déjà calculées.
 pub fn advance(
-    current: SystemTask, history: &MeasurementHistory, elapsed:Duration, chamber_stale: Duration,
+    current: SystemTask, history: &MeasurementHistory, elapsed: Duration, chamber_stale: Duration,
 ) -> (SystemTask, ActuatorPlan) {
     let (reacted, plan) = current.react_to(history);
     if reacted != current {
@@ -179,8 +179,12 @@ impl<Clk: MonotonicTimer> PhaseClock<Clk> {
         self.clock.now()
     }
 
-    pub fn elapsed_ms(&self) -> u64 {
-        self.clock.elapsed_since(self.entered_at).as_millis()
+    /// Temps passé dans la phase courante. Renvoie une [`Duration`] et non
+    /// des millisecondes nues : c'est ce que `advance` attend, et passer par
+    /// un `u64` de ms au milieu perdrait la précision sous la milliseconde
+    /// que `elapsed_since` fournit déjà.
+    pub fn elapsed(&self) -> Duration {
+        self.clock.elapsed_since(self.entered_at)
     }
 
     /// Force une transition — remet l'horloge de phase à zéro si l'état
@@ -245,7 +249,7 @@ mod tests {
         // immédiatement, bien avant tout timeout/durée.
         let history = history_with_chamber_temp(-5.0);
         let (next, _plan) =
-            advance(SystemTask::Cooling(CoolingPhase::SensorCheck), &history, 1, Duration::ZERO);
+            advance(SystemTask::Cooling(CoolingPhase::SensorCheck), &history, Duration::from_millis(1), Duration::ZERO);
         assert_eq!(next, SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
     }
 
@@ -253,7 +257,7 @@ mod tests {
     fn advance_times_out_back_to_idle() {
         let history = MeasurementHistory::new(); // chambre toujours NaN
         let (next, _plan) = advance(
-            SystemTask::Cooling(CoolingPhase::SensorCheck), &history, SENSOR_CHECK_TIMEOUT_MS + 1, Duration::ZERO,
+            SystemTask::Cooling(CoolingPhase::SensorCheck), &history, Duration::from_millis(SENSOR_CHECK_TIMEOUT_MS + 1), Duration::ZERO,
         );
         assert_eq!(next, SystemTask::Idle);
     }
@@ -264,7 +268,7 @@ mod tests {
         // main avant même que la durée minimale ne soit évaluée).
         let history = history_with_chamber_temp(-25.0);
         let (next, _plan) = advance(
-            SystemTask::Cooling(CoolingPhase::StartingIpaCirculation), &history, IPA_CIRCULATION_MS, Duration::ZERO,
+            SystemTask::Cooling(CoolingPhase::StartingIpaCirculation), &history, Duration::from_millis(IPA_CIRCULATION_MS), Duration::ZERO,
         );
         assert_eq!(next, SystemTask::Cooling(CoolingPhase::SaturatingAirWithIpa));
     }
@@ -273,7 +277,7 @@ mod tests {
     fn advance_sensor_loss_aborts_mid_cycle() {
         let history = MeasurementHistory::new(); // chambre jamais valide
         let (next, _plan) = advance(
-            SystemTask::Cooling(CoolingPhase::PreCoolingThePlate), &history, 0, Duration::from_millis(SENSOR_LOSS_MS + 1),
+            SystemTask::Cooling(CoolingPhase::PreCoolingThePlate), &history, Duration::ZERO, Duration::from_millis(SENSOR_LOSS_MS + 1),
         );
         assert_eq!(next, SystemTask::Idle);
     }
@@ -285,7 +289,7 @@ mod tests {
         // à SENSOR_LOSS_MS+1 = 10001ms) s'applique.
         let history = MeasurementHistory::new();
         let (next, _plan) = advance(
-            SystemTask::Cooling(CoolingPhase::SensorCheck), &history, 0, Duration::from_millis(SENSOR_LOSS_MS + 1),
+            SystemTask::Cooling(CoolingPhase::SensorCheck), &history, Duration::ZERO, Duration::from_millis(SENSOR_LOSS_MS + 1),
         );
         assert_eq!(next, SystemTask::Cooling(CoolingPhase::SensorCheck));
     }
@@ -296,7 +300,7 @@ mod tests {
         // — verrou nécessaire, cf. commentaire de `with_isolated_settings`.
         crate::shared::settings::with_isolated_settings(|| {
             let history = MeasurementHistory::new();
-            let (next, plan) = advance(SystemTask::Stabilising, &history, 10 * 60 * 60 * 1000, Duration::ZERO); // 10h
+            let (next, plan) = advance(SystemTask::Stabilising, &history, Duration::from_millis(10 * 60 * 60 * 1000), Duration::ZERO); // 10h
             assert_eq!(next, SystemTask::Stabilising);
             assert_eq!(
                 plan,
@@ -319,7 +323,7 @@ mod tests {
         let ticks = MockClock::new(0);
         let clock = PhaseClock::new(&ticks, SystemTask::Idle);
         assert_eq!(clock.current(), SystemTask::Idle);
-        assert_eq!(clock.elapsed_ms(), 0);
+        assert_eq!(clock.elapsed(), Duration::from_millis(0));
     }
 
     #[test]
@@ -327,7 +331,7 @@ mod tests {
         let ticks = MockClock::new(0);
         let clock = PhaseClock::new(&ticks, SystemTask::Idle);
         ticks.advance_ms(500);
-        assert_eq!(clock.elapsed_ms(), 500);
+        assert_eq!(clock.elapsed(), Duration::from_millis(500));
     }
 
     #[test]
@@ -336,7 +340,7 @@ mod tests {
         let mut clock = PhaseClock::new(&ticks, SystemTask::Idle);
         ticks.advance_ms(500);
         clock.set(SystemTask::Cooling(CoolingPhase::SensorCheck));
-        assert_eq!(clock.elapsed_ms(), 0);
+        assert_eq!(clock.elapsed(), Duration::from_millis(0));
         assert_eq!(clock.current(), SystemTask::Cooling(CoolingPhase::SensorCheck));
     }
 
@@ -346,7 +350,7 @@ mod tests {
         let mut clock = PhaseClock::new(&ticks, SystemTask::Idle);
         ticks.advance_ms(500);
         clock.set(SystemTask::Idle); // même état : ne remet rien à zéro
-        assert_eq!(clock.elapsed_ms(), 500);
+        assert_eq!(clock.elapsed(), Duration::from_millis(500));
     }
 
     #[test]

@@ -124,7 +124,7 @@ where
     } else {
         advance(
             phase.current(), measurement_history,
-            phase.elapsed_ms(), measurement_history.chamber_stale_duration(phase.now()),
+            phase.elapsed(), measurement_history.chamber_stale_duration(phase.now()),
         )
     };
     actuators.apply(plan, measurement_history);
