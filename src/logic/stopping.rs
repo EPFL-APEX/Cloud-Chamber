@@ -1,8 +1,8 @@
 //! Séquence d'arrêt propre.
 //!
-//! Ordre physique : HV off → compresseur off → attendre l'équilibrage
-//! pression (l'équilibrage ne peut pas se produire tant que le compresseur
-//! tourne, il maintient le ΔP). Comme `cooling.rs`, chaque phase construit
+//! Ordre physique : HV off → circulation IPA off → compresseur off →
+//! attendre l'équilibrage pression (l'équilibrage ne peut pas se produire
+//! tant que le compresseur tourne, il maintient le ΔP). Comme `cooling.rs`, chaque phase construit
 //! son propre `ActuatorPlan` en même temps que sa transition ; les délais
 //! fixes (décharge HV, settle compresseur, équilibrage) sont gérés par
 //! l'appelant, pas ici.
@@ -64,9 +64,12 @@ fn cut_high_voltage(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan)
 }
 
 fn cut_isoprop(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
-    // Est-ce qu'on gère ça par un délais ou est-ce qu'on passe direct à la suite ?
-
-    (SystemTask::Stopping(StoppingPhase::CutCompressor), ActuatorPlan{
+    // Géré par un délai, pas par un passage direct : la phase reste sur
+    // elle-même et c'est `STOP_ISOPROP_SETTLE_MS` (cf. `phase_clock`) qui
+    // fait avancer vers `CutCompressor` — même mécanisme que
+    // `CutHighVoltage`. Le froid reste actif pendant ce temps, pour que la
+    // pompe s'arrête sans que la plaque se réchauffe.
+    (SystemTask::Stopping(StoppingPhase::CutIsoprop), ActuatorPlan{
         cooling: Some(settings::get().saturation_target), iso_heater:None, high_voltage: false,
         iso_pump: false, lights: None, glass_heater: true,
     })

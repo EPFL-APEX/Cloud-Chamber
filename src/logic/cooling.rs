@@ -8,7 +8,7 @@
 //! qui seul connaît la durée passée dans la phase courante.
 
 use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
-use crate::config::operating::{STABLE_TOLERANCE_C, STABLE_WINDOW_MS};
+use crate::config::operating::{STABLE_TOLERANCE_C, STABLE_WINDOW};
 use crate::cloud_chamber_hal::actuators::ActuatorPlan;
 use crate::logic::probing::{MeasurementHistory, ProbingPlan};
 use crate::shared::data::SystemTask;
@@ -111,7 +111,7 @@ fn high_voltage(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
     };
 
     // Est-ce qu'on veut vraiment check la stabilité ? Ou est-ce qu'on veut juste allumer le HV
-    match history.temp_stable(CHAMBER_TEMP_IDX, STABLE_WINDOW_MS, STABLE_TOLERANCE_C) {
+    match history.is_temp_stable(CHAMBER_TEMP_IDX, STABLE_WINDOW, STABLE_TOLERANCE_C) {
         true  => (SystemTask::Cooling(CoolingPhase::FinalCheckBeforeStabilising), plan),
         false => (SystemTask::Cooling(CoolingPhase::HighVoltage), plan),
     }

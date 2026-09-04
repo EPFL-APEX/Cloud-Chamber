@@ -65,7 +65,7 @@ where
     // que rien ne force une transition (pas câblé ici : le déclenchement
     // vient de l'UI, câblage prévu séparément).
     let mut phase = PhaseClock::new(clock, SystemTask::default());
-    let mut safety = SafetyMonitor::new(SafetyConfig::default(), phase.now_ms());
+    let mut safety = SafetyMonitor::new(SafetyConfig::default(), phase.now());
 
     // Probing plan
     let mut probing_plan = phase.current().create_probing_plan(&measurement_history);
@@ -119,12 +119,12 @@ where
 
     // Sécurité en priorité absolue sur la logique de phase — décision
     // explicite ici (orchestration), pas cachée dans une méthode.
-    let (next, plan) = if let Some(cause) = safety.check(measurement_history, phase.now_ms()) {
+    let (next, plan) = if let Some(cause) = safety.check(measurement_history, phase.now()) {
         SystemTask::Tripped(cause).react_to(measurement_history)
     } else {
         advance(
             phase.current(), measurement_history,
-            phase.elapsed_ms(), measurement_history.chamber_stale_ms(phase.now_ms()),
+            phase.elapsed_ms(), measurement_history.chamber_stale_duration(phase.now()),
         )
     };
     actuators.apply(plan, measurement_history);
@@ -305,6 +305,7 @@ mod tests {
     use crate::logic::timing::{
         IPA_CIRCULATION_MS, PRECOOL_TIMEOUT_MS, SENSOR_CHECK_TIMEOUT_MS, SENSOR_LOSS_MS,
         STOP_COMPRESSOR_SETTLE_MS, STOP_EQUALIZE_FALLBACK_MS, STOP_HV_SETTLE_MS,
+        STOP_ISOPROP_SETTLE_MS,
     };
     use crate::drivers::mock::{
         MockActuator, MockClock, MockPressureSensor, MockSensorError, MockTempSensor,
@@ -396,7 +397,7 @@ mod tests {
             let history = MeasurementHistory::new();
             let probing_plan = task.create_probing_plan(&history);
             let phase = PhaseClock::new(clock, task);
-            let safety = SafetyMonitor::new(SafetyConfig::default(), phase.now_ms());
+            let safety = SafetyMonitor::new(SafetyConfig::default(), phase.now());
             Self { clock, sensors, actuators, phase, safety, history, probing_plan }
         }
 
@@ -412,21 +413,21 @@ mod tests {
             self.tick();
         }
 
-        fn set_temp(&mut self, idx: usize, value_c: f32) {
-            let m = Measurement::new(self.clock.now(), Celsius(value_c));
+        fn set_temp(&mut self, idx: usize, value: Celsius) {
+            let m = Measurement::new(self.clock.now(), value);
             self.sensors.temperature_source.set(idx, Ok(m));
         }
 
-        fn set_chamber_temp(&mut self, value_c: f32) {
-            self.set_temp(CHAMBER_TEMP_IDX, value_c);
+        fn set_chamber_temp(&mut self, value: Celsius) {
+            self.set_temp(CHAMBER_TEMP_IDX, value);
         }
 
-        fn set_iso_temp(&mut self, value_c: f32) {
-            self.set_temp(ISO_TEMP_IDX, value_c);
+        fn set_iso_temp(&mut self, value: Celsius) {
+            self.set_temp(ISO_TEMP_IDX, value);
         }
 
-        fn set_compressor_temp(&mut self, value_c: f32) {
-            self.set_temp(COMPRESSOR_OUT_IDX, value_c);
+        fn set_compressor_temp(&mut self, value: Celsius) {
+            self.set_temp(COMPRESSOR_OUT_IDX, value);
         }
 
         fn lose_chamber_temp(&mut self) {
@@ -442,9 +443,9 @@ mod tests {
         /// ce nouvel instant, puis exécute le tour — le motif répété pour
         /// construire les échantillons à intervalle régulier qu'exige
         /// `temp_stable` en `HighVoltage`.
-        fn tick_with_chamber_temp_after_ms(&mut self, ms: u64, value_c: f32) {
+        fn tick_with_chamber_temp_after_ms(&mut self, ms: u64, value: Celsius) {
             self.clock.advance_ms(ms);
-            self.set_chamber_temp(value_c);
+            self.set_chamber_temp(value);
             self.tick();
         }
 
@@ -452,10 +453,10 @@ mod tests {
         /// `phase.current()` change, ou jusqu'à `max_ticks` (panique si
         /// jamais atteint — une boucle qui n'aboutit pas doit faire
         /// échouer le test bruyamment, pas silencieusement s'arrêter).
-        fn tick_until_task_changes(&mut self, step_ms: u64, value_c: f32, max_ticks: usize) {
+        fn tick_until_task_changes(&mut self, step_ms: u64, value: Celsius, max_ticks: usize) {
             let starting = self.phase.current();
             for _ in 0..max_ticks {
-                self.tick_with_chamber_temp_after_ms(step_ms, value_c);
+                self.tick_with_chamber_temp_after_ms(step_ms, value);
                 if self.phase.current() != starting {
                     return;
                 }
@@ -522,12 +523,12 @@ mod tests {
 
             // ─── Démarrage (signal UI) ────────────────────────────────────
             h.write_shared_task(SystemTask::Cooling(CoolingPhase::SensorCheck));
-            h.set_chamber_temp(20.0);
+            h.set_chamber_temp(Celsius(20.0));
             h.tick();
             assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
 
             // ─── PreCoolingThePlate ─────────────────────────────────────────
-            h.tick_with_chamber_temp_after_ms(1_000, 0.0); // encore au-dessus du seuil
+            h.tick_with_chamber_temp_after_ms(1_000, Celsius(0.0)); // encore au-dessus du seuil
             assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
             assert!(h.actuators.cooling.is_on);
             assert!(!h.actuators.high_voltage.is_on);
@@ -543,7 +544,7 @@ mod tests {
             // le sens réel d'hystérésis pour un chauffage (`ActivateBelow`,
             // s'active quand c'est FROID) est testé séparément et précisément
             // dans `drivers::regulated`, pas ici.
-            h.set_iso_temp(IPA_HEATER_TARGET_C + 10.0);
+            h.set_iso_temp(IPA_HEATER_TARGET_C + Celsius(10.0));
 
             // Rafraîchit une lecture chambre régulièrement pendant l'attente
             // (2 min) : cette phase ignore la valeur (avancement temporisé),
@@ -581,7 +582,7 @@ mod tests {
             // pour que le froid soit "actif" pendant cette longue attente —
             // horloge avancée d'abord pour que cette lecture soit bien
             // horodatée après la précédente (sinon `push_if_newer` l'ignore).
-            h.tick_with_chamber_temp_after_ms(1_000, SATURATION_TARGET_C + 5.0);
+            h.tick_with_chamber_temp_after_ms(1_000, SATURATION_TARGET_C + Celsius(5.0));
             for _ in 0..20 {
                 h.tick_after_ms(60 * 60 * 1_000); // sauts d'une heure
             }
@@ -597,8 +598,14 @@ mod tests {
             assert_eq!(h.phase.current(), SystemTask::Stopping(StoppingPhase::CutHighVoltage));
 
             h.tick_after_ms(STOP_HV_SETTLE_MS);
-            assert_eq!(h.phase.current(), SystemTask::Stopping(StoppingPhase::CutCompressor));
+            assert_eq!(h.phase.current(), SystemTask::Stopping(StoppingPhase::CutIsoprop));
             assert!(!h.actuators.high_voltage.is_on);
+
+            // Coupure de la circulation IPA avant le compresseur : la pompe
+            // s'arrête pendant que le froid tient encore la plaque.
+            h.tick_after_ms(STOP_ISOPROP_SETTLE_MS);
+            assert_eq!(h.phase.current(), SystemTask::Stopping(StoppingPhase::CutCompressor));
+            assert!(!h.actuators.iso_pump.is_on);
 
             h.tick_after_ms(STOP_COMPRESSOR_SETTLE_MS);
             assert_eq!(h.phase.current(), SystemTask::Stopping(StoppingPhase::WaitPressureEquilibrium));
@@ -642,7 +649,7 @@ mod tests {
             let step = SENSOR_LOSS_MS / 2;
             let mut elapsed = 0u64;
             while elapsed <= PRECOOL_TIMEOUT_MS {
-                h.tick_with_chamber_temp_after_ms(step, 0.0);
+                h.tick_with_chamber_temp_after_ms(step, Celsius(0.0));
                 elapsed += step;
             }
             assert_eq!(h.phase.current(), SystemTask::Idle);
@@ -664,7 +671,7 @@ mod tests {
         with_isolated_shared_state(|| {
             let clock = MockClock::new(1);
             let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
-            h.set_chamber_temp(0.0);
+            h.set_chamber_temp(Celsius(0.0));
             h.tick_after_ms(1_000);
             assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
 
@@ -686,7 +693,7 @@ mod tests {
         with_isolated_shared_state(|| {
             let clock = MockClock::new(1);
             let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
-            h.set_chamber_temp(0.0); // valide, au-dessus du seuil (pas de transition)
+            h.set_chamber_temp(Celsius(0.0)); // valide, au-dessus du seuil (pas de transition)
             h.tick();
             assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
 
@@ -721,7 +728,7 @@ mod tests {
             h.tick();
             assert!(h.actuators.high_voltage.is_on);
 
-            h.set_compressor_temp(150.0); // > seuil alarme (120.0)
+            h.set_compressor_temp(Celsius(150.0)); // > seuil alarme (120.0)
             h.tick_after_ms(1_000);
             h.tick_after_ms(1_000);
             h.tick_after_ms(1_000); // 3e tour consécutif en alarme -> trip
@@ -739,7 +746,7 @@ mod tests {
         with_isolated_shared_state(|| {
             let clock = MockClock::new(1);
             let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::HighVoltage));
-            h.set_compressor_temp(150.0);
+            h.set_compressor_temp(Celsius(150.0));
             h.tick_after_ms(1_000);
             h.tick_after_ms(1_000);
             h.tick_after_ms(1_000);
@@ -749,7 +756,7 @@ mod tests {
             // réarmement automatique (`SafetyMonitor::reset` n'est jamais
             // appelé depuis `control_loop.rs` aujourd'hui — gap documenté,
             // pas caché).
-            h.set_compressor_temp(20.0);
+            h.set_compressor_temp(Celsius(20.0));
             for _ in 0..10 {
                 h.tick_after_ms(1_000);
             }
@@ -762,7 +769,7 @@ mod tests {
         with_isolated_shared_state(|| {
             let clock = MockClock::new(1);
             let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::HighVoltage));
-            h.set_compressor_temp(150.0);
+            h.set_compressor_temp(Celsius(150.0));
             h.tick_after_ms(1_000);
             h.tick_after_ms(1_000);
             h.tick_after_ms(1_000);
@@ -790,7 +797,7 @@ mod tests {
             let clock = MockClock::new(1);
             let mut h = Harness::new(&clock);
             h.write_shared_task(SystemTask::Cooling(CoolingPhase::SensorCheck));
-            h.set_chamber_temp(-5.0);
+            h.set_chamber_temp(Celsius(-5.0));
             h.tick();
             assert_eq!(h.phase.current(), SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
         });
@@ -892,7 +899,7 @@ mod tests {
             };
             let mut history = MeasurementHistory::new();
             let mut phase = PhaseClock::new(&clock, SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
-            let mut safety = SafetyMonitor::new(SafetyConfig::default(), phase.now_ms());
+            let mut safety = SafetyMonitor::new(SafetyConfig::default(), phase.now());
             let probing_plan = phase.current().create_probing_plan(&history);
 
             // `with_isolated_shared_state` a remis SHARED_STATE.task à
@@ -927,7 +934,7 @@ mod tests {
         with_isolated_shared_state(|| {
             let clock = MockClock::new(1);
             let mut h = Harness::new(&clock);
-            h.set_chamber_temp(-10.0);
+            h.set_chamber_temp(Celsius(-10.0));
             h.tick_after_ms(1_000);
             let before = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[CHAMBER_TEMP_IDX]);
             assert_eq!(before.unwrap().value.0, -10.0);
@@ -949,7 +956,7 @@ mod tests {
         with_isolated_shared_state(|| {
             let clock = MockClock::new(1);
             let mut h = Harness::new(&clock);
-            h.set_chamber_temp(-10.0);
+            h.set_chamber_temp(Celsius(-10.0));
             h.tick_after_ms(1_000);
 
             for i in 0..NUMBER_OF_TEMP_SENSOR {

@@ -33,8 +33,14 @@ pub const SENSOR_LOSS_MS: u64 = 10_000;
 
 // ─── Séquence d'arrêt (logic::stopping) ────────────────────────────────────────
 
-/// Délai après coupure HV avant de couper le compresseur.
+/// Délai après coupure HV avant de couper la circulation d'isopropanol.
 pub const STOP_HV_SETTLE_MS: u64 = 2_000;
+/// #TODO CALIBRAGE : délai après arrêt de la pompe IPA avant de couper le
+/// compresseur. Aucune référence physique disponible — valeur de départ
+/// choisie du côté long (le compresseur qui tourne un peu plus longtemps
+/// pendant que la pompe s'arrête est le côté sûr : la plaque reste froide),
+/// à mesurer sur le montage réel avant tout bring-up.
+pub const STOP_ISOPROP_SETTLE_MS: u64 = 5_000;
 /// Délai après coupure compresseur avant d'attendre l'équilibrage pression.
 pub const STOP_COMPRESSOR_SETTLE_MS: u64 = 500;
 /// Pas de capteur dédié au circuit réfrigérant : temporisation fixe
