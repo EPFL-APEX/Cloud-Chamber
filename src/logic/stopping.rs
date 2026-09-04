@@ -12,7 +12,7 @@
 //! `cloud_chamber_hal::config::CHAMBER_PRESSURE_IDX`) : `WaitPressureEquilibrium`
 //! est donc purement temporisée, comme `StartingIpaCirculation` dans
 //! `cooling.rs`. La transition vers `Idle` est gérée par l'appelant via le
-//! timeout de `SystemTask::durations()` (`STOP_EQUALIZE_FALLBACK_MS`).
+//! timeout de `SystemTask::time_limit()` (`STOP_EQUALIZE_FALLBACK`).
 
 use crate::cloud_chamber_hal::actuators::ActuatorPlan;
 use crate::logic::probing::{MeasurementHistory, ProbingPlan};
@@ -54,7 +54,7 @@ impl StoppingPhase {
 // politique par phase définie pour l'instant, cf. doc de `ActuatorPlan`.
 
 fn cut_high_voltage(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
-    // Délai de décharge géré par l'appelant (STOP_HV_SETTLE_MS) ; HT coupée
+    // Délai de décharge géré par l'appelant (STOP_HV_SETTLE) ; HT coupée
     // dès l'entrée en phase. Froid encore actif (l'IPA continue de
     // circuler pendant la décharge) ; chauffage IPA coupé.
     (SystemTask::Stopping(StoppingPhase::CutHighVoltage), ActuatorPlan {
@@ -65,7 +65,7 @@ fn cut_high_voltage(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan)
 
 fn cut_isoprop(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
     // Géré par un délai, pas par un passage direct : la phase reste sur
-    // elle-même et c'est `STOP_ISOPROP_SETTLE_MS` (cf. `phase_clock`) qui
+    // elle-même et c'est `STOP_ISOPROP_SETTLE` (cf. `phase_clock`) qui
     // fait avancer vers `CutCompressor` — même mécanisme que
     // `CutHighVoltage`. Le froid reste actif pendant ce temps, pour que la
     // pompe s'arrête sans que la plaque se réchauffe.
@@ -76,7 +76,7 @@ fn cut_isoprop(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
 }
 
 fn cut_compressor(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
-    // Délai de settle géré par l'appelant (STOP_COMPRESSOR_SETTLE_MS) ;
+    // Délai de settle géré par l'appelant (STOP_COMPRESSOR_SETTLE) ;
     // compresseur coupé dès l'entrée en phase.
     (SystemTask::Stopping(StoppingPhase::CutCompressor), ActuatorPlan {
         cooling: None, iso_heater: None, high_voltage: false,

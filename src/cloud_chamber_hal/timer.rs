@@ -44,8 +44,20 @@ pub trait WatchdogFeed {
 pub struct Instant(u64);
 
 impl Instant {
+    /// Origine de l'horloge monotone : le démarrage de l'appareil.
+    pub const ZERO: Instant = Instant(0);
+
+    /// Instant le plus tardif représentable (~584 942 ans d'uptime).
+    pub const MAX: Instant = Instant(u64::MAX);
+
     pub const fn from_micros(us: u64) -> Self {
         Self(us)
+    }
+
+    /// Sature à [`Instant::MAX`] — cf. [`Duration::from_millis`], même
+    /// raisonnement.
+    pub const fn from_millis(ms: u64) -> Self {
+        Self(ms.saturating_mul(1_000))
     }
 
     pub const fn as_millis(&self) -> u64 {

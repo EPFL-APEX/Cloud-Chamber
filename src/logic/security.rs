@@ -15,7 +15,7 @@
 //! # Capteur sortie-compresseur invalide
 //! Contrairement à une lecture ponctuelle invalide (ignorée, pour ne pas
 //! générer de faux positif au démarrage), une invalidité prolongée
-//! (`SENSOR_LOSS_MS`) est elle-même traitée comme une alarme : un capteur de
+//! (`SENSOR_LOSS`) est elle-même traitée comme une alarme : un capteur de
 //! sécurité débranché ne doit pas désactiver silencieusement la protection
 //! qu'il est censé fournir.
 
@@ -23,7 +23,7 @@ use crate::cloud_chamber_hal::config::COMPRESSOR_OUT_IDX;
 use crate::cloud_chamber_hal::timer::Instant;
 use crate::cloud_chamber_hal::units::{Celsius, Unit};
 use crate::config::operating::SAFETY_TEMP_COMPRESSOR_MAX;
-use crate::logic::timing::SENSOR_LOSS_MS;
+use crate::logic::timing::SENSOR_LOSS;
 use crate::logic::probing::MeasurementHistory;
 
 /// Nombre de cycles consécutifs en Alarm avant déclenchement (anti-rebond).
@@ -123,8 +123,7 @@ impl SafetyMonitor {
         if compressor_valid {
             self.last_compressor_valid = now;
         }
-        let compressor_lost =
-            now.since(self.last_compressor_valid).as_millis() > SENSOR_LOSS_MS;
+        let compressor_lost = now.since(self.last_compressor_valid) > SENSOR_LOSS;
 
         // Est-ce que c'est pas un peu mal foutu de faire une fonction evaluate et après de faire le
         // check à la main pour le compresseur ? Il faut arranger ça... #todo
@@ -179,7 +178,7 @@ mod tests {
     use crate::cloud_chamber_hal::units::Celsius;
 
     /// Les instants de ces tests sont exprimés en millisecondes : c'est
-    /// l'échelle des seuils qu'ils exercent (`SENSOR_LOSS_MS`).
+    /// l'échelle des seuils qu'ils exercent (`SENSOR_LOSS`).
     fn at_ms(ms: u64) -> Instant {
         Instant::from_micros(ms * 1_000)
     }
@@ -271,9 +270,9 @@ mod tests {
         let mut safety = SafetyMonitor::new(SafetyConfig::default(), at_ms(0));
         let history = MeasurementHistory::new(); // sonde jamais valide (NaN)
         safety.check(&history, at_ms(1));
-        safety.check(&history, at_ms(SENSOR_LOSS_MS + 1));
-        safety.check(&history, at_ms(SENSOR_LOSS_MS + 2));
-        let cause = safety.check(&history, at_ms(SENSOR_LOSS_MS + 3));
+        safety.check(&history, at_ms(SENSOR_LOSS.as_millis() + 1));
+        safety.check(&history, at_ms(SENSOR_LOSS.as_millis() + 2));
+        let cause = safety.check(&history, at_ms(SENSOR_LOSS.as_millis() + 3));
         assert_eq!(cause, Some(SafetyCause::CompressorSensorLost));
         assert!(safety.is_tripped());
     }
@@ -281,7 +280,7 @@ mod tests {
     #[test]
     fn brief_invalid_reading_at_startup_is_not_an_alarm() {
         // Lecture ponctuelle invalide (NaN), pas encore assez longtemps pour
-        // dépasser SENSOR_LOSS_MS — pas de fausse alarme au démarrage.
+        // dépasser SENSOR_LOSS — pas de fausse alarme au démarrage.
         let mut safety = SafetyMonitor::new(SafetyConfig::default(), at_ms(0));
         let history = MeasurementHistory::new();
         assert_eq!(safety.check(&history, at_ms(1)), None);
