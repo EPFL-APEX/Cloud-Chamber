@@ -35,7 +35,10 @@ use embedded_hal::digital::OutputPin;
 use rp2040_hal::{
     self as hal, Sio, Watchdog,
     clocks::init_clocks_and_plls,
-    gpio::{DynBankId, DynPinId, DynPullType, FunctionSio, Pin, Pins, SioOutput, new_pin, OutputDriveStrength},
+    gpio::{
+        DynBankId, DynPinId, DynPullType, FunctionSio, OutputDriveStrength, Pin, Pins, SioOutput,
+        new_pin,
+    },
     pac,
 };
 
@@ -57,7 +60,6 @@ use rp2040_hal::{
 /// faire, toutes les sorties de puissance passent par cette constante.
 const RELAY_DRIVE_STRENGTH: OutputDriveStrength = OutputDriveStrength::EightMilliAmps;
 
-
 use cloud_chamber_firmware::config::wiring::{PIN_COMPRESSOR_RELAY, PIN_HV_RELAY, PIN_ISO_HEATER_RELAY, PIN_LIGHTS_RELAY, PIN_PUMP_RELAY};
 
 /// Fréquence du cristal externe du Pico — cf. `hal::clocks::init_clocks_and_plls`.
@@ -68,6 +70,36 @@ const XOSC_CRYSTAL_FREQ: u32 = 12_000_000;
 static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 const RELAY_PINS: [u8; 5] = [PIN_COMPRESSOR_RELAY, PIN_HV_RELAY, PIN_ISO_HEATER_RELAY, PIN_PUMP_RELAY, PIN_LIGHTS_RELAY];
+
+/// Configure GP`pin` en sortie push-pull logicielle, démarrée à l'état bas
+/// (relais éteint).
+///
+/// Garde la force de commande par défaut du RP2040 (4 mA) : les sorties de
+/// puissance passent par [`configure_relay_pin`], qui l'élève ensuite à
+/// [`RELAY_DRIVE_STRENGTH`].
+///
+/// Passe par `gpio::new_pin`/`DynPinId` plutôt que par l'API typée
+/// `pins.gpio<N>` — cf. doc de module.
+///
+/// # Safety
+/// `new_pin` exige qu'aucune autre instance de `Pin` pour cette broche
+/// n'existe en parallèle. `Pins::new(...)` (appelé juste avant, pour ses
+/// effets de bord de sortie de reset) réserve bien un champ typé
+/// `pins.gpio<N>` pour ce même numéro, mais ce champ n'est ni lu ni écrit
+/// nulle part dans ce fichier : aucun accès concurrent réel aux registres
+/// n'en résulte.
+fn configure_output_pin(pin: u8) -> Pin<DynPinId, FunctionSio<SioOutput>, DynPullType> {
+    let id = DynPinId { bank: DynBankId::Bank0, num: pin };
+    let raw = unsafe { new_pin(id) };
+
+    let mut out = raw
+        .try_into_function::<FunctionSio<SioOutput>>()
+        .ok()
+        .expect("SIO est une fonction valide sur toute broche de Bank0");
+    out.set_pull_type(DynPullType::None);
+    let _ = out.set_low();
+    out
+}
 
 /// Configure GP`pin` en sortie de puissance : comme
 /// [`configure_output_pin`], mais à [`RELAY_DRIVE_STRENGTH`] au lieu des
