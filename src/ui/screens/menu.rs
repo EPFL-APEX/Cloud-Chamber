@@ -10,12 +10,15 @@
 //!
 //! La liste est statique (`MAIN_MENU_SIZE`) — pas d'allocation heap.
 
+use core::fmt::Write as _;
+use heapless::String;
+
 use embedded_graphics::{
     Drawable,
     draw_target::DrawTarget,
     geometry::{OriginDimensions, Point, Size},
     image::Image,
-    mono_font::{MonoTextStyle, ascii::FONT_6X13},
+    mono_font::{MonoTextStyle, ascii::{FONT_6X10, FONT_6X13}},
     pixelcolor::Rgb565,
     primitives::{Line, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle},
     text::{Baseline, LineHeight, Text, TextStyle, TextStyleBuilder},
@@ -24,13 +27,17 @@ use embedded_graphics::{
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use tinybmp::Bmp;
 
+use crate::cloud_chamber_hal::config::{CHAMBER_TEMP_IDX, ISO_TEMP_IDX};
+use crate::cloud_chamber_hal::{measurement::Measurement, units::Celsius};
 use crate::logic::cooling::CoolingPhase;
-use crate::shared::data::SystemTask;
+use crate::shared::data::{SharedState, SystemTask};
 use crate::ui::{
     interactions::{Click, NavAction, Rotary},
     navigator::Screen,
     theme, utils,
 };
+
+use super::stats::expected_outputs;
 
 /// Entrées du menu principal.
 #[repr(u8)]
@@ -52,6 +59,41 @@ const MAIN_MENU_SIZE: u8 = 6; // core::mem::variant_count::<MainMenuItem>() as u
 /// pour lancer la machine — `control_loop::tick()` adopte l'écriture au
 /// tour suivant et enchaîne les phases lui-même.
 const FIRST_COOLING_PHASE: SystemTask = SystemTask::Cooling(CoolingPhase::SensorCheck);
+
+/// Valeur affichée à droite de l'icône `slot` de la bande du bas, dans
+/// l'ordre de `stats_icons.bmp` (flocon, thermomètre, éclair, goutte).
+///
+/// Rien ne vérifie à la compilation qu'une icône correspond à sa valeur,
+/// l'ordre est à garder aligné sur la planche à la main.
+///
+/// La capacité de `out` vaut la place disponible, huit caractères en
+/// FONT_6X10 : une valeur plus longue est tronquée plutôt que de déborder
+/// sur la case voisine.
+fn bottom_value(slot: usize, state: &SharedState, out: &mut String<8>) {
+    let (compressor, high_voltage) = expected_outputs(state.task);
+    match slot {
+        0 => write_state(compressor, out),
+        1 => write_temp(state.snapshot.temps[CHAMBER_TEMP_IDX], out),
+        2 => write_state(high_voltage, out),
+        _ => write_temp(state.snapshot.temps[ISO_TEMP_IDX], out),
+    }
+}
+
+fn write_state(on: bool, out: &mut String<8>) {
+    let _ = out.push_str(if on { "ON" } else { "OFF" });
+}
+
+/// Une sonde muette affiche `---`, pas une valeur inventée.
+fn write_temp(measurement: Option<Measurement<Celsius>>, out: &mut String<8>) {
+    match measurement {
+        Some(m) if !m.value.0.is_nan() => {
+            let _ = write!(out, "{:+.1}C", m.value.0);
+        }
+        _ => {
+            let _ = out.push_str("---");
+        }
+    }
+}
 
 /// Écran de menu principal.
 pub struct MainMenuScreen {
@@ -117,7 +159,7 @@ impl MainMenuScreen {
         self.task_requested.take()
     }
 
-    pub fn draw<D>(&self, display: &mut D) -> Result<(), D::Error>
+    pub fn draw<D>(&self, display: &mut D, state: &SharedState) -> Result<(), D::Error>
     where
         D: DrawTarget<Color = Rgb565> + OriginDimensions,
     {
@@ -209,6 +251,13 @@ impl MainMenuScreen {
 
         const STATS_ICON_STARTING_COORDS: (i32, i32) = (6, 216);
 
+        // Chaque case fait 80 px, l'icône en occupe 18 : il reste 52 px à
+        // droite, soit huit caractères en FONT_6X10.
+        const VALUE_STYLE: TextStyle = TextStyleBuilder::new()
+            .baseline(Baseline::Middle)
+            .build();
+        const VALUE_MARGIN: i32 = 22;
+
         for i in 0..4 {
             let icon = stats_icons.get(i).unwrap();
 
@@ -216,6 +265,16 @@ impl MainMenuScreen {
             let icon_y = STATS_ICON_STARTING_COORDS.1;
 
             Image::new(&icon, Point::new(icon_x, icon_y)).draw(display)?;
+
+            let mut value: String<8> = String::new();
+            bottom_value(i, state, &mut value);
+            Text::with_text_style(
+                value.as_str(),
+                Point::new(icon_x + VALUE_MARGIN, icon_y + 9),
+                MonoTextStyle::new(&FONT_6X10, theme::TEXT_COLOR),
+                VALUE_STYLE,
+            )
+            .draw(display)?;
         }
 
         // ICONS
@@ -289,10 +348,56 @@ mod tests {
         assert_eq!(menu.selected, MAIN_MENU_SIZE - 1);
     }
 
+    /// Instantané de démonstration pour la bande du bas, avec les deux
+    /// sondes qu'elle affiche renseignées.
+    fn state_with_readings() -> SharedState {
+        use crate::cloud_chamber_hal::timer::Instant;
+        use crate::shared::data::SensorSnapshot;
+
+        let mut snapshot = SensorSnapshot::default();
+        let now = Instant::from_micros(0);
+        snapshot.temps[CHAMBER_TEMP_IDX] = Some(Measurement::new(now, Celsius(-38.4)));
+        snapshot.temps[ISO_TEMP_IDX] = Some(Measurement::new(now, Celsius(21.7)));
+        SharedState {
+            snapshot,
+            task: SystemTask::Cooling(CoolingPhase::HighVoltage),
+            new_data: false,
+        }
+    }
+
     #[test]
     fn menu_draws_without_error() {
         let mut d = make_display();
-        MainMenuScreen::new().draw(&mut d).unwrap();
+        MainMenuScreen::new()
+            .draw(&mut d, &state_with_readings())
+            .unwrap();
+    }
+
+    /// La bande du bas doit rester lisible quand rien n'a encore été lu,
+    /// c'est l'état au démarrage.
+    #[test]
+    fn menu_draws_without_any_reading() {
+        use crate::shared::data::SensorSnapshot;
+
+        let mut d = make_display();
+        let state = SharedState {
+            snapshot: SensorSnapshot::default(),
+            task: SystemTask::Idle,
+            new_data: false,
+        };
+        MainMenuScreen::new().draw(&mut d, &state).unwrap();
+    }
+
+    /// Les quatre cases tiennent dans les huit caractères que laisse la
+    /// place disponible à droite de chaque icône.
+    #[test]
+    fn every_bottom_value_fits_its_slot() {
+        let state = state_with_readings();
+        for slot in 0..4 {
+            let mut value: String<8> = String::new();
+            bottom_value(slot, &state, &mut value);
+            assert!(!value.is_empty(), "case {slot} vide");
+        }
     }
 
     #[test]
@@ -368,7 +473,7 @@ mod tests {
 
         let main_menu_screen = MainMenuScreen::new();
 
-        main_menu_screen.draw(&mut display)?;
+        main_menu_screen.draw(&mut display, &state_with_readings())?;
 
         // SAVE SCREENSHOT
         let output_settings = OutputSettingsBuilder::new().build();
