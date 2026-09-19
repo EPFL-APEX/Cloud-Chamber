@@ -8,10 +8,8 @@
 //! ce bin est le premier test sur du vrai matériel.
 //!
 //! Broches tirées directement de `config::wiring`
-//! (`PIN_ENCODER_A`/`PIN_ENCODER_B`/`PIN_ENCODER_SW`), sélectionnées via
-//! `gpio::new_pin`/`DynPinId` plutôt que par l'API typée `pins.gpio<N>` —
-//! même raisonnement que `identify_temp_sensors`/`relay_test` : pas de
-//! champ littéral à garder synchronisé à la main avec ces constantes.
+//! (`PIN_ENCODER_A`/`PIN_ENCODER_B`/`PIN_ENCODER_SW`), configurées par
+//! `board::configure_input_pin` — cf. `board`.
 //!
 //! Pull-up interne sur les trois broches : standard pour un encodeur
 //! mécanique dont le commun est au GND (contact = tire à la masse, repos =
@@ -46,76 +44,19 @@ use defmt_rtt as _;
 use panic_probe as _;
 
 use embedded_hal::delay::DelayNs;
-use rp2040_hal::{
-    self as hal, Sio, Watchdog,
-    clocks::init_clocks_and_plls,
-    gpio::{DynBankId, DynPinId, DynPullType, FunctionSio, Pin, Pins, SioInput, new_pin},
-    pac,
-};
+use rp2040_hal as hal;
 
+use cloud_chamber_firmware::board;
 use cloud_chamber_firmware::config::wiring::{PIN_ENCODER_A, PIN_ENCODER_B, PIN_ENCODER_SW};
 use cloud_chamber_firmware::drivers::encoder::{EncoderEvent, RotaryEncoder};
 
-/// Fréquence du cristal externe du Pico — cf. `hal::clocks::init_clocks_and_plls`.
-const XOSC_CRYSTAL_FREQ: u32 = 12_000_000;
-
-#[unsafe(link_section = ".boot2")]
-#[used]
-static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
-
-/// Configure GP`pin` en entrée avec pull-up interne, et retourne le `Pin`
-/// prêt à être passé à `RotaryEncoder` (implémente
-/// `embedded_hal::digital::InputPin`).
-///
-/// Passe par `gpio::new_pin`/`DynPinId` plutôt que par l'API typée
-/// `pins.gpio<N>` — cf. doc de module.
-///
-/// # Safety
-/// `new_pin` exige qu'aucune autre instance de `Pin` pour cette broche
-/// n'existe en parallèle. `Pins::new(...)` (appelé juste avant, pour ses
-/// effets de bord de sortie de reset) réserve bien un champ typé
-/// `pins.gpio<N>` pour ce même numéro, mais ce champ n'est ni lu ni écrit
-/// nulle part dans ce fichier : aucun accès concurrent réel aux registres
-/// n'en résulte.
-fn configure_input_pin(pin: u8) -> Pin<DynPinId, FunctionSio<SioInput>, DynPullType> {
-    let id = DynPinId { bank: DynBankId::Bank0, num: pin };
-    let raw = unsafe { new_pin(id) };
-
-    let mut in_pin = raw
-        .try_into_function::<FunctionSio<SioInput>>()
-        .ok()
-        .expect("SIO est une fonction valide sur toute broche de Bank0");
-    in_pin.set_pull_type(DynPullType::Up);
-    in_pin
-}
-
 #[hal::entry]
 fn main() -> ! {
-    let mut pac = pac::Peripherals::take().unwrap();
-    let mut watchdog = Watchdog::new(pac.WATCHDOG);
+    let mut board = board::init();
 
-    let clocks = init_clocks_and_plls(
-        XOSC_CRYSTAL_FREQ,
-        pac.XOSC,
-        pac.CLOCKS,
-        pac.PLL_SYS,
-        pac.PLL_USB,
-        &mut pac.RESETS,
-        &mut watchdog,
-    )
-    .ok()
-    .unwrap();
-
-    let mut timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
-
-    let sio = Sio::new(pac.SIO);
-    // `Pins::new` reste nécessaire même si son API typée n'est pas utilisée
-    // ensuite : c'est cet appel qui sort IO_BANK0/PADS_BANK0 de reset.
-    let _pins = Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
-
-    let pin_a = configure_input_pin(PIN_ENCODER_A);
-    let pin_b = configure_input_pin(PIN_ENCODER_B);
-    let pin_sw = configure_input_pin(PIN_ENCODER_SW);
+    let pin_a = board::configure_input_pin(PIN_ENCODER_A);
+    let pin_b = board::configure_input_pin(PIN_ENCODER_B);
+    let pin_sw = board::configure_input_pin(PIN_ENCODER_SW);
     let mut encoder = RotaryEncoder::new(pin_a, pin_b, pin_sw);
 
     defmt::info!(
@@ -132,6 +73,6 @@ fn main() -> ! {
             EncoderEvent::ButtonPressed => defmt::info!("bouton presse"),
             EncoderEvent::None => {}
         }
-        timer.delay_ms(1);
+        board.timer.delay_ms(1);
     }
 }

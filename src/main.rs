@@ -75,12 +75,10 @@ use critical_section::Mutex;
 use embedded_hal::digital::OutputPin;
 use embedded_hal::spi::MODE_0;
 use rp2040_hal::{
-    Clock, I2C, Sio, Watchdog, self as hal,
-    clocks::init_clocks_and_plls,
+    Clock, I2C, self as hal,
     fugit::{ExtU32, RateExtU32},
     gpio::{
-        DynBankId, DynPinId, DynPullType, FunctionI2c, FunctionSio, FunctionSpi,
-        OutputDriveStrength, Pin, Pins, PullUp, SioInput, SioOutput, new_pin,
+        DynBankId, DynPinId, DynPullType, FunctionI2c, FunctionSio, FunctionSpi, Pin, PullUp, SioInput, new_pin,
     },
     i2c::{ValidatedPinScl, ValidatedPinSda},
     multicore::{Multicore, Stack},
@@ -93,9 +91,9 @@ use display_interface_spi::SPIInterface;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use ili9341::{DisplaySize240x320, Ili9341, Orientation};
 
+use cloud_chamber_firmware::board;
 use cloud_chamber_firmware::cloud_chamber_hal::actuators::Actuators;
 use cloud_chamber_firmware::cloud_chamber_hal::sensors::{IndependentSensors, Sensors};
-use cloud_chamber_firmware::cloud_chamber_hal::units::Celsius;
 use cloud_chamber_firmware::config::operating::REGULATION_BAND_C;
 use cloud_chamber_firmware::config::wiring::{
     PIN_COMPRESSOR_RELAY, PIN_ENCODER_A,
@@ -120,30 +118,9 @@ use cloud_chamber_firmware::shared::data::{SHARED_STATE, SharedState, SystemTask
 use cloud_chamber_firmware::ui::app::UiApp;
 use cloud_chamber_firmware::ui::navigator::Screen;
 
-/// Fréquence du cristal externe du Pico — cf. `hal::clocks::init_clocks_and_plls`.
-const XOSC_CRYSTAL_FREQ: u32 = 12_000_000;
-
 /// Vitesse du bus SPI de l'écran — cf. `bin/ui_test.rs` pour le
 /// raisonnement sur cette valeur et le symptôme d'un réglage trop haut.
 const SCREEN_SPI_HZ: u32 = 32_000_000;
-
-/// Force de commande des sorties pilotant les optocoupleurs MOC3043.
-///
-/// **Le RP2040 démarre à 4 mA** (champ `DRIVE` de `PADS_BANK0.GPIO`, valeur
-/// de reset `0x56`), ce qui est insuffisant ici : il faut au moins 5 mA
-/// dans la LED du MOC3043 pour garantir l'amorçage (`IFT` max), et on vise
-/// en pratique ~10 mA de marge.
-///
-/// Attention au sens de ce réglage : ce n'est pas une limite de courant,
-/// c'est la capacité de la sortie. Le courant réel est fixé par la
-/// résistance série ; ce champ décide seulement à partir de quel courant la
-/// tension de sortie s'effondre. À 4 mA, tirer ~10 mA fait chuter `VOH`
-/// assez pour que l'amorçage devienne aléatoire — d'où ce passage à 8 mA.
-///
-/// Si la résistance série vise franchement plus de 8 mA, passer à
-/// [`OutputDriveStrength::TwelveMilliAmps`] : c'est le seul changement à
-/// faire, toutes les sorties de puissance passent par cette constante.
-const RELAY_DRIVE_STRENGTH: OutputDriveStrength = OutputDriveStrength::EightMilliAmps;
 
 /// Profondeur de la file d'événements encodeur — cf. [`EventQueue`].
 const EVENT_QUEUE_LEN: usize = 32;
@@ -160,10 +137,6 @@ const CORE1_STACK_WORDS: usize = 2048;
 /// plus lente à convertir, mais `probe()` ne bloque pas dessus (conversion
 /// lancée à un tour, résultat lu au suivant).
 const TEMP_RESOLUTION: Resolution = Resolution::Bits12;
-
-#[unsafe(link_section = ".boot2")]
-#[used]
-static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 // ─── État partagé avec l'interruption TIMER_IRQ_0 ──────────────────────────
 
@@ -266,30 +239,7 @@ fn TIMER_IRQ_0() {
 
 #[hal::entry]
 fn main() -> ! {
-    let mut pac = pac::Peripherals::take().unwrap();
-    let mut watchdog = Watchdog::new(pac.WATCHDOG);
-
-    let clocks = init_clocks_and_plls(
-        XOSC_CRYSTAL_FREQ,
-        pac.XOSC,
-        pac.CLOCKS,
-        pac.PLL_SYS,
-        pac.PLL_USB,
-        &mut pac.RESETS,
-        &mut watchdog,
-    )
-    .ok()
-    .unwrap();
-
-    // `Timer` est `Copy` : la même horloge sert de source monotone à la
-    // boucle de contrôle, aux horodatages de mesure, et de source de délai
-    // au bit-banging 1-Wire — sans avoir à la partager derrière un mutex.
-    let mut timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
-
-    let mut sio = Sio::new(pac.SIO);
-    // `Pins::new` reste nécessaire même si son API typée n'est pas utilisée
-    // ensuite : c'est cet appel qui sort IO_BANK0/PADS_BANK0 de reset.
-    let _pins = Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
+    let mut board = board::init();
 
     defmt::info!("cloud-chamber : demarrage");
 
@@ -303,30 +253,30 @@ fn main() -> ! {
         .ok()
         .expect("SPI est une fonction valide sur toute broche de Bank0");
 
-    let tx = ValidatedPinTx::validate(tx, &pac.SPI0).unwrap_or_else(|_| {
+    let tx = ValidatedPinTx::validate(tx, &board.spi0).unwrap_or_else(|_| {
         panic!("PIN_SCREEN_MOSI (GP{}) n'est pas une broche Tx/MOSI valide pour SPI0", PIN_SCREEN_MOSI)
     });
-    let sck = ValidatedPinSck::validate(sck, &pac.SPI0).unwrap_or_else(|_| {
+    let sck = ValidatedPinSck::validate(sck, &board.spi0).unwrap_or_else(|_| {
         panic!("PIN_SCREEN_SCK (GP{}) n'est pas une broche Sck valide pour SPI0", PIN_SCREEN_SCK)
     });
 
     // Turbofish DS=8 (taille de trame) : plusieurs impls existent (4/5/8...).
-    let spi = Spi::<_, _, _, 8>::new(pac.SPI0, (tx, sck)).init(
-        &mut pac.RESETS,
-        clocks.peripheral_clock.freq(),
+    let spi = Spi::<_, _, _, 8>::new(board.spi0, (tx, sck)).init(
+        &mut board.resets,
+        board.clocks.peripheral_clock.freq(),
         SCREEN_SPI_HZ.Hz(),
         MODE_0,
     );
 
-    let cs_pin = configure_output_pin(PIN_SCREEN_CS);
-    let dc = configure_output_pin(PIN_SCREEN_DC);
-    let rst = configure_output_pin(PIN_SCREEN_RESET);
+    let cs_pin = board::configure_output_pin(PIN_SCREEN_CS);
+    let dc = board::configure_output_pin(PIN_SCREEN_DC);
+    let rst = board::configure_output_pin(PIN_SCREEN_RESET);
 
     // CS::Error = Infallible (GPIO simple) : ne peut pas échouer en pratique.
     let spi_device = ExclusiveDevice::new_no_delay(spi, cs_pin).unwrap();
     let iface = SPIInterface::new(spi_device, dc);
 
-    let ili = match Ili9341::new(iface, rst, &mut timer, Orientation::Landscape, DisplaySize240x320)
+    let ili = match Ili9341::new(iface, rst, &mut board.timer, Orientation::Landscape, DisplaySize240x320)
     {
         Ok(display) => display,
         Err(e) => {
@@ -342,12 +292,12 @@ fn main() -> ! {
 
     // ─── Encodeur (A/B/SW, pull-up interne) — piloté par interruption ──────
     let encoder = RotaryEncoder::new(
-        configure_input_pin(PIN_ENCODER_A),
-        configure_input_pin(PIN_ENCODER_B),
-        configure_input_pin(PIN_ENCODER_SW),
+        board::configure_input_pin(PIN_ENCODER_A),
+        board::configure_input_pin(PIN_ENCODER_B),
+        board::configure_input_pin(PIN_ENCODER_SW),
     );
 
-    let mut alarm = timer.alarm_0().expect("alarme 0 disponible au premier appel");
+    let mut alarm = board.timer.alarm_0().expect("alarme 0 disponible au premier appel");
     alarm.schedule(1_u32.millis()).expect("planification initiale valide");
     alarm.enable_interrupt();
 
@@ -370,13 +320,13 @@ fn main() -> ! {
     // Premier rendu : l'opérateur voit le menu pendant la découverte des
     // capteurs, qui prend un instant.
     let initial_state = critical_section::with(|cs| *SHARED_STATE.borrow_ref(cs));
-    redraw(&mut display, &app, &initial_state, timer);
+    redraw(&mut display, &app, &initial_state, board.timer);
     app.take_redraw_request();
 
     // ─── Températures : DS18B20 sur 1-Wire ─────────────────────────────────
-    configure_onewire_pin(PIN_ONEWIRE);
+    board::configure_onewire_pin(PIN_ONEWIRE);
     let mut bus = Ds18b20Bus::new(Rp2040OpenDrain::new(1u32 << PIN_ONEWIRE));
-    let discovered = bus.discover(&mut timer);
+    let discovered = bus.discover(&mut board.timer);
     defmt::info!(
         "1-Wire GP{} : {} capteur(s) decouvert(s) (attendu : {})",
         PIN_ONEWIRE,
@@ -387,7 +337,7 @@ fn main() -> ! {
     // `Ds18b20Sensors::new` configure la résolution de chaque capteur
     // découvert ; un échec ici veut dire que le bus ne répond pas comme
     // attendu, ce qui rend toute lecture de température douteuse.
-    let temperature_source = match Ds18b20Sensors::new(bus, timer, timer, TEMP_RESOLUTION) {
+    let temperature_source = match Ds18b20Sensors::new(bus, board.timer, board.timer, TEMP_RESOLUTION) {
         Ok(sensors) => sensors,
         Err(e) => {
             defmt::error!("echec config DS18B20 : {}", defmt::Debug2Format(&e));
@@ -407,14 +357,14 @@ fn main() -> ! {
         .expect("I2C est une fonction valide sur cette broche")
         .into_pull_type::<PullUp>();
 
-    let sda = ValidatedPinSda::validate(sda, &pac.I2C0).unwrap_or_else(|_| {
+    let sda = ValidatedPinSda::validate(sda, &board.i2c0).unwrap_or_else(|_| {
         panic!("PIN_I2C_SDA (GP{}) n'est pas une broche SDA valide pour I2C0", PIN_I2C_SDA)
     });
-    let scl = ValidatedPinScl::validate(scl, &pac.I2C0).unwrap_or_else(|_| {
+    let scl = ValidatedPinScl::validate(scl, &board.i2c0).unwrap_or_else(|_| {
         panic!("PIN_I2C_SCL (GP{}) n'est pas une broche SCL valide pour I2C0", PIN_I2C_SCL)
     });
 
-    let i2c = I2C::new_controller(pac.I2C0, sda, scl, 400.kHz(), &mut pac.RESETS, clocks.system_clock.freq());
+    let i2c = I2C::new_controller(board.i2c0, sda, scl, 400.kHz(), &mut board.resets, board.clocks.system_clock.freq());
 
     // Source de pression : BME280, pas ABP2. C'est ce qui est câblé sur ce
     // montage — l'ABP2 (pression d'un circuit de la chambre, 0–1 bar) n'y
@@ -422,7 +372,7 @@ fn main() -> ! {
     // (~1013 hPa) : il remplit le créneau `press` mais ne décrit pas la même
     // grandeur, et une sécurité pression ajoutée un jour devra en tenir
     // compte. Le driver ABP2 reste dans l'arbre, prêt à reprendre ce rôle.
-    let mut bme = Bme280Sensor::new(Bme280Driver::new(i2c), timer, timer);
+    let mut bme = Bme280Sensor::new(Bme280Driver::new(i2c), board.timer, board.timer);
     if let Err(e) = bme.init() {
         // Sans init, les coefficients de compensation ne sont pas chargés et
         // toutes les lectures seraient fausses — mieux vaut le dire ici que
@@ -442,18 +392,18 @@ fn main() -> ! {
     // au niveau bas avant tout. C'est ce qui garantit qu'un reset en plein
     // cycle ne laisse pas la haute tension ou le compresseur collés.
     let actuators = Actuators {
-        high_voltage: GpioBreaker::new(configure_relay_pin(PIN_HV_RELAY), true),
+        high_voltage: GpioBreaker::new(board::configure_relay_pin(PIN_HV_RELAY), true),
         cooling: Compressor::new(
-            configure_relay_pin(PIN_COMPRESSOR_RELAY),
+            board::configure_relay_pin(PIN_COMPRESSOR_RELAY),
             REGULATION_BAND_C,
         ),
         iso_heater: Heater::new(
-            configure_relay_pin(PIN_ISO_HEATER_RELAY),
+            board::configure_relay_pin(PIN_ISO_HEATER_RELAY),
             REGULATION_BAND_C,
         ),
-        iso_pump: Pump::new(configure_relay_pin(PIN_PUMP_RELAY)),
-        lights: Lights::new(configure_relay_pin(PIN_LIGHTS_RELAY)),
-        glass_heater: WindowHeater::new(configure_relay_pin(PIN_WINDOW_HEATER_RELAY)),
+        iso_pump: Pump::new(board::configure_relay_pin(PIN_PUMP_RELAY)),
+        lights: Lights::new(board::configure_relay_pin(PIN_LIGHTS_RELAY)),
+        glass_heater: WindowHeater::new(board::configure_relay_pin(PIN_WINDOW_HEATER_RELAY)),
     };
 
     // ─── Cœur 1 : la boucle de contrôle ───────────────────────────────────
@@ -461,14 +411,14 @@ fn main() -> ! {
     // Capteurs et actionneurs sont *déplacés* sur le cœur 1, qui en devient
     // seul propriétaire : aucun partage, donc aucun verrou sur le chemin
     // chaud du contrôle. Tout ce qui traverse est dans `SHARED_STATE`.
-    let mut multicore = Multicore::new(&mut pac.PSM, &mut pac.PPB, &mut sio.fifo);
+    let mut multicore = Multicore::new(&mut board.psm, &mut board.ppb, &mut board.fifo);
     let core1 = &mut multicore.cores()[1];
     let stack = CORE1_STACK
         .take()
         .expect("la pile du coeur 1 n'est reclamee qu'ici");
 
     if let Err(e) = core1.spawn(stack, move || {
-        control_loop::run(sensors, actuators, timer);
+        control_loop::run(sensors, actuators, board.timer);
     }) {
         defmt::error!("echec lancement coeur 1 : {}", defmt::Debug2Format(&e));
         panic!("boucle de controle indisponible");
@@ -481,7 +431,7 @@ fn main() -> ! {
     // Rien ici ne dessine sous section critique : on prend une copie de
     // l'état, puis on travaille dessus verrou relâché (cf. doc de module).
     let mut last_task = SystemTask::Idle;
-    let mut last_activity = timer.get_counter();
+    let mut last_activity = board.timer.get_counter();
 
     loop {
         // Applique les événements empilés par l'interruption. L'état
@@ -489,7 +439,7 @@ fn main() -> ! {
         // peut avoir fait avancer la machine, et c'est lui qui décide si un
         // démarrage est encore légitime.
         while let Some(event) = critical_section::with(|cs| EVENTS.borrow(cs).borrow_mut().pop()) {
-            last_activity = timer.get_counter();
+            last_activity = board.timer.get_counter();
             let current = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).task);
             if let Some(task) = app.handle_event(event, current) {
                 critical_section::with(|cs| SHARED_STATE.borrow_ref_mut(cs).task = task);
@@ -537,7 +487,7 @@ fn main() -> ! {
             }
         }
 
-        app.poll_idle((timer.get_counter() - last_activity).to_millis());
+        app.poll_idle((board.timer.get_counter() - last_activity).to_millis());
 
         // Faute d'implémentation flash pour le RP2040, une demande de
         // sauvegarde est consommée et journalisée — sinon elle resterait en
@@ -547,7 +497,7 @@ fn main() -> ! {
         }
 
         if app.take_redraw_request() {
-            redraw(&mut display, &app, &state, timer);
+            redraw(&mut display, &app, &state, board.timer);
         }
     }
 }
@@ -573,99 +523,3 @@ fn redraw<IFACE, RESET>(
     defmt::debug!("redraw termine en {} ms", elapsed.to_millis());
 }
 
-/// Configure GP`pin` en sortie de puissance : comme
-/// [`configure_output_pin`], mais à [`RELAY_DRIVE_STRENGTH`] au lieu des
-/// 4 mA par défaut du RP2040 — cf. la doc de cette constante pour le
-/// pourquoi (amorçage des MOC3043).
-///
-/// # Safety
-/// Même raisonnement que [`configure_output_pin`].
-fn configure_relay_pin(pin: u8) -> Pin<DynPinId, FunctionSio<SioOutput>, DynPullType> {
-    let mut out = configure_output_pin(pin);
-    out.set_drive_strength(RELAY_DRIVE_STRENGTH);
-
-    // Relecture du registre : le seul moyen de vérifier sur la puce réelle
-    // que le champ `DRIVE` a bien pris, plutôt que de le supposer. Un
-    // `warn` plutôt qu'un `panic` — une force de commande inattendue rend
-    // l'amorçage douteux, pas le démarrage impossible, et l'opérateur doit
-    // pouvoir voir l'anomalie plutôt que de se retrouver devant une carte
-    // muette.
-    let readback = out.get_drive_strength();
-    if readback == RELAY_DRIVE_STRENGTH {
-        defmt::debug!("GP{} : force de commande {}", pin, defmt::Debug2Format(&readback));
-    } else {
-        defmt::warn!(
-            "GP{} : force de commande {} au lieu de {} — amorcage MOC3043 incertain",
-            pin,
-            defmt::Debug2Format(&readback),
-            defmt::Debug2Format(&RELAY_DRIVE_STRENGTH),
-        );
-    }
-
-    out
-}
-
-/// Configure GP`pin` en sortie push-pull logicielle, démarrée à l'état bas.
-///
-/// Garde la force de commande par défaut (4 mA). Convient aux broches
-/// CS/DC/RESET de l'écran, qui n'attaquent que des entrées CMOS : y
-/// augmenter la force ne servirait à rien et aggraverait les rebonds et le
-/// rayonnement sur des signaux voisins d'un bus SPI à 32 MHz. Les sorties
-/// de puissance passent par [`configure_relay_pin`].
-///
-/// # Safety
-/// `new_pin` exige qu'aucune autre instance de `Pin` pour cette broche
-/// n'existe en parallèle. `Pins::new(...)` (appelé plus haut pour ses effets
-/// de bord de sortie de reset) réserve bien un champ typé `pins.gpio<N>`,
-/// mais aucun de ces champs n'est lu ni écrit dans ce fichier : aucun accès
-/// concurrent réel aux registres n'en résulte. L'unicité des numéros est
-/// elle-même garantie à la compilation par `config::wiring`.
-fn configure_output_pin(pin: u8) -> Pin<DynPinId, FunctionSio<SioOutput>, DynPullType> {
-    let id = DynPinId { bank: DynBankId::Bank0, num: pin };
-    let raw = unsafe { new_pin(id) };
-    let mut out = raw
-        .try_into_function::<FunctionSio<SioOutput>>()
-        .ok()
-        .expect("SIO est une fonction valide sur toute broche de Bank0");
-    out.set_pull_type(DynPullType::None);
-    let _ = out.set_low();
-    out
-}
-
-/// Configure GP`pin` en entrée avec pull-up interne (broches encodeur).
-///
-/// # Safety
-/// Même raisonnement que [`configure_output_pin`].
-fn configure_input_pin(pin: u8) -> Pin<DynPinId, FunctionSio<SioInput>, DynPullType> {
-    let id = DynPinId { bank: DynBankId::Bank0, num: pin };
-    let raw = unsafe { new_pin(id) };
-    let mut in_pin = raw
-        .try_into_function::<FunctionSio<SioInput>>()
-        .ok()
-        .expect("SIO est une fonction valide sur toute broche de Bank0");
-    in_pin.set_pull_type(DynPullType::Up);
-    in_pin
-}
-
-/// Prépare GP`pin` pour l'usage 1-Wire : sortie niveau bas, puis entrée
-/// flottante — c'est ensuite `Rp2040OpenDrain` qui pilote la direction
-/// directement par les registres du SIO. Le pull-up 4.7 kΩ est externe.
-///
-/// # Safety
-/// Même raisonnement que [`configure_output_pin`] ; la `Pin` typée est
-/// abandonnée à la fin, seule la configuration matérielle persiste.
-fn configure_onewire_pin(pin: u8) {
-    let id = DynPinId { bank: DynBankId::Bank0, num: pin };
-    let raw = unsafe { new_pin(id) };
-    let mut out = raw
-        .try_into_function::<FunctionSio<SioOutput>>()
-        .ok()
-        .expect("SIO est une fonction valide sur toute broche de Bank0");
-    out.set_pull_type(DynPullType::None);
-    let _ = out.set_low();
-
-    let _floating = out
-        .try_into_function::<FunctionSio<SioInput>>()
-        .ok()
-        .expect("SIO est une fonction valide sur toute broche de Bank0");
-}

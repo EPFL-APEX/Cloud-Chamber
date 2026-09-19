@@ -83,13 +83,11 @@ use panic_probe as _;
 
 use critical_section::Mutex;
 use embedded_hal::delay::DelayNs;
-use embedded_hal::digital::OutputPin;
 use embedded_hal::spi::MODE_0;
 use rp2040_hal::{
-    Clock, Sio, Watchdog, self as hal,
-    clocks::init_clocks_and_plls,
+    Clock, self as hal,
     fugit::{ExtU32, RateExtU32},
-    gpio::{DynBankId, DynPinId, DynPullType, FunctionSio, FunctionSpi, Pin, Pins, SioInput, SioOutput, new_pin},
+    gpio::{DynBankId, DynPinId, DynPullType, FunctionSio, FunctionSpi, Pin, SioInput, new_pin},
     pac::{self, interrupt},
     spi::{Spi, ValidatedPinSck, ValidatedPinTx},
     timer::{Alarm, Alarm0},
@@ -99,6 +97,7 @@ use display_interface_spi::SPIInterface;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use ili9341::{DisplaySize240x320, Ili9341, Orientation};
 
+use cloud_chamber_firmware::board;
 use cloud_chamber_firmware::config::wiring::{
     PIN_ENCODER_A, PIN_ENCODER_B, PIN_ENCODER_SW, PIN_SCREEN_CS, PIN_SCREEN_DC, PIN_SCREEN_MOSI,
     PIN_SCREEN_RESET, PIN_SCREEN_SCK,
@@ -107,13 +106,6 @@ use cloud_chamber_firmware::drivers::display::{self, FramebufferedDisplay};
 use cloud_chamber_firmware::drivers::encoder::RotaryEncoder;
 use cloud_chamber_firmware::shared::data::SHARED_STATE;
 use cloud_chamber_firmware::ui::app::UiApp;
-
-/// Fréquence du cristal externe du Pico — cf. `hal::clocks::init_clocks_and_plls`.
-const XOSC_CRYSTAL_FREQ: u32 = 12_000_000;
-
-#[unsafe(link_section = ".boot2")]
-#[used]
-static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 // ─── État partagé avec l'interruption TIMER_IRQ_0 ──────────────────────────
 
@@ -171,27 +163,7 @@ fn TIMER_IRQ_0() {
 
 #[hal::entry]
 fn main() -> ! {
-    let mut pac = pac::Peripherals::take().unwrap();
-    let mut watchdog = Watchdog::new(pac.WATCHDOG);
-
-    let clocks = init_clocks_and_plls(
-        XOSC_CRYSTAL_FREQ,
-        pac.XOSC,
-        pac.CLOCKS,
-        pac.PLL_SYS,
-        pac.PLL_USB,
-        &mut pac.RESETS,
-        &mut watchdog,
-    )
-    .ok()
-    .unwrap();
-
-    let mut timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
-
-    let sio = Sio::new(pac.SIO);
-    // `Pins::new` reste nécessaire même si son API typée n'est pas utilisée
-    // ensuite : c'est cet appel qui sort IO_BANK0/PADS_BANK0 de reset.
-    let _pins = Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
+    let mut board = board::init();
 
     // ─── Écran (SPI0 + CS/DC/RESET logiciels) ──────────────────────────────
     let tx = unsafe { new_pin(DynPinId { bank: DynBankId::Bank0, num: PIN_SCREEN_MOSI }) }
@@ -203,10 +175,10 @@ fn main() -> ! {
         .ok()
         .expect("SPI est une fonction valide sur toute broche de Bank0");
 
-    let tx = ValidatedPinTx::validate(tx, &pac.SPI0).unwrap_or_else(|_| {
+    let tx = ValidatedPinTx::validate(tx, &board.spi0).unwrap_or_else(|_| {
         panic!("PIN_SCREEN_MOSI (GP{}) n'est pas une broche Tx/MOSI valide pour SPI0", PIN_SCREEN_MOSI)
     });
-    let sck = ValidatedPinSck::validate(sck, &pac.SPI0).unwrap_or_else(|_| {
+    let sck = ValidatedPinSck::validate(sck, &board.spi0).unwrap_or_else(|_| {
         panic!("PIN_SCREEN_SCK (GP{}) n'est pas une broche Sck valide pour SPI0", PIN_SCREEN_SCK)
     });
 
@@ -221,27 +193,27 @@ fn main() -> ! {
     // corrompues), c'est le signe d'être allé trop loin : rebaisser cette
     // valeur (le maximum matériel du RP2040 est peripheral_clock / 2, soit
     // ~62.5 MHz à l'horloge système par défaut).
-    let spi = Spi::<_, _, _, 8>::new(pac.SPI0, (tx, sck)).init(
-        &mut pac.RESETS,
-        clocks.peripheral_clock.freq(),
+    let spi = Spi::<_, _, _, 8>::new(board.spi0, (tx, sck)).init(
+        &mut board.resets,
+        board.clocks.peripheral_clock.freq(),
         32_000_000u32.Hz(),
         MODE_0,
     );
 
-    let cs = configure_output_pin(PIN_SCREEN_CS);
-    let dc = configure_output_pin(PIN_SCREEN_DC);
-    let rst = configure_output_pin(PIN_SCREEN_RESET);
+    let cs = board::configure_output_pin(PIN_SCREEN_CS);
+    let dc = board::configure_output_pin(PIN_SCREEN_DC);
+    let rst = board::configure_output_pin(PIN_SCREEN_RESET);
 
     // CS::Error = Infallible (broche GPIO simple) : ne peut pas échouer en pratique.
     let spi_device = ExclusiveDevice::new_no_delay(spi, cs).unwrap();
     let iface = SPIInterface::new(spi_device, dc);
 
-    let ili9341_display = match Ili9341::new(iface, rst, &mut timer, Orientation::Landscape, DisplaySize240x320) {
+    let ili9341_display = match Ili9341::new(iface, rst, &mut board.timer, Orientation::Landscape, DisplaySize240x320) {
         Ok(display) => display,
         Err(e) => {
             defmt::error!("echec init ecran : {}", defmt::Debug2Format(&e));
             loop {
-                timer.delay_ms(1_000);
+                board.timer.delay_ms(1_000);
             }
         }
     };
@@ -249,12 +221,12 @@ fn main() -> ! {
     let mut display = FramebufferedDisplay::new(ili9341_display, framebuffer);
 
     // ─── Encodeur (A/B/SW, pull-up interne) — piloté par interruption ──────
-    let pin_a = configure_input_pin(PIN_ENCODER_A);
-    let pin_b = configure_input_pin(PIN_ENCODER_B);
-    let pin_sw = configure_input_pin(PIN_ENCODER_SW);
+    let pin_a = board::configure_input_pin(PIN_ENCODER_A);
+    let pin_b = board::configure_input_pin(PIN_ENCODER_B);
+    let pin_sw = board::configure_input_pin(PIN_ENCODER_SW);
     let encoder = RotaryEncoder::new(pin_a, pin_b, pin_sw);
 
-    let mut alarm = timer.alarm_0().expect("alarme 0 disponible au premier appel");
+    let mut alarm = board.timer.alarm_0().expect("alarme 0 disponible au premier appel");
     alarm.schedule(1_u32.millis()).expect("planification initiale valide");
     alarm.enable_interrupt();
 
@@ -281,13 +253,13 @@ fn main() -> ! {
     //
     // Chronométrage : `Timer` est `Copy` (juste un accès aux registres
     // matériels), capturer une copie dans la fermeture ne pose pas de
-    // problème de possession face au `timer` utilisé plus haut. Sert à
+    // problème de possession face au `board.timer` utilisé plus haut. Sert à
     // vérifier concrètement l'effet des optimisations (framebuffer,
     // interruption, vitesse SPI) plutôt que de se fier à une impression —
     // à retirer si le log devient gênant une fois la performance jugée
     // suffisante.
     let redraw = |display: &mut FramebufferedDisplay<_, _>| {
-        let start = timer.get_counter();
+        let start = board.timer.get_counter();
         let _ = display.render(|target| {
             critical_section::with(|cs| {
                 if let Some(app) = UI.borrow(cs).borrow().as_ref() {
@@ -298,7 +270,7 @@ fn main() -> ! {
                 }
             })
         });
-        let elapsed = timer.get_counter() - start;
+        let elapsed = board.timer.get_counter() - start;
         defmt::info!("redraw termine en {} ms", elapsed.to_millis());
     };
 
@@ -320,40 +292,3 @@ fn main() -> ! {
     }
 }
 
-/// Configure GP`pin` en sortie push-pull logicielle (CS/DC/RESET), démarrée
-/// à l'état bas — cf. `screen_test`.
-///
-/// # Safety
-/// `new_pin` exige qu'aucune autre instance de `Pin` pour cette broche
-/// n'existe en parallèle. `Pins::new(...)` (appelé juste avant, pour ses
-/// effets de bord de sortie de reset) réserve bien un champ typé
-/// `pins.gpio<N>` pour ce même numéro, mais ce champ n'est ni lu ni écrit
-/// nulle part dans ce fichier : aucun accès concurrent réel aux registres
-/// n'en résulte.
-fn configure_output_pin(pin: u8) -> Pin<DynPinId, FunctionSio<SioOutput>, DynPullType> {
-    let id = DynPinId { bank: DynBankId::Bank0, num: pin };
-    let raw = unsafe { new_pin(id) };
-    let mut out = raw
-        .try_into_function::<FunctionSio<SioOutput>>()
-        .ok()
-        .expect("SIO est une fonction valide sur toute broche de Bank0");
-    out.set_pull_type(DynPullType::None);
-    let _ = out.set_low();
-    out
-}
-
-/// Configure GP`pin` en entrée avec pull-up interne (broches encodeur) —
-/// cf. `encoder_test`.
-///
-/// # Safety
-/// Même raisonnement que `configure_output_pin`.
-fn configure_input_pin(pin: u8) -> Pin<DynPinId, FunctionSio<SioInput>, DynPullType> {
-    let id = DynPinId { bank: DynBankId::Bank0, num: pin };
-    let raw = unsafe { new_pin(id) };
-    let mut in_pin = raw
-        .try_into_function::<FunctionSio<SioInput>>()
-        .ok()
-        .expect("SIO est une fonction valide sur toute broche de Bank0");
-    in_pin.set_pull_type(DynPullType::Up);
-    in_pin
-}
