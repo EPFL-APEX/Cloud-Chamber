@@ -54,6 +54,7 @@ pub(super) fn phase_label(task: SystemTask) -> &'static str {
         SystemTask::Cooling(FinalCheckBeforeStabilising) => "VERIF. FINALE",
         SystemTask::Stabilising => "STABILISE",
         SystemTask::Stopping(CutHighVoltage) => "ARRET: HV OFF",
+        SystemTask::Stopping(CutIsoprop) => "ARRET: POMPE IPA",
         SystemTask::Stopping(CutCompressor) => "ARRET: COMP.",
         SystemTask::Stopping(WaitPressureEquilibrium) => "ARRET: EQUIL.",
         SystemTask::Tripped(_) => "ARRET SECURITE",
@@ -84,6 +85,7 @@ fn expected_outputs(task: SystemTask) -> (bool, bool) {
         SystemTask::Cooling(FinalCheckBeforeStabilising) => (true, true),
         SystemTask::Stabilising => (true, true),
         SystemTask::Stopping(CutHighVoltage) => (true, false),
+        SystemTask::Stopping(CutIsoprop) => (true, false),
         SystemTask::Stopping(CutCompressor) => (false, false),
         SystemTask::Stopping(WaitPressureEquilibrium) => (false, false),
         SystemTask::Idle | SystemTask::Tripped(_) => (false, false),
@@ -130,7 +132,7 @@ impl<'a> StatsScreen<'a> {
             let (text, color) = match snap.temps[CHAMBER_TEMP_IDX] {
                 Some(m) if !m.value.0.is_nan() => {
                     write!(val, "{:+6.1}C", m.value.0).ok();
-                    let color = if m.value.0 <= SATURATION_TARGET_C { theme::ACCENT_COLOR }
+                    let color = if m.value <= SATURATION_TARGET_C { theme::ACCENT_COLOR }
                         else { theme::TEXT_COLOR };
                     (val.as_str(), color)
                 }
@@ -144,7 +146,7 @@ impl<'a> StatsScreen<'a> {
         // affiche la constante de configuration en attendant.
         {
             let mut s: String<24> = String::new();
-            write!(s, "Cible: {:+5.1}C", TARGET_CHAMBER_TEMP).ok();
+            write!(s, "Cible: {:+5.1}C", TARGET_CHAMBER_TEMP.0).ok();
             Text::new(s.as_str(), Point::new(4, 84), MonoTextStyle::new(&FONT_6X10, theme::TEXT_COLOR))
                 .draw(display)?;
         }

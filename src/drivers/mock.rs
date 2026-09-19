@@ -125,29 +125,31 @@ impl<Unit: Copy + PartialOrd, const N: usize> TargetActuator<Unit, N> for MockAc
     }
 }
 
-/// Horloge mock pilotable par le test — microsecondes internes, avancée
-/// explicitement via `advance_ms`. `&MockClock` implémente `MonotonicTimer`
+/// Horloge mock pilotable par le test, avancée explicitement via
+/// [`MockClock::advance`]. `&MockClock` implémente `MonotonicTimer`
 /// directement (`Cell`, pas de `Rc` nécessaire).
-pub struct MockClock(core::cell::Cell<u64>);
+pub struct MockClock(core::cell::Cell<Instant>);
 
 impl MockClock {
-    /// Démarre à `start_ms`. Pour les tests qui font passer une lecture
-    /// capteur par `MeasurementHistory` (via `push_if_newer`), préférer un
-    /// départ `> 0` : `MeasurementHistory::new()` initialise ses buffers à
-    /// `Instant::from_micros(0)`, et `push_if_newer` n'enregistre une
+    /// Démarre à `start`. Pour les tests qui font passer une lecture capteur
+    /// par `MeasurementHistory` (via `push_if_newer`), préférer un départ
+    /// après [`Instant::ZERO`] : `MeasurementHistory::new()` initialise ses
+    /// buffers à `Instant::ZERO`, et `push_if_newer` n'enregistre une
     /// nouvelle lecture que si elle est strictement plus récente — une
-    /// lecture posée à l'instant `0` serait silencieusement ignorée.
-    pub fn new(start_ms: u64) -> Self {
-        Self(core::cell::Cell::new(start_ms * 1_000))
+    /// lecture posée à l'origine serait silencieusement ignorée.
+    pub fn new(start: Instant) -> Self {
+        Self(core::cell::Cell::new(start))
     }
 
-    pub fn advance_ms(&self, ms: u64) {
-        self.0.set(self.0.get() + ms * 1_000);
+    /// Avance l'horloge de `elapsed`. Prend une [`Duration`] et non des
+    /// millisecondes nues, comme tout le reste de la chaîne temporelle.
+    pub fn advance(&self, elapsed: Duration) {
+        self.0.set(self.0.get() + elapsed);
     }
 }
 
 impl MonotonicTimer for &MockClock {
     fn now(&self) -> Instant {
-        Instant::from_micros(self.0.get())
+        self.0.get()
     }
 }

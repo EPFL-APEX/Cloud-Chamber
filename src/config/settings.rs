@@ -82,10 +82,10 @@ impl Settings {
     pub const fn defaults() -> Self {
         use super::operating::*;
         Self {
-            chamber_target: Celsius(TARGET_CHAMBER_TEMP),
-            precool_target: Celsius(PRECOOL_TARGET_C),
-            saturation_target: Celsius(SATURATION_TARGET_C),
-            ipa_heater_target: Celsius(IPA_HEATER_TARGET_C),
+            chamber_target: TARGET_CHAMBER_TEMP,
+            precool_target: PRECOOL_TARGET_C,
+            saturation_target: SATURATION_TARGET_C,
+            ipa_heater_target: IPA_HEATER_TARGET_C,
         }
     }
 

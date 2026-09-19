@@ -320,7 +320,8 @@ mod tests {
             }
             SystemTask::Cooling(FinalCheckBeforeStabilising) => SystemTask::Stabilising,
             SystemTask::Stabilising => SystemTask::Stopping(CutHighVoltage),
-            SystemTask::Stopping(CutHighVoltage) => SystemTask::Stopping(CutCompressor),
+            SystemTask::Stopping(CutHighVoltage) => SystemTask::Stopping(CutIsoprop),
+            SystemTask::Stopping(CutIsoprop) => SystemTask::Stopping(CutCompressor),
             SystemTask::Stopping(CutCompressor) => {
                 SystemTask::Stopping(WaitPressureEquilibrium)
             }

@@ -445,11 +445,11 @@ fn main() -> ! {
         high_voltage: GpioBreaker::new(configure_relay_pin(PIN_HV_RELAY), true),
         cooling: Compressor::new(
             configure_relay_pin(PIN_COMPRESSOR_RELAY),
-            Celsius(REGULATION_BAND_C),
+            REGULATION_BAND_C,
         ),
         iso_heater: Heater::new(
             configure_relay_pin(PIN_ISO_HEATER_RELAY),
-            Celsius(REGULATION_BAND_C),
+            REGULATION_BAND_C,
         ),
         iso_pump: Pump::new(configure_relay_pin(PIN_PUMP_RELAY)),
         lights: Lights::new(configure_relay_pin(PIN_LIGHTS_RELAY)),
