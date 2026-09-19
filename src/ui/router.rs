@@ -14,6 +14,7 @@ use crate::shared::data::{SharedState, SystemTask};
 use super::interactions::{Click, NavAction, Rotary};
 use super::navigator::{Navigator, Screen};
 use super::screens::menu::MainMenuScreen;
+use super::screens::placeholder::PlaceholderScreen;
 use super::screens::running::RunningScreen;
 use super::screens::settings::SettingsScreen;
 use super::screens::stats::StatsScreen;
@@ -53,10 +54,9 @@ impl Screens {
             // rotation est le bon comportement — `todo!()` faisait paniquer
             // la machine sur un simple geste. La veille est du même genre,
             // `UiApp` consommant le geste de réveil avant d'arriver ici.
-            CurrentTask | Stats | Idle => {}
-            ManualControl => todo!(),
-            Data => todo!(),
-            Info => todo!(),
+            // Les écrans encore absents (cf. `PlaceholderScreen`) sont dans
+            // le même cas : rien à faire défiler sur un carton d'attente.
+            CurrentTask | Stats | Idle | ManualControl | Data | Info => {}
         }
     }
 
@@ -66,10 +66,7 @@ impl Screens {
         match self.navigator.current() {
             MainMenu => self.main_menu.left_turn(),
             Settings => self.settings.left_turn(),
-            CurrentTask | Stats | Idle => {}
-            ManualControl => todo!(),
-            Data => todo!(),
-            Info => todo!(),
+            CurrentTask | Stats | Idle | ManualControl | Data | Info => {}
         }
     }
 
@@ -81,14 +78,13 @@ impl Screens {
             Screen::MainMenu => self.main_menu.click(),
             Settings => self.settings.click(),
             // Affichage seul : le clic ne peut que ressortir. Sans ça,
-            // l'opérateur resterait coincé sur l'écran.
-            CurrentTask | Stats => Some(NavAction::Back),
+            // l'opérateur resterait coincé sur l'écran. Les écrans encore
+            // absents en font partie — c'est même leur seule sortie, et ce
+            // que leur carton d'attente annonce à l'opérateur.
+            CurrentTask | Stats | ManualControl | Data | Info => Some(NavAction::Back),
             // La veille se quitte par `Screens::leave_idle`, pas par la
             // pile. Un `Back` ici dépilerait deux fois.
             Idle => None,
-            ManualControl => todo!(),
-            Data => todo!(),
-            Info => todo!(),
         };
         match action {
             // Pile pleine (`NAV_DEPTH` écrans empilés) : on reste où on est
@@ -107,9 +103,8 @@ impl Screens {
 
     /// Écran actuellement affiché.
     ///
-    /// Utile à l'appelant qui doit savoir *où* il est sans avoir à dessiner
-    /// (journalisation sur cible, harnais interactif qui contourne les
-    /// écrans encore en `todo!()`).
+    /// Utile à l'appelant qui doit savoir *où* il est sans avoir à
+    /// dessiner (journalisation sur cible, assertions de test).
     pub fn current(&self) -> Screen {
         self.navigator.current()
     }
@@ -193,8 +188,23 @@ impl Screens {
             Screen::Stats => StatsScreen { state }.draw(display),
             Screen::CurrentTask => RunningScreen { state }.draw(display),
             Screen::Idle => self.temp_graph.draw(display, state),
-            Screen::ManualControl | Screen::Data | Screen::Info => {
-                todo!("écran pas encore construit")
+            // Pas encore construits : un carton d'attente plutôt qu'une
+            // panique, cf. `screens::placeholder`.
+            //
+            // Variantes listées explicitement, pas de `_ =>` : on garde le
+            // contrôle d'exhaustivité sur `Screen`, pour qu'un écran ajouté
+            // plus tard fasse échouer la compilation ici au lieu de se
+            // retrouver silencieusement sans rendu.
+            //
+            // `for_screen` ne peut pas rendre `None` sur ces trois-là, mais
+            // on reste sur `if let` plutôt que `.unwrap()` : rien ne
+            // justifie de réintroduire une panique dans la fonction dont on
+            // vient tout juste de la retirer.
+            screen @ (Screen::ManualControl | Screen::Data | Screen::Info) => {
+                if let Some(placeholder) = PlaceholderScreen::for_screen(screen) {
+                    placeholder.draw(display)?;
+                }
+                Ok(())
             }
         }
     }
@@ -239,6 +249,54 @@ mod tests {
         let mut d = make_display();
         let state = state_with(SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
         screens.draw(&mut d, &state).unwrap();
+    }
+
+    /// Le chemin qui faisait tomber le cœur 0 : deux des six entrées du
+    /// menu (Données, Info) poussaient un écran dont `draw` répondait
+    /// `todo!()`. On le parcourt ici depuis le menu, comme l'opérateur, et
+    /// on vérifie que l'écran se dessine, encaisse les rotations, et rend
+    /// la main au clic.
+    #[test]
+    fn unbuilt_menu_entries_show_a_placeholder_instead_of_panicking() {
+        use crate::ui::screens::menu::MainMenuItem;
+
+        let state = state_with(SystemTask::Idle);
+
+        for (item, screen) in [
+            (MainMenuItem::DATA, Screen::Data),
+            (MainMenuItem::INFO, Screen::Info),
+        ] {
+            let mut screens = Screens::new();
+            for _ in 0..item as u8 {
+                screens.right_turn();
+            }
+            screens.click();
+            assert_eq!(screens.current(), screen);
+
+            let mut d = make_display();
+            screens.draw(&mut d, &state).unwrap();
+
+            // Affichage seul : rien à faire défiler, mais rien ne casse.
+            screens.right_turn();
+            screens.left_turn();
+            screens.draw(&mut d, &state).unwrap();
+
+            // Seule sortie, celle que le carton d'attente annonce.
+            screens.click();
+            assert_eq!(screens.current(), Screen::MainMenu);
+        }
+    }
+
+    /// `ManualControl` n'a pas d'entrée de menu aujourd'hui, mais reste
+    /// atteignable par la pile de navigation — son rendu ne doit pas plus
+    /// paniquer que les autres.
+    #[test]
+    fn manual_control_also_draws_without_panicking() {
+        let mut screens = Screens::new();
+        let _ = screens.navigator.push(Screen::ManualControl);
+
+        let mut d = make_display();
+        screens.draw(&mut d, &state_with(SystemTask::Idle)).unwrap();
     }
 
     /// Une fois sur l'écran de suivi, tourner ne doit rien casser (c'est un

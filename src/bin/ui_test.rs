@@ -46,16 +46,13 @@
 //! La boucle principale ne fait plus que lire un drapeau "quelque chose a
 //! changé", router l'événement déjà appliqué à `Screens`, et redessiner.
 //!
-//! # Écrans qui vont paniquer (attendu, pas un bug matériel)
+//! # Écrans pas encore construits
 //!
-//! `ui::router::Screens` a encore des branches `todo!()` pour des écrans pas
-//! construits (état actuel du repo, cf. `src/ui/router.rs`) :
-//! - Depuis le menu principal, **Démarrer** (1er item, ouvre le suivi de
-//!   cycle), **Refroidissement en cours** (même écran, sans rien démarrer),
-//!   **Statistiques** et **Réglages** sont sûrs à ouvrir — y compris en
-//!   tournant/cliquant dedans.
-//! - Les 2 items restants (Données, Info) paniquent dès leur premier
-//!   `draw()`.
+//! Les 6 items du menu principal sont tous sûrs à ouvrir, y compris en
+//! tournant et en cliquant dedans. **Données** et **Info** n'ont pas encore
+//! d'écran réel : ils affichent le carton d'attente de
+//! `ui::screens::placeholder`, dont un clic ressort. Ils paniquaient
+//! jusqu'ici dès leur premier `draw()`.
 //!
 //! # Démarrage d'un cycle
 //!
