@@ -56,6 +56,10 @@ use crate::shared::data::{SharedState, SystemTask};
 use super::navigator::Screen;
 use super::router::Screens;
 
+/// Délai sans action opérateur avant la veille. Deux minutes, assez pour
+/// lire un écran de réglages sans basculer. À ajuster en service.
+const IDLE_TIMEOUT_MS: u64 = 120_000;
+
 /// Sommet de l'interface : les écrans, plus l'état de la boucle.
 pub struct UiApp {
     screens: Screens,
@@ -88,6 +92,13 @@ impl UiApp {
         event: EncoderEvent,
         current: SystemTask,
     ) -> Option<SystemTask> {
+        // Le geste de réveil est consommé, pas routé. Sinon il ferait aussi
+        // tourner le menu qu'on retrouve derrière.
+        if event != EncoderEvent::None && self.screens.leave_idle() {
+            self.needs_redraw = true;
+            return None;
+        }
+
         match event {
             EncoderEvent::RotateClockwise => {
                 self.screens.right_turn();
@@ -106,6 +117,20 @@ impl UiApp {
             }
             EncoderEvent::None => None,
         }
+    }
+
+    /// Bascule en veille au-delà de [`IDLE_TIMEOUT_MS`] sans action
+    /// opérateur. `idle_ms` vient de l'appelant, comme
+    /// `phase_clock::advance`, pour rester testable sur hôte.
+    pub fn poll_idle(&mut self, idle_ms: u64) {
+        if idle_ms >= IDLE_TIMEOUT_MS && self.screens.enter_idle() {
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Transmet une publication de mesures au graphe de veille.
+    pub fn sample(&mut self, state: &SharedState) {
+        self.screens.sample(state);
     }
 
     /// Signale que l'affichage ne reflète plus l'état, sans qu'aucune
@@ -171,6 +196,60 @@ mod tests {
 
     fn state_with(task: SystemTask) -> SharedState {
         SharedState { snapshot: SensorSnapshot::default(), task, new_data: false }
+    }
+
+    // ─── Veille ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_screen_goes_to_sleep_after_the_timeout() {
+        let mut app = UiApp::new();
+        app.take_redraw_request();
+
+        app.poll_idle(IDLE_TIMEOUT_MS - 1);
+        assert_eq!(app.current_screen(), Screen::MainMenu);
+        assert!(!app.take_redraw_request());
+
+        app.poll_idle(IDLE_TIMEOUT_MS);
+        assert_eq!(app.current_screen(), Screen::Idle);
+        assert!(app.take_redraw_request());
+    }
+
+    /// La boucle du cœur 0 tourne sans temporisation, `poll_idle` est donc
+    /// appelée en continu. Rester en veille ne doit rien redemander.
+    #[test]
+    fn staying_asleep_asks_for_nothing() {
+        let mut app = UiApp::new();
+        app.poll_idle(IDLE_TIMEOUT_MS);
+        app.take_redraw_request();
+
+        for _ in 0..1_000 {
+            app.poll_idle(IDLE_TIMEOUT_MS * 10);
+        }
+        assert!(!app.take_redraw_request());
+    }
+
+    /// Le cas qui motive la consommation du geste de réveil, sans elle la
+    /// sélection du menu aurait bougé pendant qu'on ne regardait pas.
+    #[test]
+    fn waking_up_restores_the_previous_screen_without_routing() {
+        let mut app = UiApp::new();
+        app.handle_event(EncoderEvent::RotateClockwise, SystemTask::Idle); // START -> STATS
+        app.poll_idle(IDLE_TIMEOUT_MS);
+        assert_eq!(app.current_screen(), Screen::Idle);
+
+        app.handle_event(EncoderEvent::RotateClockwise, SystemTask::Idle);
+        assert_eq!(app.current_screen(), Screen::MainMenu);
+
+        app.handle_event(EncoderEvent::ButtonPressed, SystemTask::Idle);
+        assert_eq!(app.current_screen(), Screen::Stats, "la selection n'a pas bouge");
+    }
+
+    #[test]
+    fn the_idle_screen_draws() {
+        let mut d = make_display();
+        let mut app = UiApp::new();
+        app.poll_idle(IDLE_TIMEOUT_MS);
+        app.draw(&mut d, &state_with(SystemTask::Stabilising)).unwrap();
     }
 
     #[test]
@@ -523,7 +602,7 @@ mod tests {
                     app: &UiApp,
                     state: &SharedState| {
             match app.current_screen() {
-                Screen::Idle | Screen::ManualControl | Screen::Data | Screen::Info => {
+                Screen::ManualControl | Screen::Data | Screen::Info => {
                     display.clear(crate::ui::theme::BACKGROUND_COLOR).unwrap();
                     Text::new(
                         "Ecran pas encore implemente - clic pour revenir",

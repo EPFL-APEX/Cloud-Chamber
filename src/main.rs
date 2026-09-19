@@ -481,6 +481,7 @@ fn main() -> ! {
     // Rien ici ne dessine sous section critique : on prend une copie de
     // l'état, puis on travaille dessus verrou relâché (cf. doc de module).
     let mut last_task = SystemTask::Idle;
+    let mut last_activity = timer.get_counter();
 
     loop {
         // Applique les événements empilés par l'interruption. L'état
@@ -488,6 +489,7 @@ fn main() -> ! {
         // peut avoir fait avancer la machine, et c'est lui qui décide si un
         // démarrage est encore légitime.
         while let Some(event) = critical_section::with(|cs| EVENTS.borrow(cs).borrow_mut().pop()) {
+            last_activity = timer.get_counter();
             let current = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).task);
             if let Some(task) = app.handle_event(event, current) {
                 critical_section::with(|cs| SHARED_STATE.borrow_ref_mut(cs).task = task);
@@ -518,12 +520,24 @@ fn main() -> ! {
             app.mark_dirty();
         }
 
-        // Les mesures fraîches ne justifient un redessin que sur les écrans
-        // qui les affichent — redessiner le menu à chaque cycle de sondage
-        // ne ferait que consommer le cœur 0 pour rien.
-        if state.new_data && matches!(app.current_screen(), Screen::Stats | Screen::CurrentTask) {
-            app.mark_dirty();
+        // Le graphe de veille se remplit quel que soit l'écran affiché,
+        // sinon la veille s'ouvrirait sur un cadre vide.
+        //
+        // Le redessin, lui, ne concerne que les écrans qui montrent des
+        // mesures. Le menu était exclu tant que sa bande du bas était vide ;
+        // elle porte maintenant les températures et l'état des actionneurs,
+        // qui resteraient figés jusqu'au prochain geste de l'opérateur.
+        if state.new_data {
+            app.sample(&state);
+            if matches!(
+                app.current_screen(),
+                Screen::Stats | Screen::CurrentTask | Screen::MainMenu | Screen::Idle
+            ) {
+                app.mark_dirty();
+            }
         }
+
+        app.poll_idle((timer.get_counter() - last_activity).to_millis());
 
         // Faute d'implémentation flash pour le RP2040, une demande de
         // sauvegarde est consommée et journalisée — sinon elle resterait en
