@@ -73,7 +73,7 @@ fn alert_message(cause: SafetyCause) -> &'static str {
 /// `logic::cooling`/`logic::stopping`, volontairement pas exposées comme
 /// table séparée pour éviter qu'elle diverge de la vraie logique de
 /// contrôle ; ici on ne fait qu'informer l'opérateur, pas piloter).
-fn expected_outputs(task: SystemTask) -> (bool, bool) {
+pub(super) fn expected_outputs(task: SystemTask) -> (bool, bool) {
     use CoolingPhase::*;
     use StoppingPhase::*;
     match task {

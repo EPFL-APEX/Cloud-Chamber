@@ -7,6 +7,7 @@
 
 use embedded_graphics::{draw_target::DrawTarget, geometry::OriginDimensions, pixelcolor::Rgb565};
 
+use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
 use crate::config::settings::Settings;
 use crate::shared::data::{SharedState, SystemTask};
 
@@ -16,18 +17,20 @@ use super::screens::menu::MainMenuScreen;
 use super::screens::running::RunningScreen;
 use super::screens::settings::SettingsScreen;
 use super::screens::stats::StatsScreen;
+use super::screens::temp::TempGraphScreen;
 
 const NAV_DEPTH: usize = 8;
 
 /// Possède la pile de navigation et les écrans à état persistant
-/// (`MainMenuScreen`, `SettingsScreen`). `StatsScreen` et `RunningScreen`
-/// n'ont pas d'état propre : elles empruntent `&SharedState` et sont
-/// reconstruites à la volée dans [`Screens::draw`]. Point d'entrée public
-/// unique de la navigation UI.
+/// (`MainMenuScreen`, `SettingsScreen`, `TempGraphScreen` qui accumule son
+/// historique). `StatsScreen` et `RunningScreen` n'ont pas d'état propre :
+/// elles empruntent `&SharedState` et sont reconstruites à la volée dans
+/// [`Screens::draw`]. Point d'entrée public unique de la navigation UI.
 pub struct Screens {
     navigator: Navigator<NAV_DEPTH>,
     main_menu: MainMenuScreen,
     settings: SettingsScreen,
+    temp_graph: TempGraphScreen,
 }
 
 impl Screens {
@@ -36,6 +39,7 @@ impl Screens {
             navigator: Navigator::new(Screen::MainMenu),
             main_menu: MainMenuScreen::new(),
             settings: SettingsScreen::new(),
+            temp_graph: TempGraphScreen::new(),
         }
     }
 
@@ -47,9 +51,9 @@ impl Screens {
             Settings => self.settings.right_turn(),
             // Écrans d'affichage seul : rien à faire défiler. Ignorer une
             // rotation est le bon comportement — `todo!()` faisait paniquer
-            // la machine sur un simple geste.
-            CurrentTask | Stats => {}
-            Idle => todo!(),
+            // la machine sur un simple geste. La veille est du même genre,
+            // `UiApp` consommant le geste de réveil avant d'arriver ici.
+            CurrentTask | Stats | Idle => {}
             ManualControl => todo!(),
             Data => todo!(),
             Info => todo!(),
@@ -62,8 +66,7 @@ impl Screens {
         match self.navigator.current() {
             MainMenu => self.main_menu.left_turn(),
             Settings => self.settings.left_turn(),
-            CurrentTask | Stats => {}
-            Idle => todo!(),
+            CurrentTask | Stats | Idle => {}
             ManualControl => todo!(),
             Data => todo!(),
             Info => todo!(),
@@ -80,7 +83,9 @@ impl Screens {
             // Affichage seul : le clic ne peut que ressortir. Sans ça,
             // l'opérateur resterait coincé sur l'écran.
             CurrentTask | Stats => Some(NavAction::Back),
-            Idle => todo!(),
+            // La veille se quitte par `Screens::leave_idle`, pas par la
+            // pile. Un `Back` ici dépilerait deux fois.
+            Idle => None,
             ManualControl => todo!(),
             Data => todo!(),
             Info => todo!(),
@@ -148,19 +153,47 @@ impl Screens {
         }
     }
 
-    /// Dessine l'écran actuellement affiché. `state` sert aux écrans
-    /// dérivés (ex. `Stats`, `CurrentTask`), construits ici plutôt que
-    /// stockés.
+    /// Alimente le graphe de veille, quel que soit l'écran affiché. Sinon
+    /// elle s'ouvrirait sur un cadre vide.
+    pub fn sample(&mut self, state: &SharedState) {
+        if let Some(m) = state.snapshot.temps[CHAMBER_TEMP_IDX] {
+            self.temp_graph.sample(m);
+        }
+    }
+
+    /// Empile `Screen::Idle`. Faux si on y est déjà ou si la pile est
+    /// pleine, donc rien à redessiner.
+    pub fn enter_idle(&mut self) -> bool {
+        if self.navigator.current() == Screen::Idle {
+            return false;
+        }
+        self.navigator.push(Screen::Idle).is_ok()
+    }
+
+    /// Dépile la veille, la pile retrouve l'écran d'avant toute seule.
+    /// Faux si on n'y était pas.
+    pub fn leave_idle(&mut self) -> bool {
+        if self.navigator.current() != Screen::Idle {
+            return false;
+        }
+        self.navigator.pop();
+        true
+    }
+
+    /// Dessine l'écran actuellement affiché. `state` sert à tous ceux qui
+    /// montrent des mesures, qu'ils soient construits ici (`Stats`,
+    /// `CurrentTask`) ou stockés (`MainMenu`, `Idle`).
     pub fn draw<D>(&self, display: &mut D, state: &SharedState) -> Result<(), D::Error>
     where
         D: DrawTarget<Color = Rgb565> + OriginDimensions,
     {
         match self.navigator.current() {
-            Screen::MainMenu => self.main_menu.draw(display),
+            Screen::MainMenu => self.main_menu.draw(display, state),
             Screen::Settings => self.settings.draw(display),
             Screen::Stats => StatsScreen { state }.draw(display),
             Screen::CurrentTask => RunningScreen { state }.draw(display),
-            Screen::Idle | Screen::ManualControl | Screen::Data | Screen::Info => {
+            Screen::Idle => self.temp_graph.draw(display, state),
+            Screen::ManualControl | Screen::Data | Screen::Info => {
                 todo!("écran pas encore construit")
             }
         }
@@ -233,6 +266,25 @@ mod tests {
             screens.take_task_request(SystemTask::Idle),
             Some(SystemTask::Cooling(CoolingPhase::SensorCheck)),
         );
+    }
+
+    /// La veille s'empile par-dessus l'écran courant et se dépile, sans
+    /// qu'aucun champ ait eu à mémoriser où on était.
+    #[test]
+    fn idle_stacks_and_unstacks_over_the_current_screen() {
+        let mut screens = Screens::new();
+        screens.click(); // menu -> suivi de cycle
+
+        assert!(screens.enter_idle());
+        assert_eq!(screens.current(), Screen::Idle);
+        assert!(!screens.enter_idle(), "deja en veille");
+
+        let mut d = make_display();
+        screens.draw(&mut d, &state_with(SystemTask::Idle)).unwrap();
+
+        assert!(screens.leave_idle());
+        assert_eq!(screens.current(), Screen::CurrentTask);
+        assert!(!screens.leave_idle(), "plus en veille");
     }
 
     /// Le menu principal ne doit pas démarrer de cycle par simple
