@@ -580,12 +580,6 @@ mod tests {
     #[cfg(feature = "live-menu-test")]
     #[test]
     fn ui_live() {
-        use embedded_graphics::{
-            mono_font::{MonoTextStyle, ascii::FONT_6X13},
-            text::Text,
-            Drawable,
-        };
-        use embedded_graphics::geometry::Point;
         use embedded_graphics_simulator::{
             OutputSettingsBuilder, SimulatorEvent, Window, sdl2::Keycode,
         };
@@ -594,29 +588,7 @@ mod tests {
         let mut app = UiApp::new();
         let mut state = state_with(SystemTask::Idle);
 
-        // Écrans encore en `todo!()` dans `Screens::draw` : les dessiner
-        // ferait paniquer la fenêtre en pleine démonstration. On affiche un
-        // texte à la place — à supprimer au fur et à mesure qu'ils sont
-        // implémentés.
-        let draw = |display: &mut SimulatorDisplay<Rgb565>,
-                    app: &UiApp,
-                    state: &SharedState| {
-            match app.current_screen() {
-                Screen::ManualControl | Screen::Data | Screen::Info => {
-                    display.clear(crate::ui::theme::BACKGROUND_COLOR).unwrap();
-                    Text::new(
-                        "Ecran pas encore implemente - clic pour revenir",
-                        Point::new(10, 120),
-                        MonoTextStyle::new(&FONT_6X13, crate::ui::theme::DIM_COLOR),
-                    )
-                    .draw(display)
-                    .unwrap();
-                }
-                _ => app.draw(display, state).unwrap(),
-            }
-        };
-
-        draw(&mut display, &app, &state);
+        app.draw(&mut display, &state).unwrap();
 
         let output_settings = OutputSettingsBuilder::new().scale(2).build();
         let mut window = Window::new("Cloud Chamber - UI (live)", &output_settings);
@@ -640,7 +612,7 @@ mod tests {
 
                 apply_live_action(&mut app, &mut state, action);
                 std::println!("{action:?} -> ecran {:?}, etat {:?}", app.current_screen(), state.task);
-                draw(&mut display, &app, &state);
+                app.draw(&mut display, &state).unwrap();
             }
         }
     }
