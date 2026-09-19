@@ -49,9 +49,6 @@
 //!   demande est donc journalisée puis abandonnée : les réglages modifiés
 //!   s'appliquent immédiatement (via `shared::settings`) mais ne survivent
 //!   pas à une coupure.
-//! - **Réarmement sécurité.** `SafetyMonitor::reset()` n'a toujours aucun
-//!   appelant : après un déclenchement, seul un reflash repart. Aucun
-//!   écran ne l'expose encore.
 //!
 //! # Construction
 //!
