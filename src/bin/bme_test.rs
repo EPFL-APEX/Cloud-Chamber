@@ -2,10 +2,8 @@
 //! (température, pression, humidité) et journalise une mesure par seconde.
 //!
 //! Broches tirées directement de `config::wiring` (`PIN_I2C_SDA`,
-//! `PIN_I2C_SCL`), sélectionnées via `gpio::new_pin`/`DynPinId` plutôt que
-//! par l'API typée `pins.gpio<N>` — même raisonnement que les autres bins
-//! de bring-up : pas de champ littéral à garder synchronisé à la main avec
-//! ces constantes.
+//! `PIN_I2C_SCL`) — cf. `board` pour la mise en route et le choix de l'API
+//! dynamique de `rp2040-hal`.
 //!
 //! # Un piège spécifique à l'I²C
 //!
@@ -48,23 +46,15 @@ use panic_probe as _;
 use embedded_hal::delay::DelayNs;
 use embedded_hal::i2c::I2c as I2cTrait;
 use rp2040_hal::{
-    Clock, I2C, self as hal, Sio, Watchdog,
-    clocks::init_clocks_and_plls,
+    Clock, I2C, self as hal,
     fugit::RateExtU32,
-    gpio::{DynBankId, DynPinId, FunctionI2c, Pins, PullUp, new_pin},
+    gpio::{DynBankId, DynPinId, FunctionI2c, PullUp, new_pin},
     i2c::{ValidatedPinScl, ValidatedPinSda},
-    pac,
 };
 
+use cloud_chamber_firmware::board;
 use cloud_chamber_firmware::config::wiring::{PIN_I2C_SCL, PIN_I2C_SDA};
 use cloud_chamber_firmware::drivers::bme280::Bme280Driver;
-
-/// Fréquence du cristal externe du Pico — cf. `hal::clocks::init_clocks_and_plls`.
-const XOSC_CRYSTAL_FREQ: u32 = 12_000_000;
-
-#[unsafe(link_section = ".boot2")]
-#[used]
-static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 /// Scanne les adresses I²C 7 bits usuelles (0x08–0x77, plage hors adresses
 /// réservées) et journalise celles qui répondent. Purement diagnostique —
@@ -98,27 +88,7 @@ fn scan_bus<I: I2cTrait>(i2c: &mut I) {
 
 #[hal::entry]
 fn main() -> ! {
-    let mut pac = pac::Peripherals::take().unwrap();
-    let mut watchdog = Watchdog::new(pac.WATCHDOG);
-
-    let clocks = init_clocks_and_plls(
-        XOSC_CRYSTAL_FREQ,
-        pac.XOSC,
-        pac.CLOCKS,
-        pac.PLL_SYS,
-        pac.PLL_USB,
-        &mut pac.RESETS,
-        &mut watchdog,
-    )
-    .ok()
-    .unwrap();
-
-    let mut timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
-
-    let sio = Sio::new(pac.SIO);
-    // `Pins::new` reste nécessaire même si son API typée n'est pas utilisée
-    // ensuite : c'est cet appel qui sort IO_BANK0/PADS_BANK0 de reset.
-    let _pins = Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
+    let mut board = board::init();
 
     // Safety : seule construction de `Pin` pour ces broches dans le
     // programme (le champ typé correspondant de `_pins` n'est ni lu ni
@@ -136,13 +106,13 @@ fn main() -> ! {
 
     // Vérifie que PIN_I2C_SDA/PIN_I2C_SCL correspondent vraiment aux rôles
     // SDA/SCL câblés en dur pour I2C0 sur ce silicium — cf. doc de module.
-    let sda = ValidatedPinSda::validate(sda, &pac.I2C0).unwrap_or_else(|_| {
+    let sda = ValidatedPinSda::validate(sda, &board.i2c0).unwrap_or_else(|_| {
         panic!(
             "PIN_I2C_SDA (GP{}) n'est pas une broche SDA valide pour I2C0 — SDA/SCL sont peut-etre inversees dans config::wiring",
             PIN_I2C_SDA
         )
     });
-    let scl = ValidatedPinScl::validate(scl, &pac.I2C0).unwrap_or_else(|_| {
+    let scl = ValidatedPinScl::validate(scl, &board.i2c0).unwrap_or_else(|_| {
         panic!(
             "PIN_I2C_SCL (GP{}) n'est pas une broche SCL valide pour I2C0 — SDA/SCL sont peut-etre inversees dans config::wiring",
             PIN_I2C_SCL
@@ -155,12 +125,12 @@ fn main() -> ! {
     // deux bornes sont requises, exactement ce que la validation runtime
     // fournit.
     let mut i2c = I2C::new_controller(
-        pac.I2C0,
+        board.i2c0,
         sda,
         scl,
         400.kHz(),
-        &mut pac.RESETS,
-        clocks.system_clock.freq(),
+        &mut board.resets,
+        board.clocks.system_clock.freq(),
     );
 
     defmt::info!("bme_test demarre — SDA=GP{} SCL=GP{}", PIN_I2C_SDA, PIN_I2C_SCL);
@@ -174,13 +144,13 @@ fn main() -> ! {
         Err(e) => {
             defmt::error!("echec init BME280 (adresse 0x76 codee en dur dans le driver) : {}", defmt::Debug2Format(&e));
             loop {
-                timer.delay_ms(1_000);
+                board.timer.delay_ms(1_000);
             }
         }
     }
 
     loop {
-        match bme.measure(&mut timer) {
+        match bme.measure(&mut board.timer) {
             Ok((temp_c, press_hpa, hum_pct)) => defmt::info!(
                 "temperature={} C  pression={} hPa  humidite={} %",
                 temp_c,
@@ -189,6 +159,6 @@ fn main() -> ! {
             ),
             Err(e) => defmt::warn!("lecture invalide : {}", defmt::Debug2Format(&e)),
         }
-        timer.delay_ms(1_000);
+        board.timer.delay_ms(1_000);
     }
 }

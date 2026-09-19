@@ -4,10 +4,8 @@
 //!
 //! Broches tirées directement de `config::wiring` (`PIN_SCREEN_SCK`,
 //! `PIN_SCREEN_MOSI`, `PIN_SCREEN_CS`, `PIN_SCREEN_DC`,
-//! `PIN_SCREEN_RESET`), sélectionnées via `gpio::new_pin`/`DynPinId`
-//! plutôt que par l'API typée `pins.gpio<N>` — même raisonnement que les
-//! autres bins de bring-up : pas de champ littéral à garder synchronisé à
-//! la main avec ces constantes.
+//! `PIN_SCREEN_RESET`) — cf. `board` pour la mise en route et le choix de
+//! l'API dynamique de `rp2040-hal`.
 //!
 //! # SCK/MOSI vs CS/DC/RESET : deux natures différentes
 //!
@@ -39,14 +37,11 @@ use defmt_rtt as _;
 use panic_probe as _;
 
 use embedded_hal::delay::DelayNs;
-use embedded_hal::digital::OutputPin;
 use embedded_hal::spi::MODE_0;
 use rp2040_hal::{
-    Clock, Sio, Watchdog, self as hal,
-    clocks::init_clocks_and_plls,
+    Clock, self as hal,
     fugit::RateExtU32,
-    gpio::{DynBankId, DynPinId, DynPullType, FunctionSio, FunctionSpi, Pins, SioOutput, new_pin},
-    pac,
+    gpio::{DynBankId, DynPinId, FunctionSpi, new_pin},
     spi::{Spi, ValidatedPinSck, ValidatedPinTx},
 };
 
@@ -61,63 +56,14 @@ use embedded_graphics::{
     text::Text,
 };
 
+use cloud_chamber_firmware::board;
 use cloud_chamber_firmware::config::wiring::{
     PIN_SCREEN_CS, PIN_SCREEN_DC, PIN_SCREEN_MOSI, PIN_SCREEN_RESET, PIN_SCREEN_SCK,
 };
 
-/// Fréquence du cristal externe du Pico — cf. `hal::clocks::init_clocks_and_plls`.
-const XOSC_CRYSTAL_FREQ: u32 = 12_000_000;
-
-#[unsafe(link_section = ".boot2")]
-#[used]
-static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
-
-/// Configure GP`pin` en sortie push-pull logicielle (CS/DC/RESET), démarrée
-/// à l'état bas. Passe par les registres dynamiques plutôt que par l'API
-/// typée `pins.gpio<N>` — même raisonnement que `relay_test`.
-///
-/// # Safety
-/// `new_pin` exige qu'aucune autre instance de `Pin` pour cette broche
-/// n'existe en parallèle. `Pins::new(...)` (appelé juste avant, pour ses
-/// effets de bord de sortie de reset) réserve bien un champ typé
-/// `pins.gpio<N>` pour ce même numéro, mais ce champ n'est ni lu ni écrit
-/// nulle part dans ce fichier : aucun accès concurrent réel aux registres
-/// n'en résulte.
-fn configure_output_pin(pin: u8) -> hal::gpio::Pin<DynPinId, FunctionSio<SioOutput>, DynPullType> {
-    let id = DynPinId { bank: DynBankId::Bank0, num: pin };
-    let raw = unsafe { new_pin(id) };
-    let mut out = raw
-        .try_into_function::<FunctionSio<SioOutput>>()
-        .ok()
-        .expect("SIO est une fonction valide sur toute broche de Bank0");
-    out.set_pull_type(DynPullType::None);
-    let _ = out.set_low();
-    out
-}
-
 #[hal::entry]
 fn main() -> ! {
-    let mut pac = pac::Peripherals::take().unwrap();
-    let mut watchdog = Watchdog::new(pac.WATCHDOG);
-
-    let clocks = init_clocks_and_plls(
-        XOSC_CRYSTAL_FREQ,
-        pac.XOSC,
-        pac.CLOCKS,
-        pac.PLL_SYS,
-        pac.PLL_USB,
-        &mut pac.RESETS,
-        &mut watchdog,
-    )
-    .ok()
-    .unwrap();
-
-    let mut timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
-
-    let sio = Sio::new(pac.SIO);
-    // `Pins::new` reste nécessaire même si son API typée n'est pas utilisée
-    // ensuite : c'est cet appel qui sort IO_BANK0/PADS_BANK0 de reset.
-    let _pins = Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
+    let mut board = board::init();
 
     // Safety : seule construction de `Pin` pour ces broches dans le
     // programme (le champ typé correspondant de `_pins` n'est ni lu ni
@@ -133,13 +79,13 @@ fn main() -> ! {
 
     // Vérifie que PIN_SCREEN_MOSI/PIN_SCREEN_SCK correspondent vraiment aux
     // rôles Tx/Sck câblés en dur pour SPI0 sur ce silicium — cf. doc de module.
-    let tx = ValidatedPinTx::validate(tx, &pac.SPI0).unwrap_or_else(|_| {
+    let tx = ValidatedPinTx::validate(tx, &board.spi0).unwrap_or_else(|_| {
         panic!(
             "PIN_SCREEN_MOSI (GP{}) n'est pas une broche Tx/MOSI valide pour SPI0",
             PIN_SCREEN_MOSI
         )
     });
-    let sck = ValidatedPinSck::validate(sck, &pac.SPI0).unwrap_or_else(|_| {
+    let sck = ValidatedPinSck::validate(sck, &board.spi0).unwrap_or_else(|_| {
         panic!(
             "PIN_SCREEN_SCK (GP{}) n'est pas une broche Sck valide pour SPI0",
             PIN_SCREEN_SCK
@@ -148,16 +94,16 @@ fn main() -> ! {
 
     // Turbofish DS=8 (taille de trame en bits) : plusieurs impls existent
     // (4/5/8...), rien ne force le choix sans cette annotation explicite.
-    let spi = Spi::<_, _, _, 8>::new(pac.SPI0, (tx, sck)).init(
-        &mut pac.RESETS,
-        clocks.peripheral_clock.freq(),
+    let spi = Spi::<_, _, _, 8>::new(board.spi0, (tx, sck)).init(
+        &mut board.resets,
+        board.clocks.peripheral_clock.freq(),
         16_000_000u32.Hz(),
         MODE_0,
     );
 
-    let cs = configure_output_pin(PIN_SCREEN_CS);
-    let dc = configure_output_pin(PIN_SCREEN_DC);
-    let rst = configure_output_pin(PIN_SCREEN_RESET);
+    let cs = board::configure_output_pin(PIN_SCREEN_CS);
+    let dc = board::configure_output_pin(PIN_SCREEN_DC);
+    let rst = board::configure_output_pin(PIN_SCREEN_RESET);
 
     // CS::Error = Infallible (broche GPIO simple) : ne peut pas échouer en pratique.
     let spi_device = ExclusiveDevice::new_no_delay(spi, cs).unwrap();
@@ -175,7 +121,7 @@ fn main() -> ! {
     let mut display = match Ili9341::new(
         iface,
         rst,
-        &mut timer,
+        &mut board.timer,
         Orientation::Landscape,
         DisplaySize240x320,
     ) {
@@ -183,7 +129,7 @@ fn main() -> ! {
         Err(e) => {
             defmt::error!("echec init ecran : {}", defmt::Debug2Format(&e));
             loop {
-                timer.delay_ms(1_000);
+                board.timer.delay_ms(1_000);
             }
         }
     };
@@ -203,6 +149,6 @@ fn main() -> ! {
     // redessiner l'écran (le contrôleur ILI9341 garde l'image en GRAM).
     loop {
         defmt::info!("screen_test vivant");
-        timer.delay_ms(1_000);
+        board.timer.delay_ms(1_000);
     }
 }
