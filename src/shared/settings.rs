@@ -6,7 +6,7 @@
 //!
 //! # Pourquoi un static et pas un paramètre
 //!
-//! Faire descendre un `&Settings` obligerait `durations()`,
+//! Faire descendre un `&Settings` obligerait `time_limit()`,
 //! `sensor_loss_abort()`, `advance()` et les trois `react_to()` de
 //! `SystemTask`, `CoolingPhase` et `StoppingPhase` à le porter. Ces
 //! valeurs ne sont pas des paramètres de ces fonctions, c'est justement
