@@ -47,10 +47,7 @@ impl CoolingPhase {
 }
 
 fn sensor_check(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
-    let plan = ActuatorPlan {
-        cooling: None, iso_heater: None, high_voltage: false,
-        iso_pump: false, lights: None, glass_heater: false,
-    };
+    let plan = ActuatorPlan::all_off();
 
     // Ajouter le check des autres sensors ?
     // #todo
@@ -62,10 +59,7 @@ fn sensor_check(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
 
 fn pre_cooling_the_plate(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
     let precool_target = settings::get().precool_target;
-    let plan = ActuatorPlan {
-        cooling: Some(precool_target), iso_heater: None, high_voltage: false,
-        iso_pump: false, lights: None, glass_heater: false,
-    };
+    let plan = ActuatorPlan::all_off().with_cooling(precool_target);
     match history.temps[CHAMBER_TEMP_IDX].get(0) {
         Ok(m) if !m.value.0.is_nan() && m.value.0 <= precool_target.0 =>
             (SystemTask::Cooling(CoolingPhase::StartingIpaCirculation), plan),
@@ -77,22 +71,21 @@ fn starting_ipa_circulation(_history: &MeasurementHistory) -> (SystemTask, Actua
     // Purement temporisé (pas de capteur dédié) — avancement décidé par
     // l'appelant (cf. `timed_transition` dans control_loop.rs).
     let settings = settings::get();
-    (SystemTask::Cooling(CoolingPhase::StartingIpaCirculation), ActuatorPlan {
-        cooling: Some(settings.precool_target),
-        iso_heater: Some(settings.ipa_heater_target),
-        high_voltage: false,
-        iso_pump: true, lights: None, glass_heater: true,
-    })
+    let plan = ActuatorPlan::all_off()
+        .with_cooling(settings.precool_target)
+        .with_iso_heater(settings.ipa_heater_target)
+        .with_iso_pump()
+        .with_glass_heater();
+    (SystemTask::Cooling(CoolingPhase::StartingIpaCirculation), plan)
 }
 
 fn saturating_air_with_ipa(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
     let settings = settings::get();
-    let plan = ActuatorPlan {
-        cooling: Some(settings.saturation_target),
-        iso_heater: Some(settings.ipa_heater_target),
-        high_voltage: false,
-        iso_pump: true, lights: None, glass_heater: true,
-    };
+    let plan = ActuatorPlan::all_off()
+        .with_cooling(settings.saturation_target)
+        .with_iso_heater(settings.ipa_heater_target)
+        .with_iso_pump()
+        .with_glass_heater();
     // #todo faire une vrai estimation de la saturation....
     match history.temps[CHAMBER_TEMP_IDX].get(0) {
         Ok(m) if !m.value.0.is_nan() && m.value.0 <= settings.saturation_target.0 =>
@@ -103,12 +96,13 @@ fn saturating_air_with_ipa(history: &MeasurementHistory) -> (SystemTask, Actuato
 
 fn high_voltage(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
     let settings = settings::get();
-    let plan = ActuatorPlan {
-        cooling: Some(settings.saturation_target),
-        iso_heater: Some(settings.ipa_heater_target),
-        high_voltage: true,
-        iso_pump: true, lights: Some(true), glass_heater: true,
-    };
+    let plan = ActuatorPlan::all_off()
+        .with_cooling(settings.saturation_target)
+        .with_iso_heater(settings.ipa_heater_target)
+        .with_high_voltage()
+        .with_iso_pump()
+        .with_lights(true)
+        .with_glass_heater();
 
     // Est-ce qu'on veut vraiment check la stabilité ? Ou est-ce qu'on veut juste allumer le HV
     match history.is_temp_stable(CHAMBER_TEMP_IDX, STABLE_WINDOW, STABLE_TOLERANCE_C) {
@@ -119,12 +113,13 @@ fn high_voltage(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
 
 fn final_check_before_stabilising(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
     let settings = settings::get();
-    let plan = ActuatorPlan {
-        cooling: Some(settings.saturation_target),
-        iso_heater: Some(settings.ipa_heater_target),
-        high_voltage: true,
-        iso_pump: true, lights: Some(true), glass_heater: true,
-    };
+    let plan = ActuatorPlan::all_off()
+        .with_cooling(settings.saturation_target)
+        .with_iso_heater(settings.ipa_heater_target)
+        .with_high_voltage()
+        .with_iso_pump()
+        .with_lights(true)
+        .with_glass_heater();
 
     // Qu'est-ce qu'on veut check ici ??
     match history.temps[CHAMBER_TEMP_IDX].get(0) {

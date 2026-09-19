@@ -49,13 +49,18 @@ pub mod compressor;
 /// de `compressor`, sens de régulation inversé.
 pub mod heater;
 
-/// Driver pompe : sortie GPIO tout-ou-rien (marche/arrêt).
+/// Relais GPIO tout-ou-rien, spécialisé par un marqueur de rôle — corps
+/// commun à `pump`, `lights` et `window_heater`.
+pub mod relay;
+
+/// Driver pompe : relais GPIO tout-ou-rien (marche/arrêt).
 pub mod pump;
 
-/// Driver éclairage : sortie GPIO tout-ou-rien (marche/arrêt).
+/// Driver éclairage : relais GPIO tout-ou-rien (marche/arrêt).
 pub mod lights;
 
-/// Driver chauffage de la vitre supérieure : sortie GPIO tout-ou-rien (marche/arrêt).
+/// Driver chauffage de la vitre supérieure : relais GPIO tout-ou-rien
+/// (marche/arrêt).
 pub mod window_heater;
 
 /// Stockage persistant des réglages (`config::settings::Settings`) dans la

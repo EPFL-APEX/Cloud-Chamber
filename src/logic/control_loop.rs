@@ -212,10 +212,7 @@ impl SystemTask {
             // politique par phase définie pour l'instant.
             Idle => (
                 SystemTask::Idle,
-                ActuatorPlan {
-                    cooling: None, iso_heater: None, high_voltage: false,
-                    iso_pump: false, lights: None, glass_heater: false,
-                },
+                ActuatorPlan::all_off(),
             ),
             Cooling(phase) => phase.react_to(history),
             // Régime permanent après la séquence de refroidissement : les
@@ -229,12 +226,10 @@ impl SystemTask {
                 let settings = settings::get();
                 (
                     SystemTask::Stabilising,
-                    ActuatorPlan {
-                        cooling: Some(settings.saturation_target),
-                        iso_heater: Some(settings.ipa_heater_target),
-                        high_voltage: true,
-                        iso_pump: false, lights: None, glass_heater: false,
-                    },
+                    ActuatorPlan::all_off()
+                        .with_cooling(settings.saturation_target)
+                        .with_iso_heater(settings.ipa_heater_target)
+                        .with_high_voltage(),
                 )
             }
             Stopping(phase) => phase.react_to(history),
@@ -243,10 +238,7 @@ impl SystemTask {
             // depuis `control_loop.rs::run()` en priorité absolue).
             Tripped(cause) => (
                 SystemTask::Tripped(cause),
-                ActuatorPlan {
-                    cooling: None, iso_heater: None, high_voltage: false,
-                    iso_pump: false, lights: None, glass_heater: false,
-                },
+                ActuatorPlan::all_off(),
             ),
         }
     }
@@ -271,8 +263,10 @@ where
 
         set_binary(&mut self.high_voltage, plan.high_voltage);
         set_binary(&mut self.iso_pump, plan.iso_pump);
-        if plan.lights.is_some() {
-            set_binary(&mut self.lights, plan.lights.unwrap());
+        // `None` = la phase n'a pas d'avis sur l'éclairage : on ne touche
+        // pas à ce que l'opérateur a réglé.
+        if let Some(on) = plan.lights {
+            set_binary(&mut self.lights, on);
         }
         set_binary(&mut self.glass_heater, plan.glass_heater);
     }
