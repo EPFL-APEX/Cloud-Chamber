@@ -117,6 +117,24 @@ where
     phase.set(read_task());
     let synced_task = phase.current();
 
+    // Acquittement opérateur. `SafetyMonitor` vit ici, sur le cœur 1, avec
+    // son verrouillage interne : l'UI a beau écrire `Idle`, `check()`
+    // republierait `Tripped` dans le même tour tant que personne ne l'a
+    // réarmé. Une demande d'`Idle` arrivée pendant un déclenchement ne peut
+    // venir que de l'opérateur — le contrôleur, lui, publie `Tripped` à
+    // chaque tour — donc elle vaut acquittement.
+    //
+    // Réarmer ne masque rien : `check()` juste en dessous recompte
+    // `TRIP_CYCLES` et redéclenche si la cause est toujours là. C'est
+    // voulu — l'alarme qui revient d'elle-même est l'information utile.
+    //
+    // Pas de `defmt::warn!` ici : `logic/` ne dépend pas de defmt, pour
+    // rester compilable et testable sur hôte. Le journal de l'acquittement,
+    // s'il en faut un, est du ressort de `main.rs`.
+    if synced_task == SystemTask::Idle && safety.is_tripped() {
+        safety.reset(phase.now());
+    }
+
     // Sécurité en priorité absolue sur la logique de phase — décision
     // explicite ici (orchestration), pas cachée dans une méthode.
     let (next, plan) = if let Some(cause) = safety.check(measurement_history, phase.now()) {
@@ -746,10 +764,11 @@ mod tests {
             h.tick_after(Duration::from_millis(1_000));
             assert_eq!(h.phase.current(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
 
-            // La condition redevient normale, mais reste Tripped : pas de
-            // réarmement automatique (`SafetyMonitor::reset` n'est jamais
-            // appelé depuis `control_loop.rs` aujourd'hui — gap documenté,
-            // pas caché).
+            // La condition redevient normale, mais reste Tripped : il n'y
+            // a pas de réarmement automatique. Seul un acquittement
+            // opérateur sort de cet état (cf. les deux tests suivants) —
+            // une chambre qui repartirait toute seule après une surchauffe
+            // compresseur serait exactement ce qu'on ne veut pas.
             h.set_compressor_temp(Celsius(20.0));
             for _ in 0..10 {
                 h.tick_after(Duration::from_millis(1_000));
@@ -758,8 +777,47 @@ mod tests {
         });
     }
 
+    /// L'acquittement opérateur : l'UI écrit `Idle` dans `SHARED_STATE`
+    /// pendant un déclenchement, `tick()` en déduit le réarmement.
+    ///
+    /// C'est le seul chemin qui sort de `Tripped`. Avant qu'il existe,
+    /// cette même écriture ne suffisait pas : `SafetyMonitor` vit sur le
+    /// cœur 1 avec son verrouillage interne et republiait `Tripped` dans
+    /// le tour même.
     #[test]
-    fn safety_trip_reasserts_itself_over_an_external_idle_request() {
+    fn an_operator_acknowledgement_rearms_the_safety() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(Instant::from_millis(1));
+            let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::HighVoltage));
+            h.set_compressor_temp(Celsius(150.0));
+            h.tick_after(Duration::from_millis(1_000));
+            h.tick_after(Duration::from_millis(1_000));
+            h.tick_after(Duration::from_millis(1_000));
+            assert_eq!(h.phase.current(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
+            assert!(h.safety.is_tripped());
+
+            // La cause a disparu, puis l'opérateur acquitte.
+            h.set_compressor_temp(Celsius(20.0));
+            h.write_shared_task(SystemTask::Idle);
+            h.tick_after(Duration::from_millis(1_000));
+
+            assert!(!h.safety.is_tripped(), "le moniteur doit etre rearme");
+            assert_eq!(h.phase.current(), SystemTask::Idle);
+            assert_eq!(h.shared_task(), SystemTask::Idle);
+
+            // Et la machine y reste : rien ne redéclenche tout seul.
+            for _ in 0..10 {
+                h.tick_after(Duration::from_millis(1_000));
+            }
+            assert_eq!(h.phase.current(), SystemTask::Idle);
+        });
+    }
+
+    /// Acquitter ne masque rien. Si la cause est toujours là, `check()`
+    /// recompte `TRIP_CYCLES` et redéclenche — l'alarme qui revient d'elle-
+    /// même est précisément l'information que l'opérateur doit voir.
+    #[test]
+    fn acknowledging_an_active_cause_trips_again() {
         with_isolated_shared_state(|| {
             let clock = MockClock::new(Instant::from_millis(1));
             let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::HighVoltage));
@@ -769,17 +827,19 @@ mod tests {
             h.tick_after(Duration::from_millis(1_000));
             assert_eq!(h.phase.current(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
 
-            // Acquittement UI simulé : écrit Idle directement dans SHARED_STATE.
+            // Acquittement sans avoir rien réparé : le compresseur est
+            // toujours à 150 °C.
             h.write_shared_task(SystemTask::Idle);
             h.tick_after(Duration::from_millis(1_000));
+            assert!(!h.safety.is_tripped(), "le tour de l'acquittement sort bien de Tripped");
+            assert_eq!(h.phase.current(), SystemTask::Idle);
 
-            // `tick()` adopte brièvement Idle en tout début de tour, mais
-            // `SafetyMonitor` (état interne, indépendant de `phase`/
-            // SHARED_STATE) republie Tripped le même tour : sans `reset()`
-            // câblé, l'acquittement UI seul ne suffit pas à sortir de
-            // Tripped — même gap que ci-dessus, vu ici depuis SHARED_STATE.
+            // TRIP_CYCLES tours consécutifs en alarme, et ça redéclenche.
+            h.tick_after(Duration::from_millis(1_000));
+            h.tick_after(Duration::from_millis(1_000));
+            h.tick_after(Duration::from_millis(1_000));
             assert_eq!(h.phase.current(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
-            assert_eq!(h.shared_task(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
+            assert!(!h.actuators.high_voltage.is_on);
         });
     }
 

@@ -32,6 +32,10 @@ pub struct Screens {
     main_menu: MainMenuScreen,
     settings: SettingsScreen,
     temp_graph: TempGraphScreen,
+    /// Un clic a eu lieu sur l'écran de suivi. Devient un acquittement de
+    /// sécurité, ou rien du tout, selon l'état de la machine au moment où
+    /// [`Screens::take_task_request`] le relit — cf. sa doc.
+    acknowledge_requested: bool,
 }
 
 impl Screens {
@@ -41,6 +45,7 @@ impl Screens {
             main_menu: MainMenuScreen::new(),
             settings: SettingsScreen::new(),
             temp_graph: TempGraphScreen::new(),
+            acknowledge_requested: false,
         }
     }
 
@@ -77,11 +82,20 @@ impl Screens {
         let action = match self.navigator.current() {
             Screen::MainMenu => self.main_menu.click(),
             Settings => self.settings.click(),
+            // L'écran de suivi porte la bannière « ARRET SECURITE » : c'est
+            // donc là que l'opérateur acquitte un déclenchement. Le clic
+            // ressort au menu comme sur les autres écrans d'affichage seul,
+            // et lève en plus ce drapeau — `take_task_request` décidera s'il
+            // vaut acquittement, lui seul connaissant l'état de la machine.
+            CurrentTask => {
+                self.acknowledge_requested = true;
+                Some(NavAction::Back)
+            }
             // Affichage seul : le clic ne peut que ressortir. Sans ça,
             // l'opérateur resterait coincé sur l'écran. Les écrans encore
             // absents en font partie — c'est même leur seule sortie, et ce
             // que leur carton d'attente annonce à l'opérateur.
-            CurrentTask | Stats | ManualControl | Data | Info => Some(NavAction::Back),
+            Stats | ManualControl | Data | Info => Some(NavAction::Back),
             // La veille se quitte par `Screens::leave_idle`, pas par la
             // pile. Un `Back` ici dépilerait deux fois.
             Idle => None,
@@ -136,7 +150,31 @@ impl Screens {
     /// La demande est consommée dans tous les cas, accordée ou non — sinon
     /// elle se déclencherait plus tard, au premier retour à l'arrêt, sans
     /// que personne ne l'ait redemandée.
+    ///
+    /// # Acquittement d'un déclenchement sécurité
+    ///
+    /// Un clic sur l'écran de suivi pendant que la machine est `Tripped`
+    /// demande `Idle`. C'est tout ce qu'il faut : `control_loop::tick` voit
+    /// passer cet `Idle` alors que `SafetyMonitor` est encore déclenché, et
+    /// en déduit l'acquittement opérateur — le canal existant suffit, pas
+    /// besoin d'un second drapeau partagé entre les cœurs.
+    ///
+    /// Hors `Tripped`, ce clic ne demande rien : il n'a servi qu'à
+    /// retourner au menu. C'est la même forme de garde que pour le
+    /// démarrage juste en dessous, et elle vit ici pour la même raison —
+    /// `tick` adopte par conception ce que l'UI écrit et ne peut pas
+    /// distinguer les intentions.
     pub fn take_task_request(&mut self, current: SystemTask) -> Option<SystemTask> {
+        // Consommé dans tous les cas, accordé ou non — un drapeau qui
+        // traîne se déclencherait au prochain déclenchement sécurité, sans
+        // que personne n'ait cliqué. Et sans arrêter là : le clic qui n'a
+        // pas valu acquittement ne doit pas manger une demande de
+        // démarrage en attente.
+        let acknowledged = core::mem::take(&mut self.acknowledge_requested);
+        if acknowledged && matches!(current, SystemTask::Tripped(_)) {
+            return Some(SystemTask::Idle);
+        }
+
         let requested = self.main_menu.take_task_request()?;
         match requested {
             // La garde ne porte que sur le démarrage. Elle est écrite en
@@ -249,6 +287,74 @@ mod tests {
         let mut d = make_display();
         let state = state_with(SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
         screens.draw(&mut d, &state).unwrap();
+    }
+
+    // ─── Acquittement d'un déclenchement sécurité ───────────────────────
+
+    /// Depuis l'écran de suivi — celui qui porte la bannière « ARRET
+    /// SECURITE » — un clic pendant un déclenchement demande `Idle`, ce que
+    /// `control_loop::tick` lit comme l'acquittement opérateur.
+    #[test]
+    fn clicking_the_running_screen_while_tripped_asks_for_idle() {
+        let mut screens = Screens::new();
+        screens.click(); // menu -> écran de suivi
+        assert_eq!(screens.current(), Screen::CurrentTask);
+        let _ = screens.take_task_request(SystemTask::Idle); // purge le démarrage
+
+        screens.click();
+        assert_eq!(
+            screens.take_task_request(SystemTask::Tripped(SafetyCause::CompressorOverheat)),
+            Some(SystemTask::Idle),
+        );
+        assert_eq!(screens.current(), Screen::MainMenu, "le clic ramene aussi au menu");
+    }
+
+    /// Hors déclenchement, ce même clic ne demande rien : il n'a servi qu'à
+    /// revenir au menu. Sinon un opérateur qui consulte son cycle en cours
+    /// l'arrêterait en ressortant.
+    #[test]
+    fn clicking_the_running_screen_while_running_asks_for_nothing() {
+        let mut screens = Screens::new();
+        screens.click();
+        let _ = screens.take_task_request(SystemTask::Idle);
+
+        screens.click();
+        assert_eq!(
+            screens.take_task_request(SystemTask::Cooling(CoolingPhase::HighVoltage)),
+            None,
+        );
+        assert_eq!(screens.current(), Screen::MainMenu);
+    }
+
+    /// Un clic non accordé ne doit pas laisser de drapeau derrière lui :
+    /// il serait accordé au prochain déclenchement, sans que personne
+    /// n'ait cliqué — et il mangerait au passage la demande de démarrage
+    /// en attente.
+    #[test]
+    fn an_ungranted_acknowledgement_leaves_nothing_behind() {
+        let mut screens = Screens::new();
+        screens.click();
+        let _ = screens.take_task_request(SystemTask::Idle);
+
+        // Clic sur l'écran de suivi alors que la machine tourne : refusé.
+        screens.click();
+        assert_eq!(
+            screens.take_task_request(SystemTask::Cooling(CoolingPhase::HighVoltage)),
+            None,
+        );
+
+        // Le démarrage demandé ensuite depuis le menu passe normalement.
+        screens.click();
+        assert_eq!(
+            screens.take_task_request(SystemTask::Idle),
+            Some(SystemTask::Cooling(CoolingPhase::SensorCheck)),
+        );
+
+        // Et plus tard, un déclenchement ne trouve aucun drapeau en attente.
+        assert_eq!(
+            screens.take_task_request(SystemTask::Tripped(SafetyCause::CompressorOverheat)),
+            None,
+        );
     }
 
     /// Le chemin qui faisait tomber le cœur 0 : deux des six entrées du
