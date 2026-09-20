@@ -122,7 +122,14 @@ impl MeasurementHistory {
     }
 
     /// Dernière lecture de `idx`, si elle existe et n'est pas NaN.
-    fn newest_valid(&self, idx: usize) -> Option<Celsius> {
+    ///
+    /// Publique parce que c'est **la** définition d'« une lecture
+    /// exploitable » : `logic::security` en avait sa propre copie, la garde
+    /// `!m.value.is_nan()` recopiée à deux endroits. Le ring buffer
+    /// s'initialisant à NaN, un emplacement occupé ne prouve rien — une
+    /// copie oubliée aurait laissé une décision de sécurité s'appuyer sur du
+    /// NaN, où toute comparaison répond `false`.
+    pub fn newest_valid(&self, idx: usize) -> Option<Celsius> {
         if idx >= NUMBER_OF_TEMP_SENSOR {
             return None;
         }

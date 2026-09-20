@@ -7,24 +7,32 @@
 //! `sensor_loss_abort`/`timed_transition` dans `control_loop.rs`, pas une
 //! tâche séparée.
 //!
+//! # Un danger, une variante
+//!
+//! Tout ce que le moniteur surveille est une variante de [`SafetyCause`].
+//! [`SafetyMonitor::severity_of`] dit comment mesurer chacune — en `match`
+//! exhaustif, donc le compilateur réclame la réponse — et
+//! [`SafetyMonitor::evaluate`] parcourt [`SafetyCause::ALL`] et garde la
+//! pire. Ajouter un danger, c'est ajouter une variante ; le reste suit ou
+//! ne compile pas.
+//!
+//! C'était le sujet d'un TODO : `evaluate` était une fonction libre qui ne
+//! traitait que la surchauffe, et `check` traitait la perte de capteur à la
+//! main juste en dessous, avec sa propre règle de priorité. Deux listes de
+//! dangers, dont une seule avait l'air d'en être une.
+//!
 //! # Seuils à deux niveaux
 //! - `warn`  : zone d'attention, signalement uniquement (pas de coupure).
-//! - `alarm` : seuil critique, déclenche `SystemTask::Tripped` après
-//!   `TRIP_CYCLES` cycles consécutifs (anti-rebond).
-//!
-//! # Capteur sortie-compresseur invalide
-//! Contrairement à une lecture ponctuelle invalide (ignorée, pour ne pas
-//! générer de faux positif au démarrage), une invalidité prolongée
-//! (`SENSOR_LOSS`) est elle-même traitée comme une alarme : un capteur de
-//! sécurité débranché ne doit pas désactiver silencieusement la protection
-//! qu'il est censé fournir.
+//! - `alarm` : seuil critique, déclenche `SystemTask::Tripped` quand le
+//!   compteur à fuite atteint `TRIP_CYCLES` (anti-rebond — cf.
+//!   [`SafetyMonitor::check`]).
 
 use crate::cloud_chamber_hal::config::COMPRESSOR_OUT_IDX;
 use crate::cloud_chamber_hal::timer::Instant;
 use crate::cloud_chamber_hal::units::{Celsius, Unit};
 use crate::config::operating::SAFETY_TEMP_COMPRESSOR_MAX;
-use crate::logic::timing::SENSOR_LOSS;
 use crate::logic::probing::MeasurementHistory;
+use crate::logic::timing::SENSOR_LOSS;
 
 /// Niveau que doit atteindre le compteur d'alarme pour déclencher.
 ///
@@ -41,13 +49,45 @@ pub enum Severity {
     Alarm,
 }
 
-/// Cause du déclenchement (pour l'affichage opérateur).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Un danger surveillé — et, quand il déclenche, la cause affichée à
+/// l'opérateur.
+///
+/// Cet enum porte **la liste des dangers**, pas seulement des étiquettes.
+/// [`SafetyMonitor::severity_of`] est un `match` exhaustif sans bras `_` :
+/// ajouter une variante ici ne compile pas tant qu'on n'a pas dit comment la
+/// mesurer, et [`SafetyMonitor::evaluate`] la prend alors en compte sans
+/// qu'on ait à y toucher.
+///
+/// C'est le remplaçant d'une organisation où une fonction `evaluate` libre
+/// traitait la surchauffe pendant que `check` traitait la perte de capteur à
+/// la main, juste à côté : deux listes de dangers en deux endroits, dont une
+/// seule se voyait.
+#[repr(usize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, num_enum::TryFromPrimitive, num_enum::IntoPrimitive)]
 pub enum SafetyCause {
     /// T° sortie compresseur au-dessus du seuil.
     CompressorOverheat,
     /// Sonde sortie-compresseur invalide depuis trop longtemps.
+    ///
+    /// Contrairement à une lecture ponctuelle invalide — ignorée, pour ne
+    /// pas générer de faux positif au démarrage — une invalidité prolongée
+    /// (`SENSOR_LOSS`) est un danger à part entière : un capteur de sécurité
+    /// débranché ne doit pas désactiver silencieusement la protection qu'il
+    /// est censé fournir.
     CompressorSensorLost,
+}
+
+impl SafetyCause {
+    /// Tous les dangers, dans l'ordre où [`SafetyMonitor::evaluate`] les
+    /// interroge.
+    ///
+    /// L'ordre ne décide presque de rien : c'est la sévérité la plus haute
+    /// qui gagne, et l'ordre ne départage qu'une égalité. Tenu complet par
+    /// `every_cause_is_listed_in_all` — le `match` exhaustif bloque déjà la
+    /// compilation, ce test ferme l'autre moitié : une variante traitée
+    /// partout mais absente d'ici ne serait jamais interrogée.
+    pub const ALL: [SafetyCause; 2] =
+        [SafetyCause::CompressorOverheat, SafetyCause::CompressorSensorLost];
 }
 
 /// Configuration des seuils.
@@ -72,28 +112,15 @@ impl Default for SafetyConfig {
 
 fn check_high<U>(value: U, warn: U, alarm: U) -> Severity
 where
-    U: Unit
+    U: Unit,
 {
-    if value > alarm { Severity::Alarm }
-    else if value > warn { Severity::Warning }
-    else { Severity::Normal }
-}
-
-/// Évalue la sévérité globale et sa cause dominante à partir de l'historique.
-/// Une lecture jamais faite (NaN) est ignorée ponctuellement — l'invalidité
-/// prolongée du capteur sortie-compresseur est traitée séparément par
-/// `SafetyMonitor::check` (elle a besoin de mémoriser depuis quand).
-fn evaluate(history: &MeasurementHistory, config: &SafetyConfig) -> (Severity, Option<SafetyCause>) {
-    let mut worst_sev = Severity::Normal;
-    let mut worst_cause = None;
-
-    if let Ok(m) = history.temps[COMPRESSOR_OUT_IDX].get(0) {
-        if !m.value.is_nan() {
-            let s = check_high(m.value, config.temp_compressor_warn, config.temp_compressor_alarm);
-            if s > worst_sev { worst_sev = s; worst_cause = Some(SafetyCause::CompressorOverheat); }
-        }
+    if value > alarm {
+        Severity::Alarm
+    } else if value > warn {
+        Severity::Warning
+    } else {
+        Severity::Normal
     }
-    (worst_sev, worst_cause)
 }
 
 /// Moniteur de sécurité — anti-rebond, verrouillage, et suivi de fraîcheur
@@ -120,23 +147,8 @@ impl SafetyMonitor {
     /// À appeler à chaque cycle. Retourne `Some(cause)` si le disjoncteur
     /// doit être (ou rester) déclenché.
     pub fn check(&mut self, history: &MeasurementHistory, now: Instant) -> Option<SafetyCause> {
-        let compressor_valid = matches!(
-            history.temps[COMPRESSOR_OUT_IDX].get(0),
-            Ok(m) if !m.value.is_nan()
-        );
-        if compressor_valid {
-            self.last_compressor_valid = now;
-        }
-        let compressor_lost = now.since(self.last_compressor_valid) > SENSOR_LOSS;
-
-        // Est-ce que c'est pas un peu mal foutu de faire une fonction evaluate et après de faire le
-        // check à la main pour le compresseur ? Il faut arranger ça... #todo
-        let (sev, cause) = evaluate(history, &self.config);
-        let (sev, cause) = if compressor_lost && sev < Severity::Alarm {
-            (Severity::Alarm, Some(SafetyCause::CompressorSensorLost))
-        } else {
-            (sev, cause)
-        };
+        self.note_sensor_freshness(history, now);
+        let (severity, cause) = self.evaluate(history, now);
 
         // Anti-rebond à compteur de fuite : +1 par tour en alarme, -1 par
         // tour normal — et non une remise à zéro.
@@ -158,7 +170,7 @@ impl SafetyMonitor {
         // Plafonné à `TRIP_CYCLES` : sans ça, une alarme longue ferait
         // monter le compteur indéfiniment et il faudrait autant de tours
         // normaux pour le vider une fois la cause disparue.
-        if sev == Severity::Alarm {
+        if severity == Severity::Alarm {
             self.alarm_cycles = (self.alarm_cycles + 1).min(TRIP_CYCLES);
             if self.alarm_cycles >= TRIP_CYCLES {
                 if !self.tripped {
@@ -171,6 +183,77 @@ impl SafetyMonitor {
         }
 
         if self.tripped { self.trip_cause } else { None }
+    }
+
+    /// Mémorise la dernière fois que la sonde sortie-compresseur a répondu.
+    ///
+    /// Isolé du reste parce que c'est la seule partie de l'évaluation qui
+    /// **écrit** : [`Self::evaluate`] et [`Self::severity_of`] ne font que
+    /// lire, donc on peut les appeler deux fois de suite sans changer le
+    /// verdict, et un test peut interroger un danger sans faire avancer
+    /// l'état du moniteur.
+    fn note_sensor_freshness(&mut self, history: &MeasurementHistory, now: Instant) {
+        if history.has_valid_reading(COMPRESSOR_OUT_IDX) {
+            self.last_compressor_valid = now;
+        }
+    }
+
+    /// Sévérité de **ce danger-là**, maintenant.
+    ///
+    /// C'est ici que le compilateur réclame une réponse pour chaque variante
+    /// de [`SafetyCause`] : pas de bras `_`, donc un danger ajouté et pas
+    /// mesuré donne une erreur E0004 nommant la variante manquante.
+    fn severity_of(
+        &self,
+        cause: SafetyCause,
+        history: &MeasurementHistory,
+        now: Instant,
+    ) -> Severity {
+        match cause {
+            // Lecture absente ou NaN : `Normal`, pas d'alarme. Le ring
+            // buffer s'initialise à NaN, donc au démarrage la sonde n'a
+            // simplement rien dit encore — une alarme ici serait un faux
+            // positif systématique. L'invalidité qui *dure* est le danger
+            // d'en dessous.
+            SafetyCause::CompressorOverheat => match history.newest_valid(COMPRESSOR_OUT_IDX) {
+                Some(temp) => check_high(
+                    temp,
+                    self.config.temp_compressor_warn,
+                    self.config.temp_compressor_alarm,
+                ),
+                None => Severity::Normal,
+            },
+            SafetyCause::CompressorSensorLost => {
+                match now.since(self.last_compressor_valid) > SENSOR_LOSS {
+                    true => Severity::Alarm,
+                    false => Severity::Normal,
+                }
+            }
+        }
+    }
+
+    /// Sévérité la plus haute parmi tous les dangers, et le premier qui
+    /// l'atteint.
+    ///
+    /// La comparaison est stricte (`>`), donc à sévérité égale c'est l'ordre
+    /// de [`SafetyCause::ALL`] qui tranche. En pratique les deux dangers
+    /// actuels s'excluent — une sonde perdue ne peut pas être en surchauffe,
+    /// elle ne lit rien — mais la règle est écrite pour ne pas dépendre de
+    /// cette coïncidence.
+    ///
+    /// Ne modifie rien : appelable à volonté.
+    fn evaluate(
+        &self,
+        history: &MeasurementHistory,
+        now: Instant,
+    ) -> (Severity, Option<SafetyCause>) {
+        SafetyCause::ALL.iter().fold(
+            (Severity::Normal, None),
+            |(worst, worst_cause), &cause| match self.severity_of(cause, history, now) {
+                severity if severity > worst => (severity, Some(cause)),
+                _ => (worst, worst_cause),
+            },
+        )
     }
 
     pub fn is_tripped(&self) -> bool {
@@ -203,6 +286,63 @@ mod tests {
     /// l'échelle des seuils qu'ils exercent (`SENSOR_LOSS`).
     fn at_ms(ms: u64) -> Instant {
         Instant::from_micros(ms * 1_000)
+    }
+
+    /// `ALL` doit contenir chaque danger exactement une fois.
+    ///
+    /// Le `match` exhaustif de `severity_of` empêche déjà d'ajouter une
+    /// variante sans dire comment la mesurer ; ce test ferme l'autre moitié,
+    /// celle que le typage ne couvre pas : une variante déclarée, mesurable,
+    /// mais absente de `ALL` — donc jamais interrogée par `evaluate`. Un
+    /// danger surveillé sur le papier et par personne en pratique.
+    #[test]
+    fn every_cause_is_listed_in_all() {
+        let mut variants = 0usize;
+        while SafetyCause::try_from(variants).is_ok() {
+            variants += 1;
+        }
+
+        assert_eq!(variants, SafetyCause::ALL.len(), "un danger manque dans SafetyCause::ALL");
+
+        for (i, a) in SafetyCause::ALL.iter().enumerate() {
+            for b in &SafetyCause::ALL[i + 1..] {
+                assert_ne!(a, b, "doublon dans ALL");
+            }
+        }
+    }
+
+    /// `evaluate` ne touche à rien : deux appels d'affilée rendent le même
+    /// verdict et ne font pas avancer l'anti-rebond. C'est ce qui permet de
+    /// l'appeler pour interroger l'état sans le modifier.
+    #[test]
+    fn evaluate_is_free_of_side_effects() {
+        let safety = SafetyMonitor::new(SafetyConfig::default(), at_ms(0));
+        let alarm = history_with_compressor_temp(150.0);
+
+        let first = safety.evaluate(&alarm, at_ms(1));
+        let second = safety.evaluate(&alarm, at_ms(1));
+
+        assert_eq!(first, second);
+        assert_eq!(first, (Severity::Alarm, Some(SafetyCause::CompressorOverheat)));
+        assert_eq!(safety.alarm_cycles, 0, "evaluate ne doit pas faire avancer l'anti-rebond");
+    }
+
+    /// La règle de priorité, maintenant qu'elle est portée par la sévérité
+    /// et non par un `if` ad hoc : à sévérité égale, l'ordre de `ALL`
+    /// tranche ; une sévérité plus haute l'emporte quel que soit l'ordre.
+    #[test]
+    fn the_worst_severity_wins_over_the_listing_order() {
+        let mut safety = SafetyMonitor::new(SafetyConfig::default(), at_ms(0));
+        let mute = MeasurementHistory::new();
+
+        // La sonde n'a jamais répondu : seule `CompressorSensorLost` monte,
+        // et elle est pourtant la dernière de `ALL`.
+        let late = at_ms(SENSOR_LOSS.as_millis() + 1);
+        safety.note_sensor_freshness(&mute, late);
+        assert_eq!(
+            safety.evaluate(&mute, late),
+            (Severity::Alarm, Some(SafetyCause::CompressorSensorLost)),
+        );
     }
 
     fn history_with_compressor_temp(value_c: f32) -> MeasurementHistory {
