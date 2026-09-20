@@ -49,6 +49,7 @@
 
 use embedded_graphics::{draw_target::DrawTarget, geometry::OriginDimensions, pixelcolor::Rgb565};
 
+use crate::cloud_chamber_hal::timer::Duration;
 use crate::config::settings::Settings;
 use crate::drivers::encoder::EncoderEvent;
 use crate::shared::data::{SharedState, SystemTask};
@@ -58,7 +59,7 @@ use super::router::Screens;
 
 /// Délai sans action opérateur avant la veille. Deux minutes, assez pour
 /// lire un écran de réglages sans basculer. À ajuster en service.
-const IDLE_TIMEOUT_MS: u64 = 120_000;
+const IDLE_TIMEOUT: Duration = Duration::from_millis(120_000);
 
 /// Sommet de l'interface : les écrans, plus l'état de la boucle.
 pub struct UiApp {
@@ -119,11 +120,11 @@ impl UiApp {
         }
     }
 
-    /// Bascule en veille au-delà de [`IDLE_TIMEOUT_MS`] sans action
-    /// opérateur. `idle_ms` vient de l'appelant, comme
+    /// Bascule en veille au-delà de [`IDLE_TIMEOUT`] sans action
+    /// opérateur. `idle` vient de l'appelant, comme
     /// `phase_clock::advance`, pour rester testable sur hôte.
-    pub fn poll_idle(&mut self, idle_ms: u64) {
-        if idle_ms >= IDLE_TIMEOUT_MS && self.screens.enter_idle() {
+    pub fn poll_idle(&mut self, idle: Duration) {
+        if idle >= IDLE_TIMEOUT && self.screens.enter_idle() {
             self.needs_redraw = true;
         }
     }
@@ -210,11 +211,11 @@ mod tests {
         let mut app = UiApp::new();
         app.take_redraw_request();
 
-        app.poll_idle(IDLE_TIMEOUT_MS - 1);
+        app.poll_idle(IDLE_TIMEOUT - Duration::from_millis(1));
         assert_eq!(app.current_screen(), Screen::MainMenu);
         assert!(!app.take_redraw_request());
 
-        app.poll_idle(IDLE_TIMEOUT_MS);
+        app.poll_idle(IDLE_TIMEOUT);
         assert_eq!(app.current_screen(), Screen::Idle);
         assert!(app.take_redraw_request());
     }
@@ -224,11 +225,11 @@ mod tests {
     #[test]
     fn staying_asleep_asks_for_nothing() {
         let mut app = UiApp::new();
-        app.poll_idle(IDLE_TIMEOUT_MS);
+        app.poll_idle(IDLE_TIMEOUT);
         app.take_redraw_request();
 
         for _ in 0..1_000 {
-            app.poll_idle(IDLE_TIMEOUT_MS * 10);
+            app.poll_idle(IDLE_TIMEOUT * 10);
         }
         assert!(!app.take_redraw_request());
     }
@@ -239,7 +240,7 @@ mod tests {
     fn waking_up_restores_the_previous_screen_without_routing() {
         let mut app = UiApp::new();
         app.handle_event(EncoderEvent::RotateClockwise, SystemTask::Idle); // START -> STATS
-        app.poll_idle(IDLE_TIMEOUT_MS);
+        app.poll_idle(IDLE_TIMEOUT);
         assert_eq!(app.current_screen(), Screen::Idle);
 
         app.handle_event(EncoderEvent::RotateClockwise, SystemTask::Idle);
@@ -253,7 +254,7 @@ mod tests {
     fn the_idle_screen_draws() {
         let mut d = make_display();
         let mut app = UiApp::new();
-        app.poll_idle(IDLE_TIMEOUT_MS);
+        app.poll_idle(IDLE_TIMEOUT);
         app.draw(&mut d, &state_with(SystemTask::Stabilising)).unwrap();
     }
 

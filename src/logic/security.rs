@@ -84,7 +84,7 @@ fn evaluate(history: &MeasurementHistory, config: &SafetyConfig) -> (Severity, O
     let mut worst_cause = None;
 
     if let Ok(m) = history.temps[COMPRESSOR_OUT_IDX].get(0) {
-        if !m.value.0.is_nan() {
+        if !m.value.is_nan() {
             let s = check_high(m.value, config.temp_compressor_warn, config.temp_compressor_alarm);
             if s > worst_sev { worst_sev = s; worst_cause = Some(SafetyCause::CompressorOverheat); }
         }
@@ -118,7 +118,7 @@ impl SafetyMonitor {
     pub fn check(&mut self, history: &MeasurementHistory, now: Instant) -> Option<SafetyCause> {
         let compressor_valid = matches!(
             history.temps[COMPRESSOR_OUT_IDX].get(0),
-            Ok(m) if !m.value.0.is_nan()
+            Ok(m) if !m.value.is_nan()
         );
         if compressor_valid {
             self.last_compressor_valid = now;

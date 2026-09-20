@@ -8,11 +8,21 @@
 //! qui seul connaît la durée passée dans la phase courante.
 
 use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
+use crate::cloud_chamber_hal::units::Celsius;
 use crate::config::operating::{STABLE_TOLERANCE_C, STABLE_WINDOW};
 use crate::cloud_chamber_hal::actuators::ActuatorPlan;
 use crate::logic::probing::{MeasurementHistory, ProbingPlan};
 use crate::shared::data::SystemTask;
 use crate::shared::settings;
+
+/// Tolérance accordée à `FinalCheckBeforeStabilising` au-dessus de la cible
+/// de saturation.
+///
+/// La phase précédente a déjà franchi la cible ; celle-ci ne fait que
+/// vérifier qu'on n'en est pas ressorti pendant l'établissement de la haute
+/// tension. Un seuil strictement égal la ferait osciller sur le bruit de
+/// mesure du DS18B20 (±0,5 °C à 12 bits).
+const FINAL_CHECK_MARGIN: Celsius = Celsius::new(2.0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoolingPhase {
@@ -51,19 +61,18 @@ fn sensor_check(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
 
     // Ajouter le check des autres sensors ?
     // #todo
-    match history.temps[CHAMBER_TEMP_IDX].get(0) {
-        Ok(m) if !m.value.0.is_nan() => (SystemTask::Cooling(CoolingPhase::PreCoolingThePlate), plan),
-        _ => (SystemTask::Cooling(CoolingPhase::SensorCheck), plan),
+    match history.has_valid_reading(CHAMBER_TEMP_IDX) {
+        true => (SystemTask::Cooling(CoolingPhase::PreCoolingThePlate), plan),
+        false => (SystemTask::Cooling(CoolingPhase::SensorCheck), plan),
     }
 }
 
 fn pre_cooling_the_plate(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
     let precool_target = settings::get().precool_target;
     let plan = ActuatorPlan::all_off().with_cooling(precool_target);
-    match history.temps[CHAMBER_TEMP_IDX].get(0) {
-        Ok(m) if !m.value.0.is_nan() && m.value.0 <= precool_target.0 =>
-            (SystemTask::Cooling(CoolingPhase::StartingIpaCirculation), plan),
-        _ => (SystemTask::Cooling(CoolingPhase::PreCoolingThePlate), plan),
+    match history.is_at_or_below(CHAMBER_TEMP_IDX, precool_target) {
+        true => (SystemTask::Cooling(CoolingPhase::StartingIpaCirculation), plan),
+        false => (SystemTask::Cooling(CoolingPhase::PreCoolingThePlate), plan),
     }
 }
 
@@ -87,10 +96,9 @@ fn saturating_air_with_ipa(history: &MeasurementHistory) -> (SystemTask, Actuato
         .with_iso_pump()
         .with_glass_heater();
     // #todo faire une vrai estimation de la saturation....
-    match history.temps[CHAMBER_TEMP_IDX].get(0) {
-        Ok(m) if !m.value.0.is_nan() && m.value.0 <= settings.saturation_target.0 =>
-            (SystemTask::Cooling(CoolingPhase::HighVoltage), plan),
-        _ => (SystemTask::Cooling(CoolingPhase::SaturatingAirWithIpa), plan),
+    match history.is_at_or_below(CHAMBER_TEMP_IDX, settings.saturation_target) {
+        true => (SystemTask::Cooling(CoolingPhase::HighVoltage), plan),
+        false => (SystemTask::Cooling(CoolingPhase::SaturatingAirWithIpa), plan),
     }
 }
 
@@ -122,9 +130,8 @@ fn final_check_before_stabilising(history: &MeasurementHistory) -> (SystemTask, 
         .with_glass_heater();
 
     // Qu'est-ce qu'on veut check ici ??
-    match history.temps[CHAMBER_TEMP_IDX].get(0) {
-        Ok(m) if !m.value.0.is_nan() && m.value.0 <= settings.saturation_target.0 + 2.0 =>
-            (SystemTask::Stabilising, plan),
-        _ => (SystemTask::Cooling(CoolingPhase::FinalCheckBeforeStabilising), plan),
+    match history.is_at_or_below(CHAMBER_TEMP_IDX, settings.saturation_target + FINAL_CHECK_MARGIN) {
+        true => (SystemTask::Stabilising, plan),
+        false => (SystemTask::Cooling(CoolingPhase::FinalCheckBeforeStabilising), plan),
     }
 }
