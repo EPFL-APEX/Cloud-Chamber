@@ -26,7 +26,11 @@ use crate::config::operating::SAFETY_TEMP_COMPRESSOR_MAX;
 use crate::logic::timing::SENSOR_LOSS;
 use crate::logic::probing::MeasurementHistory;
 
-/// Nombre de cycles consécutifs en Alarm avant déclenchement (anti-rebond).
+/// Niveau que doit atteindre le compteur d'alarme pour déclencher.
+///
+/// Ce n'est plus un nombre de cycles *consécutifs* : cf.
+/// [`SafetyMonitor::check`] et son compteur à fuite. Trois tours d'alarme
+/// d'affilée déclenchent toujours, mais ce n'est plus le seul chemin.
 const TRIP_CYCLES: u8 = 3;
 
 /// Niveau de sévérité, ordonné (Normal < Warning < Alarm).
@@ -134,10 +138,28 @@ impl SafetyMonitor {
             (sev, cause)
         };
 
-        // Comment on trip ça comme il faut ? Est-ce que c'est la bonne manière de faire ou est-ce
-        // qu'il y aurait une manière plus efficace et propre de le faire ? #todo
+        // Anti-rebond à compteur de fuite : +1 par tour en alarme, -1 par
+        // tour normal — et non une remise à zéro.
+        //
+        // La remise à zéro laissait passer les alarmes intermittentes. Avec
+        // `TRIP_CYCLES = 3`, la séquence `A A N A A N ...` faisait 1, 2, 0,
+        // 1, 2, 0 : elle ne déclenchait **jamais**, quelle que soit sa
+        // durée. Un compresseur qui oscille autour de son seuil avec du
+        // bruit de mesure produit exactement ça, et la surchauffe est bien
+        // réelle pendant ce temps.
+        //
+        // La fuite garde l'anti-rebond qui justifiait la remise à zéro — un
+        // pic isolé ne déclenche toujours pas — mais rend le critère
+        // « plus de la moitié des tours récents sont en alarme » au lieu de
+        // « trois tours d'affilée ». Une alternance exactement à 50 %
+        // (`A N A N`) reste sous le seuil ; c'est une crête sans épaisseur,
+        // le bruit réel tombe d'un côté ou de l'autre.
+        //
+        // Plafonné à `TRIP_CYCLES` : sans ça, une alarme longue ferait
+        // monter le compteur indéfiniment et il faudrait autant de tours
+        // normaux pour le vider une fois la cause disparue.
         if sev == Severity::Alarm {
-            self.alarm_cycles = self.alarm_cycles.saturating_add(1);
+            self.alarm_cycles = (self.alarm_cycles + 1).min(TRIP_CYCLES);
             if self.alarm_cycles >= TRIP_CYCLES {
                 if !self.tripped {
                     self.trip_cause = cause;
@@ -145,7 +167,7 @@ impl SafetyMonitor {
                 self.tripped = true;
             }
         } else {
-            self.alarm_cycles = 0;
+            self.alarm_cycles = self.alarm_cycles.saturating_sub(1);
         }
 
         if self.tripped { self.trip_cause } else { None }
@@ -219,16 +241,99 @@ mod tests {
         assert!(safety.is_tripped());
     }
 
+    /// Un tour normal fait redescendre le compteur d'un cran — il ne le
+    /// remet pas à zéro. Deux tours d'alarme, un normal, un d'alarme font
+    /// donc 1, 2, 1, 2 : toujours sous le seuil, l'anti-rebond joue son
+    /// rôle.
     #[test]
-    fn alarm_cycles_reset_on_a_normal_reading() {
+    fn a_normal_reading_drains_the_counter_by_one() {
         let mut safety = SafetyMonitor::new(SafetyConfig::default(), at_ms(0));
         let alarm = history_with_compressor_temp(150.0);
         let normal = history_with_compressor_temp(50.0);
+
         safety.check(&alarm, at_ms(1));
         safety.check(&alarm, at_ms(2));
-        safety.check(&normal, at_ms(3)); // repasse sous le seuil : anti-rebond remis à zéro
+        safety.check(&normal, at_ms(3));
         safety.check(&alarm, at_ms(4));
-        assert!(!safety.is_tripped()); // un seul nouveau cycle en alarme, pas 3
+
+        assert!(!safety.is_tripped());
+        assert_eq!(safety.alarm_cycles, 2, "1, 2, 1, 2 — pas de remise a zero");
+    }
+
+    /// Le défaut que la fuite corrige : avec une remise à zéro, la séquence
+    /// `A A N` répétée faisait 1, 2, 0, 1, 2, 0… et ne déclenchait **jamais**,
+    /// quelle que soit sa durée. Un compresseur qui oscille autour de son
+    /// seuil avec du bruit de mesure produit exactement ça.
+    #[test]
+    fn an_intermittent_alarm_eventually_trips() {
+        let mut safety = SafetyMonitor::new(SafetyConfig::default(), at_ms(0));
+        let alarm = history_with_compressor_temp(150.0);
+        let normal = history_with_compressor_temp(50.0);
+
+        let mut now = 0;
+        for _ in 0..5 {
+            for history in [&alarm, &alarm, &normal] {
+                now += 1;
+                safety.check(history, at_ms(now));
+            }
+        }
+
+        assert!(safety.is_tripped(), "deux tours sur trois en alarme doit finir par declencher");
+        assert_eq!(safety.trip_cause, Some(SafetyCause::CompressorOverheat));
+    }
+
+    /// La contrepartie, énoncée pour qu'elle ne soit pas une surprise : le
+    /// critère est « plus de la moitié des tours récents », donc une
+    /// alternance exactement à 50 % reste sous le seuil. C'est une crête
+    /// sans épaisseur — un bruit réel tombe d'un côté ou de l'autre.
+    #[test]
+    fn a_fifty_fifty_alternation_stays_below_the_threshold() {
+        let mut safety = SafetyMonitor::new(SafetyConfig::default(), at_ms(0));
+        let alarm = history_with_compressor_temp(150.0);
+        let normal = history_with_compressor_temp(50.0);
+
+        let mut now = 0;
+        for _ in 0..20 {
+            for history in [&alarm, &normal] {
+                now += 1;
+                safety.check(history, at_ms(now));
+            }
+        }
+
+        assert!(!safety.is_tripped());
+    }
+
+    /// L'anti-rebond reste un anti-rebond : un pic isolé ne déclenche pas.
+    #[test]
+    fn an_isolated_spike_never_trips() {
+        let mut safety = SafetyMonitor::new(SafetyConfig::default(), at_ms(0));
+        let alarm = history_with_compressor_temp(150.0);
+        let normal = history_with_compressor_temp(50.0);
+
+        let mut now = 0;
+        for _ in 0..10 {
+            for history in [&normal, &normal, &normal, &alarm] {
+                now += 1;
+                safety.check(history, at_ms(now));
+            }
+        }
+
+        assert!(!safety.is_tripped());
+    }
+
+    /// Le compteur est plafonné : sans ça, une alarme longue le ferait
+    /// monter indéfiniment et il faudrait autant de tours normaux pour le
+    /// vider une fois la cause disparue.
+    #[test]
+    fn the_counter_does_not_run_away_during_a_long_alarm() {
+        let mut safety = SafetyMonitor::new(SafetyConfig::default(), at_ms(0));
+        let alarm = history_with_compressor_temp(150.0);
+
+        for now in 1..=50 {
+            safety.check(&alarm, at_ms(now));
+        }
+
+        assert_eq!(safety.alarm_cycles, TRIP_CYCLES);
     }
 
     #[test]
