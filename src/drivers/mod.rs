@@ -67,6 +67,12 @@ pub mod window_heater;
 /// flash interne, sans système de fichiers.
 pub mod flash_store;
 
+/// Implémentation de `flash_store::FlashOps` sur la flash QSPI du RP2040,
+/// avec mise en attente du second cœur. RP2040 uniquement : la séquence
+/// dépend des routines ROM de cette puce.
+#[cfg(all(rp2040, target_arch = "arm"))]
+pub mod flash_rp2040;
+
 /// Capteurs mock (température/pression/tension) pour les tests — pas de
 /// matériel, valeurs configurables. Compilé uniquement sous `cargo test`.
 #[cfg(test)]

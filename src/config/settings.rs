@@ -60,9 +60,34 @@ pub enum StoreError {
     Verify,
 }
 
+/// Ce que coûtera la prochaine sauvegarde, vu d'en haut.
+///
+/// Deux valeurs seulement, parce que c'est tout ce dont l'appelant a besoin
+/// pour arbitrer : sur une flash NOR, programmer une page est mille fois
+/// moins cher qu'effacer le secteur qui la contient, et seul le second est
+/// assez long pour qu'on se demande quand le faire.
+///
+/// L'unité n'est volontairement pas une durée : elle dépend de la puce
+/// soudée, et `logic/` n'a pas à la connaître. Ce qu'il doit savoir, c'est
+/// s'il a affaire à l'opération courte ou à la longue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveCost {
+    /// Un emplacement vierge attend : une programmation de page suffit.
+    /// De l'ordre de la milliseconde.
+    Cheap,
+    /// Plus d'emplacement libre : il faudra effacer avant d'écrire. De
+    /// l'ordre de la centaine de millisecondes.
+    Expensive,
+}
+
 /// Support de stockage persistant. `logic/` et `ui/` ne connaissent que ce
 /// trait ; savoir ce qu'est un secteur de flash est le travail du driver.
 pub trait SettingsStore {
+    /// Ce que coûtera le prochain [`SettingsStore::save`], sans rien
+    /// écrire. Permet à l'appelant de choisir son moment — cf.
+    /// `logic::persistence`.
+    fn next_save_cost(&self) -> SaveCost;
+
     /// Relit les réglages. `None` si rien n'a jamais été écrit, ou si
     /// l'enregistrement est illisible — l'appelant repart alors sur
     /// `Settings::defaults()`.
