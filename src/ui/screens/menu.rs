@@ -44,12 +44,14 @@ use super::stats::expected_outputs;
 #[derive(TryFromPrimitive, IntoPrimitive)]
 pub enum MainMenuItem {
     /// Démarre un cycle de refroidissement et ouvre l'écran de suivi.
-    START,
-    STATS,
-    SETTINGS,
-    COOLDOWN,
-    DATA,
-    INFO,
+    Start,
+    Stats,
+    Settings,
+    /// Même écran que `Start`, sans rien démarrer : consultation du cycle
+    /// en cours, ou de son absence.
+    Cooldown,
+    Data,
+    Info,
 }
 
 const MAIN_MENU_SIZE: u8 = 6; // core::mem::variant_count::<MainMenuItem>() as u8;
@@ -86,7 +88,7 @@ fn write_state(on: bool, out: &mut String<8>) {
 /// Une sonde muette affiche `---`, pas une valeur inventée.
 fn write_temp(measurement: Option<Measurement<Celsius>>, out: &mut String<8>) {
     match measurement {
-        Some(m) if !m.value.0.is_nan() => {
+        Some(m) if !m.value.is_nan() => {
             let _ = write!(out, "{:+.1}C", m.value.0);
         }
         _ => {
@@ -126,17 +128,17 @@ impl Click for MainMenuScreen {
     /// démarrage sans toucher au `static` `SHARED_STATE`.
     fn click(&mut self) -> Option<NavAction> {
         let screen = match MainMenuItem::try_from(self.selected).ok()? {
-            MainMenuItem::START => {
+            MainMenuItem::Start => {
                 self.task_requested = Some(FIRST_COOLING_PHASE);
                 Screen::CurrentTask
             }
-            MainMenuItem::STATS => Screen::Stats,
-            MainMenuItem::SETTINGS => Screen::Settings,
+            MainMenuItem::Stats => Screen::Stats,
+            MainMenuItem::Settings => Screen::Settings,
             // Même écran que START, mais sans rien démarrer : consultation
             // du cycle en cours (ou de son absence).
-            MainMenuItem::COOLDOWN => Screen::CurrentTask,
-            MainMenuItem::DATA => Screen::Data,
-            MainMenuItem::INFO => Screen::Info,
+            MainMenuItem::Cooldown => Screen::CurrentTask,
+            MainMenuItem::Data => Screen::Data,
+            MainMenuItem::Info => Screen::Info,
         };
         Some(NavAction::Push(screen))
     }
@@ -432,7 +434,7 @@ mod tests {
     #[test]
     fn click_on_cooldown_opens_the_same_screen_without_starting_anything() {
         let mut menu = MainMenuScreen::new();
-        for _ in 0..MainMenuItem::COOLDOWN as u8 {
+        for _ in 0..MainMenuItem::Cooldown as u8 {
             menu.right_turn();
         }
         assert_eq!(menu.click(), Some(NavAction::Push(Screen::CurrentTask)));

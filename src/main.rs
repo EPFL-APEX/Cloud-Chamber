@@ -89,6 +89,7 @@ use embedded_hal_bus::spi::ExclusiveDevice;
 use ili9341::{DisplaySize240x320, Ili9341, Orientation};
 
 use cloud_chamber_firmware::board;
+use cloud_chamber_firmware::cloud_chamber_hal::timer::Duration;
 use cloud_chamber_firmware::config::settings::{Settings, SettingsStore};
 use cloud_chamber_firmware::drivers::flash_rp2040;
 use cloud_chamber_firmware::drivers::flash_store::{self, FlashSettingsStore};
@@ -526,7 +527,9 @@ fn main() -> ! {
             }
         }
 
-        app.poll_idle((board.timer.get_counter() - last_activity).to_millis());
+        app.poll_idle(Duration::from_micros(
+            (board.timer.get_counter() - last_activity).to_micros(),
+        ));
 
         // Une nouvelle demande remplace celle qui attendait : c'est la
         // dernière valeur voulue par l'opérateur qui compte, pas la

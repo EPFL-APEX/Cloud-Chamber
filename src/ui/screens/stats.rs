@@ -130,7 +130,7 @@ impl<'a> StatsScreen<'a> {
         {
             let mut val: String<12> = String::new();
             let (text, color) = match snap.temps[CHAMBER_TEMP_IDX] {
-                Some(m) if !m.value.0.is_nan() => {
+                Some(m) if !m.value.is_nan() => {
                     write!(val, "{:+6.1}C", m.value.0).ok();
                     let color = if m.value <= SATURATION_TARGET_C { theme::ACCENT_COLOR }
                         else { theme::TEXT_COLOR };
@@ -166,7 +166,7 @@ impl<'a> StatsScreen<'a> {
         for i in 0..4usize {
             let mut s: String<16> = String::new();
             let (text, color) = match snap.temps[i] {
-                Some(m) if !m.value.0.is_nan() => {
+                Some(m) if !m.value.is_nan() => {
                     write!(s, "{}: {:+5.1}C", &TEMP_LABELS[i][..3.min(TEMP_LABELS[i].len())], m.value.0).ok();
                     (s.as_str(), theme::TEXT_COLOR)
                 }

@@ -375,8 +375,8 @@ mod tests {
         let state = state_with(SystemTask::Idle);
 
         for (item, screen) in [
-            (MainMenuItem::DATA, Screen::Data),
-            (MainMenuItem::INFO, Screen::Info),
+            (MainMenuItem::Data, Screen::Data),
+            (MainMenuItem::Info, Screen::Info),
         ] {
             let mut screens = Screens::new();
             for _ in 0..item as u8 {

@@ -140,7 +140,7 @@ impl<'a> RunningScreen<'a> {
         {
             let mut s: String<24> = String::new();
             let (text, color) = match self.state.snapshot.temps[CHAMBER_TEMP_IDX] {
-                Some(m) if !m.value.0.is_nan() => {
+                Some(m) if !m.value.is_nan() => {
                     let _ = write!(s, "Chambre: {:+6.1} C", m.value.0);
                     (s.as_str(), theme::TEXT_COLOR)
                 }

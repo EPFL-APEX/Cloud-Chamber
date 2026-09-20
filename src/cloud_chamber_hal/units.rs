@@ -11,6 +11,17 @@ pub struct Celsius(pub f32);
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct HectoPascal(pub f32);
 
+impl HectoPascal {
+    pub const fn new(hpa: f32) -> Self {
+        Self(hpa)
+    }
+
+    /// Cf. [`Celsius::is_nan`].
+    pub fn is_nan(&self) -> bool {
+        self.0.is_nan()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct Volt(pub f32);
 
@@ -42,6 +53,19 @@ impl Celsius {
     /// constante de configuration se lit mieux en `Celsius::new(-40.0)`.
     pub const fn new(degrees: f32) -> Self {
         Self(degrees)
+    }
+
+    /// Lecture invalide : c'est ainsi que les ring buffers s'initialisent et
+    /// que les drivers signalent un capteur muet.
+    ///
+    /// Méthode inhérente et pas seulement `Unit::is_nan` : le trait n'a de
+    /// sens que pour la régulation, et l'importer partout juste pour poser
+    /// cette question poussait les appelants à déballer le newtype
+    /// (`m.value.0.is_nan()`) — et donc à contourner le typage qu'il existe
+    /// précisément pour fournir. Douze sites le faisaient, deux seulement
+    /// passaient par le trait.
+    pub fn is_nan(&self) -> bool {
+        self.0.is_nan()
     }
 }
 
@@ -91,7 +115,7 @@ impl Unit for Celsius {
         Celsius(0.0)
     }
     fn is_nan(&self) -> bool {
-        self.0.is_nan()
+        Celsius::is_nan(self)
     }
 }
 

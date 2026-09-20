@@ -1,6 +1,6 @@
 use crate::cloud_chamber_hal::sensors::{BatchSensor, DeferredBatchSensor, Sensors};
 use crate::cloud_chamber_hal::measurement::Measurement;
-use crate::cloud_chamber_hal::units::{Celsius, HectoPascal, Unit};
+use crate::cloud_chamber_hal::units::{Celsius, HectoPascal};
 use crate::cloud_chamber_hal::config::{
     CHAMBER_TEMP_IDX, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_PRESSURE_SENSOR,
 };
@@ -71,6 +71,38 @@ impl MeasurementHistory {
     pub fn update(&mut self, latest_measurement: &SensorSnapshot) {
         push_if_newer(&mut self.temps, &latest_measurement.temps);
         push_if_newer(&mut self.press, &latest_measurement.press);
+    }
+
+    /// `true` si `idx` a fourni au moins une lecture exploitable.
+    ///
+    /// « Exploitable » veut dire présente **et** non-NaN : le ring buffer
+    /// s'initialise à NaN, donc un emplacement occupé ne prouve rien à lui
+    /// seul. C'est la question que pose `SensorCheck` avant de laisser un
+    /// cycle démarrer.
+    pub fn has_valid_reading(&self, idx: usize) -> bool {
+        self.newest_valid(idx).is_some()
+    }
+
+    /// `true` si la dernière lecture de `idx` est exploitable **et** au plus
+    /// égale à `target`.
+    ///
+    /// Fail-closed : un capteur muet ou en NaN répond `false`, donc une
+    /// phase qui attend un seuil ne le franchit jamais faute de données. Les
+    /// quatre phases de `logic::cooling` qui surveillent une température
+    /// posaient chacune leur propre version de cette question, avec la garde
+    /// NaN recopiée à chaque fois — une seule copie oubliée aurait suffi à
+    /// faire avancer la séquence sur du NaN.
+    pub fn is_at_or_below(&self, idx: usize, target: Celsius) -> bool {
+        self.newest_valid(idx).is_some_and(|value| value <= target)
+    }
+
+    /// Dernière lecture de `idx`, si elle existe et n'est pas NaN.
+    fn newest_valid(&self, idx: usize) -> Option<Celsius> {
+        if idx >= NUMBER_OF_TEMP_SENSOR {
+            return None;
+        }
+        let m = self.temps[idx].get(0).ok()?;
+        (!m.value.is_nan()).then_some(m.value)
     }
 
     /// `true` si la température `idx` est restée dans une bande de
@@ -236,6 +268,65 @@ mod tests {
         let mut history = MeasurementHistory::new();
         history.temps[CHAMBER_TEMP_IDX].push(Measurement::new(at_secs(10), Celsius(-20.0)));
         assert!(history.chamber_stale_duration(at_secs(10)).is_zero());
+    }
+
+    // ─── has_valid_reading / is_at_or_below ─────────────────────────────
+
+    #[test]
+    fn a_fresh_history_has_no_valid_reading() {
+        // Les buffers s'initialisent à NaN : un emplacement occupé ne prouve
+        // rien, c'est tout l'objet de la garde.
+        assert!(!MeasurementHistory::new().has_valid_reading(CHAMBER_TEMP_IDX));
+    }
+
+    #[test]
+    fn a_reading_makes_the_sensor_valid() {
+        let mut history = MeasurementHistory::new();
+        history.temps[CHAMBER_TEMP_IDX].push(Measurement::new(at_secs(1), Celsius(20.0)));
+        assert!(history.has_valid_reading(CHAMBER_TEMP_IDX));
+    }
+
+    #[test]
+    fn a_nan_reading_does_not_count_as_valid() {
+        let mut history = MeasurementHistory::new();
+        history.temps[CHAMBER_TEMP_IDX]
+            .push(Measurement::new(at_secs(1), Celsius(f32::NAN)));
+        assert!(!history.has_valid_reading(CHAMBER_TEMP_IDX));
+    }
+
+    #[test]
+    fn the_threshold_is_inclusive() {
+        let mut history = MeasurementHistory::new();
+        let target = Celsius(-20.0);
+
+        history.temps[CHAMBER_TEMP_IDX].push(Measurement::new(at_secs(1), Celsius(-19.9)));
+        assert!(!history.is_at_or_below(CHAMBER_TEMP_IDX, target), "au-dessus");
+
+        history.temps[CHAMBER_TEMP_IDX].push(Measurement::new(at_secs(2), target));
+        assert!(history.is_at_or_below(CHAMBER_TEMP_IDX, target), "exactement dessus");
+
+        history.temps[CHAMBER_TEMP_IDX].push(Measurement::new(at_secs(3), Celsius(-25.0)));
+        assert!(history.is_at_or_below(CHAMBER_TEMP_IDX, target), "en dessous");
+    }
+
+    /// Fail-closed : sans donnée exploitable, le seuil n'est jamais franchi.
+    /// C'est ce qui empêche une phase d'avancer sur un capteur muet.
+    #[test]
+    fn a_missing_or_nan_reading_never_crosses_the_threshold() {
+        let history = MeasurementHistory::new();
+        assert!(!history.is_at_or_below(CHAMBER_TEMP_IDX, Celsius(1000.0)));
+
+        let mut history = MeasurementHistory::new();
+        history.temps[CHAMBER_TEMP_IDX]
+            .push(Measurement::new(at_secs(1), Celsius(f32::NAN)));
+        assert!(!history.is_at_or_below(CHAMBER_TEMP_IDX, Celsius(1000.0)));
+    }
+
+    #[test]
+    fn an_out_of_range_index_answers_no_to_both() {
+        let history = MeasurementHistory::new();
+        assert!(!history.has_valid_reading(NUMBER_OF_TEMP_SENSOR));
+        assert!(!history.is_at_or_below(NUMBER_OF_TEMP_SENSOR, Celsius(1000.0)));
     }
 
     // ─── is_temp_stable ─────────────────────────────────────────────────
