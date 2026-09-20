@@ -11,6 +11,9 @@
 //! - [`interactions`]: traits d'entrée (Rotary/Click) implémentés par écran
 
 pub mod app;
+pub mod event_queue;
+#[cfg(all(rp2040, target_arch = "arm"))]
+pub mod console;
 pub mod navigator;
 pub mod screens;
 pub mod router;

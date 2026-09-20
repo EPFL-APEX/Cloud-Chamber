@@ -31,7 +31,10 @@ use embedded_graphics::{
 
 use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
 use crate::cloud_chamber_hal::{
-    measurement::Measurement, ring_buffer::RingBuffer, timer::Instant, units::Celsius,
+    measurement::Measurement,
+    ring_buffer::RingBuffer,
+    timer::{Duration, Instant},
+    units::Celsius,
 };
 use crate::shared::data::SharedState;
 use crate::ui::theme;
@@ -49,11 +52,12 @@ const PLOT: Rectangle = Rectangle::new(Point::new(10, 40), Size::new(300, 160));
 ///
 /// 18 s sur 100 points font une demi-heure, assez pour contenir un
 /// pré-refroidissement (45 min de timeout). À revoir si le buffer change.
-const SAMPLE_INTERVAL_MS: u64 = 18_000;
+const SAMPLE_INTERVAL: Duration = Duration::from_millis(18_000);
 
 /// Fenêtre couverte, affichée en pied de graphe. Déduite plutôt qu'écrite
 /// en dur, sinon elle mentirait au premier changement de cadence.
-const WINDOW_MIN: u64 = SAMPLE_INTERVAL_MS * TEMP_GRAPH_BUFFER_LENGTH as u64 / 60_000;
+const WINDOW_MIN: u64 =
+    SAMPLE_INTERVAL.as_millis() * TEMP_GRAPH_BUFFER_LENGTH as u64 / 60_000;
 
 /// Amplitude verticale minimale. Sans elle, un palier étalerait le pas du
 /// DS18B20 (0.0625 °C en 12 bits) sur toute la hauteur du cadre.
@@ -82,17 +86,15 @@ impl TempGraphScreen {
     /// Les NaN sont écartés ici, un point hors échelle écraserait le reste
     /// de la courbe.
     pub fn sample(&mut self, measurement: Measurement<Celsius>) {
-        if measurement.value.0.is_nan() {
+        if measurement.value.is_nan() {
             return;
         }
         let elapsed = match self.temps_buffer.get(0) {
-            Ok(last) => measurement
-                .time
-                .as_millis()
-                .saturating_sub(last.time.as_millis()),
-            Err(_) => SAMPLE_INTERVAL_MS,
+            Ok(last) => measurement.time.since(last.time),
+            // Premier point : rien à espacer, on le garde.
+            Err(_) => SAMPLE_INTERVAL,
         };
-        if elapsed >= SAMPLE_INTERVAL_MS {
+        if elapsed >= SAMPLE_INTERVAL {
             self.temps_buffer.push(measurement);
         }
     }
@@ -123,7 +125,7 @@ impl TempGraphScreen {
         .draw(display)?;
 
         match state.snapshot.temps[CHAMBER_TEMP_IDX] {
-            Some(m) if !m.value.0.is_nan() => {
+            Some(m) if !m.value.is_nan() => {
                 // Nommee, sinon rien ne dit de quelle sonde vient la
                 // courbe. Meme vocabulaire que `running.rs`.
                 let mut s: String<20> = String::new();
@@ -247,7 +249,7 @@ mod tests {
     fn samples_far_enough_apart_are_kept() {
         let mut screen = TempGraphScreen::new();
         for step in 0..4 {
-            screen.sample(at(step * SAMPLE_INTERVAL_MS / 1_000, -10.0));
+            screen.sample(at(step * SAMPLE_INTERVAL.as_millis() / 1_000, -10.0));
         }
         assert!(screen.temps_buffer.get(3).is_ok());
     }
@@ -272,7 +274,7 @@ mod tests {
         let mut d = make_display();
         let mut screen = TempGraphScreen::new();
         for step in 0..TEMP_GRAPH_BUFFER_LENGTH as u64 {
-            screen.sample(at(step * SAMPLE_INTERVAL_MS / 1_000, 20.0 - step as f32));
+            screen.sample(at(step * SAMPLE_INTERVAL.as_millis() / 1_000, 20.0 - step as f32));
         }
         screen.draw(&mut d, &state()).unwrap();
     }
@@ -283,7 +285,7 @@ mod tests {
         let mut d = make_display();
         let mut screen = TempGraphScreen::new();
         for step in 0..10u64 {
-            screen.sample(at(step * SAMPLE_INTERVAL_MS / 1_000, -40.0));
+            screen.sample(at(step * SAMPLE_INTERVAL.as_millis() / 1_000, -40.0));
         }
         screen.draw(&mut d, &state()).unwrap();
     }
@@ -301,7 +303,7 @@ mod tests {
         let mut last = at(0, 20.0);
         for step in 0..TEMP_GRAPH_BUFFER_LENGTH as u64 {
             let value = 20.0 - 60.0 * step as f32 / TEMP_GRAPH_BUFFER_LENGTH as f32;
-            last = at(step * SAMPLE_INTERVAL_MS / 1_000, value);
+            last = at(step * SAMPLE_INTERVAL.as_millis() / 1_000, value);
             screen.sample(last);
         }
 

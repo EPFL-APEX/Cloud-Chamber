@@ -4,14 +4,6 @@ use embedded_graphics::{
     primitives::Rectangle,
 };
 
-//pub fn draw_icons_on_grid<T: ImageDrawable, D: DrawTarget>(texture:T, icon_size:Size, top_left:Point, col_row:(u32, u32), step_size:(i32, i32), display:D) {
-//    for i in 0..col_row.0 {
-//        for j in 0..col_row.1 {
-//            let icon_texture_top_left = todo!();
-//        }
-//    }
-//}
-
 /// Simplifies access to icons within a horizontally contiguous spritesheet image.
 pub struct Icons<T: ImageDrawable + Copy> {
     texture: T,

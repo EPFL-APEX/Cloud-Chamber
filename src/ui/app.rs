@@ -49,6 +49,7 @@
 
 use embedded_graphics::{draw_target::DrawTarget, geometry::OriginDimensions, pixelcolor::Rgb565};
 
+use crate::cloud_chamber_hal::timer::Duration;
 use crate::config::settings::Settings;
 use crate::drivers::encoder::EncoderEvent;
 use crate::shared::data::{SharedState, SystemTask};
@@ -58,7 +59,7 @@ use super::router::Screens;
 
 /// Délai sans action opérateur avant la veille. Deux minutes, assez pour
 /// lire un écran de réglages sans basculer. À ajuster en service.
-const IDLE_TIMEOUT_MS: u64 = 120_000;
+const IDLE_TIMEOUT: Duration = Duration::from_millis(120_000);
 
 /// Sommet de l'interface : les écrans, plus l'état de la boucle.
 pub struct UiApp {
@@ -119,13 +120,18 @@ impl UiApp {
         }
     }
 
-    /// Bascule en veille au-delà de [`IDLE_TIMEOUT_MS`] sans action
-    /// opérateur. `idle_ms` vient de l'appelant, comme
+    /// Bascule en veille au-delà de [`IDLE_TIMEOUT`] sans action
+    /// opérateur. `idle` vient de l'appelant, comme
     /// `phase_clock::advance`, pour rester testable sur hôte.
-    pub fn poll_idle(&mut self, idle_ms: u64) {
-        if idle_ms >= IDLE_TIMEOUT_MS && self.screens.enter_idle() {
+    pub fn poll_idle(&mut self, idle: Duration) {
+        if idle >= IDLE_TIMEOUT && self.screens.enter_idle() {
             self.needs_redraw = true;
         }
+    }
+
+    /// Transmet l'état d'une sauvegarde en attente à l'écran de réglages.
+    pub fn set_save_pending(&mut self, pending: bool) {
+        self.screens.set_save_pending(pending);
     }
 
     /// Transmet une publication de mesures au graphe de veille.
@@ -205,11 +211,11 @@ mod tests {
         let mut app = UiApp::new();
         app.take_redraw_request();
 
-        app.poll_idle(IDLE_TIMEOUT_MS - 1);
+        app.poll_idle(IDLE_TIMEOUT - Duration::from_millis(1));
         assert_eq!(app.current_screen(), Screen::MainMenu);
         assert!(!app.take_redraw_request());
 
-        app.poll_idle(IDLE_TIMEOUT_MS);
+        app.poll_idle(IDLE_TIMEOUT);
         assert_eq!(app.current_screen(), Screen::Idle);
         assert!(app.take_redraw_request());
     }
@@ -219,11 +225,11 @@ mod tests {
     #[test]
     fn staying_asleep_asks_for_nothing() {
         let mut app = UiApp::new();
-        app.poll_idle(IDLE_TIMEOUT_MS);
+        app.poll_idle(IDLE_TIMEOUT);
         app.take_redraw_request();
 
         for _ in 0..1_000 {
-            app.poll_idle(IDLE_TIMEOUT_MS * 10);
+            app.poll_idle(IDLE_TIMEOUT * 10);
         }
         assert!(!app.take_redraw_request());
     }
@@ -234,7 +240,7 @@ mod tests {
     fn waking_up_restores_the_previous_screen_without_routing() {
         let mut app = UiApp::new();
         app.handle_event(EncoderEvent::RotateClockwise, SystemTask::Idle); // START -> STATS
-        app.poll_idle(IDLE_TIMEOUT_MS);
+        app.poll_idle(IDLE_TIMEOUT);
         assert_eq!(app.current_screen(), Screen::Idle);
 
         app.handle_event(EncoderEvent::RotateClockwise, SystemTask::Idle);
@@ -248,7 +254,7 @@ mod tests {
     fn the_idle_screen_draws() {
         let mut d = make_display();
         let mut app = UiApp::new();
-        app.poll_idle(IDLE_TIMEOUT_MS);
+        app.poll_idle(IDLE_TIMEOUT);
         app.draw(&mut d, &state_with(SystemTask::Stabilising)).unwrap();
     }
 
@@ -580,12 +586,6 @@ mod tests {
     #[cfg(feature = "live-menu-test")]
     #[test]
     fn ui_live() {
-        use embedded_graphics::{
-            mono_font::{MonoTextStyle, ascii::FONT_6X13},
-            text::Text,
-            Drawable,
-        };
-        use embedded_graphics::geometry::Point;
         use embedded_graphics_simulator::{
             OutputSettingsBuilder, SimulatorEvent, Window, sdl2::Keycode,
         };
@@ -594,29 +594,7 @@ mod tests {
         let mut app = UiApp::new();
         let mut state = state_with(SystemTask::Idle);
 
-        // Écrans encore en `todo!()` dans `Screens::draw` : les dessiner
-        // ferait paniquer la fenêtre en pleine démonstration. On affiche un
-        // texte à la place — à supprimer au fur et à mesure qu'ils sont
-        // implémentés.
-        let draw = |display: &mut SimulatorDisplay<Rgb565>,
-                    app: &UiApp,
-                    state: &SharedState| {
-            match app.current_screen() {
-                Screen::ManualControl | Screen::Data | Screen::Info => {
-                    display.clear(crate::ui::theme::BACKGROUND_COLOR).unwrap();
-                    Text::new(
-                        "Ecran pas encore implemente - clic pour revenir",
-                        Point::new(10, 120),
-                        MonoTextStyle::new(&FONT_6X13, crate::ui::theme::DIM_COLOR),
-                    )
-                    .draw(display)
-                    .unwrap();
-                }
-                _ => app.draw(display, state).unwrap(),
-            }
-        };
-
-        draw(&mut display, &app, &state);
+        app.draw(&mut display, &state).unwrap();
 
         let output_settings = OutputSettingsBuilder::new().scale(2).build();
         let mut window = Window::new("Cloud Chamber - UI (live)", &output_settings);
@@ -640,7 +618,7 @@ mod tests {
 
                 apply_live_action(&mut app, &mut state, action);
                 std::println!("{action:?} -> ecran {:?}, etat {:?}", app.current_screen(), state.task);
-                draw(&mut display, &app, &state);
+                app.draw(&mut display, &state).unwrap();
             }
         }
     }

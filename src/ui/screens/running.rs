@@ -140,7 +140,7 @@ impl<'a> RunningScreen<'a> {
         {
             let mut s: String<24> = String::new();
             let (text, color) = match self.state.snapshot.temps[CHAMBER_TEMP_IDX] {
-                Some(m) if !m.value.0.is_nan() => {
+                Some(m) if !m.value.is_nan() => {
                     let _ = write!(s, "Chambre: {:+6.1} C", m.value.0);
                     (s.as_str(), theme::TEXT_COLOR)
                 }
@@ -155,10 +155,19 @@ impl<'a> RunningScreen<'a> {
             .draw(display)?;
         }
 
+        // Pendant un déclenchement, ce clic vaut acquittement (cf.
+        // `ui::router::Screens::take_task_request`) : l'opérateur doit le
+        // savoir avant d'appuyer, pas après.
+        let (hint, hint_color) = match task {
+            SystemTask::Tripped(_) => {
+                ("Clic: acquitter et retour au menu", theme::DANGER_COLOR)
+            }
+            _ => ("Clic: retour au menu", theme::DIM_COLOR),
+        };
         Text::with_text_style(
-            "Clic: retour au menu",
+            hint,
             Point::new(10, 216),
-            MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
+            MonoTextStyle::new(&FONT_6X10, hint_color),
             top_style,
         )
         .draw(display)?;

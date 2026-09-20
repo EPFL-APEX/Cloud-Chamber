@@ -11,6 +11,13 @@
 
 #![cfg_attr(not(test), no_std)]
 
+/// Mise en route de la carte (horloges, timer, GPIO) et configuration des
+/// broches, partagées par `main.rs` et les binaires de bring-up. RP2040
+/// uniquement : `rp2040-hal` n'est une dépendance que pour cette cible (cf.
+/// Cargo.toml), et le module ne compile donc que là.
+#[cfg(all(rp2040, target_arch = "arm"))]
+pub mod board;
+
 pub mod cloud_chamber_hal;
 pub mod config;
 pub mod drivers;

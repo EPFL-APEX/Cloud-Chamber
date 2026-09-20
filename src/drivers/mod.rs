@@ -49,18 +49,29 @@ pub mod compressor;
 /// de `compressor`, sens de régulation inversé.
 pub mod heater;
 
-/// Driver pompe : sortie GPIO tout-ou-rien (marche/arrêt).
+/// Relais GPIO tout-ou-rien, spécialisé par un marqueur de rôle — corps
+/// commun à `pump`, `lights` et `window_heater`.
+pub mod relay;
+
+/// Driver pompe : relais GPIO tout-ou-rien (marche/arrêt).
 pub mod pump;
 
-/// Driver éclairage : sortie GPIO tout-ou-rien (marche/arrêt).
+/// Driver éclairage : relais GPIO tout-ou-rien (marche/arrêt).
 pub mod lights;
 
-/// Driver chauffage de la vitre supérieure : sortie GPIO tout-ou-rien (marche/arrêt).
+/// Driver chauffage de la vitre supérieure : relais GPIO tout-ou-rien
+/// (marche/arrêt).
 pub mod window_heater;
 
 /// Stockage persistant des réglages (`config::settings::Settings`) dans la
 /// flash interne, sans système de fichiers.
 pub mod flash_store;
+
+/// Implémentation de `flash_store::FlashOps` sur la flash QSPI du RP2040,
+/// avec mise en attente du second cœur. RP2040 uniquement : la séquence
+/// dépend des routines ROM de cette puce.
+#[cfg(all(rp2040, target_arch = "arm"))]
+pub mod flash_rp2040;
 
 /// Capteurs mock (température/pression/tension) pour les tests — pas de
 /// matériel, valeurs configurables. Compilé uniquement sous `cargo test`.

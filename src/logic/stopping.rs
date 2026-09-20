@@ -57,10 +57,11 @@ fn cut_high_voltage(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan)
     // Délai de décharge géré par l'appelant (STOP_HV_SETTLE) ; HT coupée
     // dès l'entrée en phase. Froid encore actif (l'IPA continue de
     // circuler pendant la décharge) ; chauffage IPA coupé.
-    (SystemTask::Stopping(StoppingPhase::CutHighVoltage), ActuatorPlan {
-        cooling: Some(settings::get().saturation_target), iso_heater: None, high_voltage: false,
-        iso_pump: true, lights: None, glass_heater: true,
-    })
+    let plan = ActuatorPlan::all_off()
+        .with_cooling(settings::get().saturation_target)
+        .with_iso_pump()
+        .with_glass_heater();
+    (SystemTask::Stopping(StoppingPhase::CutHighVoltage), plan)
 }
 
 fn cut_isoprop(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
@@ -78,18 +79,12 @@ fn cut_isoprop(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
 fn cut_compressor(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
     // Délai de settle géré par l'appelant (STOP_COMPRESSOR_SETTLE) ;
     // compresseur coupé dès l'entrée en phase.
-    (SystemTask::Stopping(StoppingPhase::CutCompressor), ActuatorPlan {
-        cooling: None, iso_heater: None, high_voltage: false,
-        iso_pump: false, lights: None, glass_heater: false,
-    })
+    (SystemTask::Stopping(StoppingPhase::CutCompressor), ActuatorPlan::all_off())
 }
 
 fn wait_pressure_equilibrium(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
     // Purement temporisé (pas de capteur dédié sur le circuit réfrigérant) —
     // avancement vers Idle décidé par l'appelant (cf. `timed_transition`
     // dans `phase_clock.rs`, même mécanisme que `StartingIpaCirculation`).
-    (SystemTask::Stopping(StoppingPhase::WaitPressureEquilibrium), ActuatorPlan {
-        cooling: None, iso_heater: None, high_voltage: false,
-        iso_pump: false, lights: None, glass_heater: false,
-    })
+    (SystemTask::Stopping(StoppingPhase::WaitPressureEquilibrium), ActuatorPlan::all_off())
 }

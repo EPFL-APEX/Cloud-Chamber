@@ -19,10 +19,19 @@ use super::probing::{MeasurementHistory, ProbingPlan};
 /// Cette boucle possède le cœur sur lequel elle tourne et n'en rend jamais
 /// la main. Sur la carte réelle elle occupe le cœur 1, l'UI gardant le
 /// cœur 0 (cf. `src/main.rs`).
-pub fn run<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Clk>(
+///
+/// `yield_core` est appelé une fois par tour, entre deux `tick()`. C'est le
+/// seul point où un autre cœur peut demander à celui-ci de s'arrêter — sur
+/// la carte réelle, le temps d'une écriture flash, qui rend tout le code en
+/// flash illisible pour les deux cœurs (cf.
+/// `drivers::flash_rp2040::park_if_requested`). Le type reste une fermeture
+/// quelconque : `logic/` n'a pas à savoir qu'il existe une flash, et les
+/// tests passent une fermeture vide.
+pub fn run<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Clk, Y>(
     mut sensors: Sensors<Ts, Ps>,
     mut actuators: Actuators<Hv, Cool, Iso, Pump, Lights, Glass>,
     clock: Clk,
+    mut yield_core: Y,
 ) -> !
 where
     Ts: DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
@@ -34,6 +43,7 @@ where
     Lights: BinaryActuator,
     Glass: BinaryActuator,
     Clk: MonotonicTimer,
+    Y: FnMut(),
 {
     // Initial values, mais est-ce qu'on veut vraiment ça ?
     let latest_measurement = sensors.probe_all();
@@ -72,6 +82,11 @@ where
 
     // Control loop
     loop {
+        // Avant le tour, pas après : `tick()` peut bloquer plusieurs
+        // centaines de millisecondes sur une conversion DS18B20, et c'est
+        // le cœur 0 qui attend derrière.
+        yield_core();
+
         probing_plan = tick(
             &mut sensors, &mut actuators, &mut phase, &mut safety,
             &mut measurement_history, probing_plan,
@@ -116,6 +131,24 @@ where
     // cycle...) ne peut être écrasée par une valeur restée en retard.
     phase.set(read_task());
     let synced_task = phase.current();
+
+    // Acquittement opérateur. `SafetyMonitor` vit ici, sur le cœur 1, avec
+    // son verrouillage interne : l'UI a beau écrire `Idle`, `check()`
+    // republierait `Tripped` dans le même tour tant que personne ne l'a
+    // réarmé. Une demande d'`Idle` arrivée pendant un déclenchement ne peut
+    // venir que de l'opérateur — le contrôleur, lui, publie `Tripped` à
+    // chaque tour — donc elle vaut acquittement.
+    //
+    // Réarmer ne masque rien : `check()` juste en dessous recompte
+    // `TRIP_CYCLES` et redéclenche si la cause est toujours là. C'est
+    // voulu — l'alarme qui revient d'elle-même est l'information utile.
+    //
+    // Pas de `defmt::warn!` ici : `logic/` ne dépend pas de defmt, pour
+    // rester compilable et testable sur hôte. Le journal de l'acquittement,
+    // s'il en faut un, est du ressort de `main.rs`.
+    if synced_task == SystemTask::Idle && safety.is_tripped() {
+        safety.reset(phase.now());
+    }
 
     // Sécurité en priorité absolue sur la logique de phase — décision
     // explicite ici (orchestration), pas cachée dans une méthode.
@@ -212,10 +245,7 @@ impl SystemTask {
             // politique par phase définie pour l'instant.
             Idle => (
                 SystemTask::Idle,
-                ActuatorPlan {
-                    cooling: None, iso_heater: None, high_voltage: false,
-                    iso_pump: false, lights: None, glass_heater: false,
-                },
+                ActuatorPlan::all_off(),
             ),
             Cooling(phase) => phase.react_to(history),
             // Régime permanent après la séquence de refroidissement : les
@@ -229,12 +259,10 @@ impl SystemTask {
                 let settings = settings::get();
                 (
                     SystemTask::Stabilising,
-                    ActuatorPlan {
-                        cooling: Some(settings.saturation_target),
-                        iso_heater: Some(settings.ipa_heater_target),
-                        high_voltage: true,
-                        iso_pump: false, lights: None, glass_heater: false,
-                    },
+                    ActuatorPlan::all_off()
+                        .with_cooling(settings.saturation_target)
+                        .with_iso_heater(settings.ipa_heater_target)
+                        .with_high_voltage(),
                 )
             }
             Stopping(phase) => phase.react_to(history),
@@ -243,10 +271,7 @@ impl SystemTask {
             // depuis `control_loop.rs::run()` en priorité absolue).
             Tripped(cause) => (
                 SystemTask::Tripped(cause),
-                ActuatorPlan {
-                    cooling: None, iso_heater: None, high_voltage: false,
-                    iso_pump: false, lights: None, glass_heater: false,
-                },
+                ActuatorPlan::all_off(),
             ),
         }
     }
@@ -271,8 +296,10 @@ where
 
         set_binary(&mut self.high_voltage, plan.high_voltage);
         set_binary(&mut self.iso_pump, plan.iso_pump);
-        if plan.lights.is_some() {
-            set_binary(&mut self.lights, plan.lights.unwrap());
+        // `None` = la phase n'a pas d'avis sur l'éclairage : on ne touche
+        // pas à ce que l'opérateur a réglé.
+        if let Some(on) = plan.lights {
+            set_binary(&mut self.lights, on);
         }
         set_binary(&mut self.glass_heater, plan.glass_heater);
     }
@@ -384,6 +411,15 @@ mod tests {
             // (sécurité) l'écrasent explicitement via `set_compressor_temp`.
             sensors.temperature_source.set(
                 COMPRESSOR_OUT_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
+            );
+            // Même raison pour la sonde du thermostat IPA : depuis que
+            // `SensorCheck` vérifie tous les capteurs dont dépend la
+            // logique (cf. `cooling::required_to_start`), un harnais qui ne
+            // la fournirait pas resterait bloqué au démarrage. Le défaut
+            // représente une machine dont les capteurs sont vivants ; les
+            // tests qui veulent en perdre un l'écrasent explicitement.
+            sensors.temperature_source.set(
+                ISO_TEMP_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
             );
 
             let actuators = Actuators {
@@ -752,10 +788,11 @@ mod tests {
             h.tick_after(Duration::from_millis(1_000));
             assert_eq!(h.phase.current(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
 
-            // La condition redevient normale, mais reste Tripped : pas de
-            // réarmement automatique (`SafetyMonitor::reset` n'est jamais
-            // appelé depuis `control_loop.rs` aujourd'hui — gap documenté,
-            // pas caché).
+            // La condition redevient normale, mais reste Tripped : il n'y
+            // a pas de réarmement automatique. Seul un acquittement
+            // opérateur sort de cet état (cf. les deux tests suivants) —
+            // une chambre qui repartirait toute seule après une surchauffe
+            // compresseur serait exactement ce qu'on ne veut pas.
             h.set_compressor_temp(Celsius(20.0));
             for _ in 0..10 {
                 h.tick_after(Duration::from_millis(1_000));
@@ -764,8 +801,47 @@ mod tests {
         });
     }
 
+    /// L'acquittement opérateur : l'UI écrit `Idle` dans `SHARED_STATE`
+    /// pendant un déclenchement, `tick()` en déduit le réarmement.
+    ///
+    /// C'est le seul chemin qui sort de `Tripped`. Avant qu'il existe,
+    /// cette même écriture ne suffisait pas : `SafetyMonitor` vit sur le
+    /// cœur 1 avec son verrouillage interne et republiait `Tripped` dans
+    /// le tour même.
     #[test]
-    fn safety_trip_reasserts_itself_over_an_external_idle_request() {
+    fn an_operator_acknowledgement_rearms_the_safety() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(Instant::from_millis(1));
+            let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::HighVoltage));
+            h.set_compressor_temp(Celsius(150.0));
+            h.tick_after(Duration::from_millis(1_000));
+            h.tick_after(Duration::from_millis(1_000));
+            h.tick_after(Duration::from_millis(1_000));
+            assert_eq!(h.phase.current(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
+            assert!(h.safety.is_tripped());
+
+            // La cause a disparu, puis l'opérateur acquitte.
+            h.set_compressor_temp(Celsius(20.0));
+            h.write_shared_task(SystemTask::Idle);
+            h.tick_after(Duration::from_millis(1_000));
+
+            assert!(!h.safety.is_tripped(), "le moniteur doit etre rearme");
+            assert_eq!(h.phase.current(), SystemTask::Idle);
+            assert_eq!(h.shared_task(), SystemTask::Idle);
+
+            // Et la machine y reste : rien ne redéclenche tout seul.
+            for _ in 0..10 {
+                h.tick_after(Duration::from_millis(1_000));
+            }
+            assert_eq!(h.phase.current(), SystemTask::Idle);
+        });
+    }
+
+    /// Acquitter ne masque rien. Si la cause est toujours là, `check()`
+    /// recompte `TRIP_CYCLES` et redéclenche — l'alarme qui revient d'elle-
+    /// même est précisément l'information que l'opérateur doit voir.
+    #[test]
+    fn acknowledging_an_active_cause_trips_again() {
         with_isolated_shared_state(|| {
             let clock = MockClock::new(Instant::from_millis(1));
             let mut h = Harness::starting_at(&clock, SystemTask::Cooling(CoolingPhase::HighVoltage));
@@ -775,17 +851,19 @@ mod tests {
             h.tick_after(Duration::from_millis(1_000));
             assert_eq!(h.phase.current(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
 
-            // Acquittement UI simulé : écrit Idle directement dans SHARED_STATE.
+            // Acquittement sans avoir rien réparé : le compresseur est
+            // toujours à 150 °C.
             h.write_shared_task(SystemTask::Idle);
             h.tick_after(Duration::from_millis(1_000));
+            assert!(!h.safety.is_tripped(), "le tour de l'acquittement sort bien de Tripped");
+            assert_eq!(h.phase.current(), SystemTask::Idle);
 
-            // `tick()` adopte brièvement Idle en tout début de tour, mais
-            // `SafetyMonitor` (état interne, indépendant de `phase`/
-            // SHARED_STATE) republie Tripped le même tour : sans `reset()`
-            // câblé, l'acquittement UI seul ne suffit pas à sortir de
-            // Tripped — même gap que ci-dessus, vu ici depuis SHARED_STATE.
+            // TRIP_CYCLES tours consécutifs en alarme, et ça redéclenche.
+            h.tick_after(Duration::from_millis(1_000));
+            h.tick_after(Duration::from_millis(1_000));
+            h.tick_after(Duration::from_millis(1_000));
             assert_eq!(h.phase.current(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
-            assert_eq!(h.shared_task(), SystemTask::Tripped(SafetyCause::CompressorOverheat));
+            assert!(!h.actuators.high_voltage.is_on);
         });
     }
 
