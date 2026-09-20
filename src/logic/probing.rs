@@ -2,7 +2,8 @@ use crate::cloud_chamber_hal::sensors::{BatchSensor, DeferredBatchSensor, Sensor
 use crate::cloud_chamber_hal::measurement::Measurement;
 use crate::cloud_chamber_hal::units::{Celsius, HectoPascal};
 use crate::cloud_chamber_hal::config::{
-    CHAMBER_TEMP_IDX, NUMBER_OF_TEMP_SENSOR, NUMBER_OF_PRESSURE_SENSOR,
+    CHAMBER_PRESSURE_IDX, CHAMBER_TEMP_IDX, COMPRESSOR_OUT_IDX, ControlSensor, ISO_TEMP_IDX,
+    NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR,
 };
 use crate::logic::timing::CONTROL_LOOP_HISTORY_SIZE;
 use crate::shared::data::{SystemTask, SensorSnapshot};
@@ -71,6 +72,30 @@ impl MeasurementHistory {
     pub fn update(&mut self, latest_measurement: &SensorSnapshot) {
         push_if_newer(&mut self.temps, &latest_measurement.temps);
         push_if_newer(&mut self.press, &latest_measurement.press);
+    }
+
+    /// `true` si le capteur dont dépend `sensor` a fourni au moins une
+    /// lecture exploitable.
+    ///
+    /// Le `match` est exhaustif et sans bras `_` — c'est délibéré :
+    /// ajouter un [`ControlSensor`] ne compile pas tant que la question
+    /// « où lit-on celui-là ? » n'a pas reçu de réponse ici. Cf. la doc de
+    /// l'enum.
+    pub fn has_valid_reading_for(&self, sensor: ControlSensor) -> bool {
+        match sensor {
+            ControlSensor::ChamberTemp => self.has_valid_reading(CHAMBER_TEMP_IDX),
+            ControlSensor::CompressorOut => self.has_valid_reading(COMPRESSOR_OUT_IDX),
+            ControlSensor::IsoTemp => self.has_valid_reading(ISO_TEMP_IDX),
+            ControlSensor::ChamberPressure => self.has_valid_pressure(CHAMBER_PRESSURE_IDX),
+        }
+    }
+
+    /// Pendant de [`MeasurementHistory::has_valid_reading`] côté pression.
+    pub fn has_valid_pressure(&self, idx: usize) -> bool {
+        if idx >= NUMBER_OF_PRESSURE_SENSOR {
+            return false;
+        }
+        self.press[idx].get(0).is_ok_and(|m| !m.value.is_nan())
     }
 
     /// `true` si `idx` a fourni au moins une lecture exploitable.

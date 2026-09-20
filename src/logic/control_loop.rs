@@ -412,6 +412,15 @@ mod tests {
             sensors.temperature_source.set(
                 COMPRESSOR_OUT_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
             );
+            // Même raison pour la sonde du thermostat IPA : depuis que
+            // `SensorCheck` vérifie tous les capteurs dont dépend la
+            // logique (cf. `cooling::required_to_start`), un harnais qui ne
+            // la fournirait pas resterait bloqué au démarrage. Le défaut
+            // représente une machine dont les capteurs sont vivants ; les
+            // tests qui veulent en perdre un l'écrasent explicitement.
+            sensors.temperature_source.set(
+                ISO_TEMP_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
+            );
 
             let actuators = Actuators {
                 high_voltage: MockActuator::new(),

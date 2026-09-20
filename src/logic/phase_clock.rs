@@ -186,7 +186,7 @@ impl<Clk: MonotonicTimer> PhaseClock<Clk> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
+    use crate::cloud_chamber_hal::config::{CHAMBER_TEMP_IDX, COMPRESSOR_OUT_IDX, ISO_TEMP_IDX};
     use crate::cloud_chamber_hal::measurement::Measurement;
     use crate::cloud_chamber_hal::units::Celsius;
     use crate::config::operating::{IPA_HEATER_TARGET_C, SATURATION_TARGET_C};
@@ -221,9 +221,16 @@ mod tests {
     // ─── advance() ──────────────────────────────────────────────────────────
     // Fonction pure : pas de PhaseClock/horloge à construire pour la tester.
 
+    /// Un historique où tous les capteurs exigés au démarrage
+    /// (`cooling::required_to_start`) sont valides, la base chambre étant à
+    /// `value_c`. Sans les autres, `SensorCheck` ne laisserait plus avancer
+    /// — ce qui n'est pas ce que ces tests-là cherchent à exercer.
     fn history_with_chamber_temp(value_c: f32) -> MeasurementHistory {
         let mut h = MeasurementHistory::new();
-        h.temps[CHAMBER_TEMP_IDX].push(Measurement::new(Instant::from_micros(0), Celsius(value_c)));
+        let t0 = Instant::from_micros(1);
+        h.temps[CHAMBER_TEMP_IDX].push(Measurement::new(t0, Celsius(value_c)));
+        h.temps[COMPRESSOR_OUT_IDX].push(Measurement::new(t0, Celsius(20.0)));
+        h.temps[ISO_TEMP_IDX].push(Measurement::new(t0, Celsius(20.0)));
         h
     }
 
