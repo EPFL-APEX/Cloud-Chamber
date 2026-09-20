@@ -118,15 +118,13 @@ use cloud_chamber_firmware::drivers::pump::Pump;
 use cloud_chamber_firmware::drivers::window_heater::WindowHeater;
 use cloud_chamber_firmware::logic::control_loop;
 use cloud_chamber_firmware::shared::data::{SHARED_STATE, SharedState, SystemTask};
+use cloud_chamber_firmware::ui::event_queue::EventQueue;
 use cloud_chamber_firmware::ui::app::UiApp;
 use cloud_chamber_firmware::ui::navigator::Screen;
 
 /// Vitesse du bus SPI de l'écran — cf. `bin/ui_test.rs` pour le
 /// raisonnement sur cette valeur et le symptôme d'un réglage trop haut.
 const SCREEN_SPI_HZ: u32 = 32_000_000;
-
-/// Profondeur de la file d'événements encodeur — cf. [`EventQueue`].
-const EVENT_QUEUE_LEN: usize = 32;
 
 /// Taille de la pile du cœur 1, en mots de 32 bits (soit 8 Ko).
 ///
@@ -156,65 +154,14 @@ static ALARM: Mutex<RefCell<Option<Alarm0>>> = Mutex::new(RefCell::new(None));
 /// L'interruption ne fait qu'empiler ici ; c'est la boucle qui les applique
 /// à `UiApp`. Ce découplage est ce qui permet à `UiApp` de n'être partagé
 /// avec personne (donc de se dessiner hors section critique) tout en
-/// gardant une scrutation à 1 ms qui ne rate jamais un cran.
+/// gardant une scrutation à 1 ms qui ne rate jamais un cran. Cf.
+/// [`ui::event_queue`](cloud_chamber_firmware::ui::event_queue) — `ui_test`
+/// s'appuie sur la même file.
 static EVENTS: Mutex<RefCell<EventQueue>> = Mutex::new(RefCell::new(EventQueue::new()));
 
 /// Pile du cœur 1. Vit en `.bss`, donc prise sur la RAM restante — la pile
 /// du cœur 0 garde tout le bas de la RAM, où loge le framebuffer de 150 Ko.
 static CORE1_STACK: Stack<CORE1_STACK_WORDS> = Stack::new();
-
-/// File circulaire d'événements encodeur, à taille fixe.
-///
-/// 32 places : à 1 ms de scrutation et un rendu de quelques dizaines de ms,
-/// une rotation même rapide en produit une poignée entre deux passages de
-/// la boucle. Le débordement est compté et journalisé plutôt que silencieux
-/// — perdre un cran doit se voir.
-struct EventQueue {
-    buffer: [EncoderEvent; EVENT_QUEUE_LEN],
-    head: usize,
-    len: usize,
-    dropped: u32,
-}
-
-impl EventQueue {
-    const fn new() -> Self {
-        Self {
-            buffer: [EncoderEvent::None; EVENT_QUEUE_LEN],
-            head: 0,
-            len: 0,
-            dropped: 0,
-        }
-    }
-
-    /// Empile un événement. Sur file pleine, le nouvel événement est
-    /// abandonné (plutôt que d'écraser le plus ancien) : réordonner les
-    /// entrées serait pire que d'en perdre une, un clic ne doit jamais
-    /// doubler une rotation qui l'a précédé.
-    fn push(&mut self, event: EncoderEvent) {
-        if self.len == EVENT_QUEUE_LEN {
-            self.dropped = self.dropped.saturating_add(1);
-            return;
-        }
-        let tail = (self.head + self.len) % EVENT_QUEUE_LEN;
-        self.buffer[tail] = event;
-        self.len += 1;
-    }
-
-    fn pop(&mut self) -> Option<EncoderEvent> {
-        if self.len == 0 {
-            return None;
-        }
-        let event = self.buffer[self.head];
-        self.head = (self.head + 1) % EVENT_QUEUE_LEN;
-        self.len -= 1;
-        Some(event)
-    }
-
-    /// Relève le compteur de débordements et le remet à zéro.
-    fn take_dropped(&mut self) -> u32 {
-        core::mem::take(&mut self.dropped)
-    }
-}
 
 /// Scrutation de l'encodeur, toutes les 1 ms sur le cœur 0. Ne fait
 /// qu'empiler : aucune section critique longue, donc aucun risque de faire

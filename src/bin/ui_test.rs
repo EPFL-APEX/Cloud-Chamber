@@ -30,21 +30,31 @@
 //!
 //! ## Rotation perdue pendant un dessin
 //!
-//! `FramebufferedDisplay::render` bloque quand même le cœur pendant le
-//! transfert SPI de chaque bande. Avec un `encoder.poll()` appelé depuis la
-//! boucle principale (comme dans les versions précédentes de ce bin), toute
-//! rotation survenant *pendant* ce blocage n'est jamais lue — pas juste
-//! retardée, perdue : deux rotations rapprochées ne comptaient que pour une.
+//! `FramebufferedDisplay::render` bloque le cœur pendant le dessin de
+//! chaque bande puis son transfert SPI. Avec un `encoder.poll()` appelé
+//! depuis la boucle principale, toute rotation survenant *pendant* ce
+//! blocage n'était jamais lue — pas retardée, perdue : deux rotations
+//! rapprochées ne comptaient que pour une.
 //!
-//! Fix : `RotaryEncoder::poll()` tourne maintenant depuis une interruption
-//! matérielle périodique (`TIMER_IRQ_0`, alarme 0 du périphérique `TIMER`,
-//! réarmée toutes les 1 ms), indépendante de ce que fait la boucle
-//! principale. Une routine d'interruption reste préemptive même pendant un
-//! blocage SPI classique (celui-ci n'attend pas dans une section critique,
-//! seul du code protégé par `critical_section::with` — bref, autour des
-//! accès aux statics partagés ci-dessous — désactive les interruptions).
-//! La boucle principale ne fait plus que lire un drapeau "quelque chose a
-//! changé", router l'événement déjà appliqué à `Screens`, et redessiner.
+//! Premier correctif : `RotaryEncoder::poll()` depuis une interruption
+//! périodique (`TIMER_IRQ_0`, alarme 0 du `TIMER`, réarmée toutes les
+//! 1 ms), préemptive même pendant un blocage SPI.
+//!
+//! **Mais l'interruption seule ne suffisait pas.** En faisant appliquer la
+//! navigation par l'ISR, `UiApp` devenait un static partagé, donc le dessin
+//! se faisait `critical_section::with` pris — et une section critique
+//! masque justement `TIMER_IRQ_0`. Le dessin des bandes dans le
+//! framebuffer, la partie la plus coûteuse en calcul, se déroulait
+//! interruptions coupées : l'encodeur n'y était pas scruté, et le bug
+//! d'origine revenait par l'autre bout.
+//!
+//! Correctif complet, repris de `main.rs` : l'ISR ne fait **qu'empiler**
+//! dans une [`EventQueue`](cloud_chamber_firmware::ui::event_queue) —
+//! quelques instructions, section critique de longueur bornée. `UiApp`
+//! appartient à la boucle principale et n'est partagé avec personne, donc
+//! le dessin se fait sans aucun verrou : l'encodeur reste scruté à 1 ms
+//! d'un bout à l'autre du rendu. Voir la documentation de ce module pour le
+//! raisonnement complet.
 //!
 //! # Écrans pas encore construits
 //!
@@ -103,9 +113,10 @@ use cloud_chamber_firmware::config::wiring::{
     PIN_SCREEN_RESET, PIN_SCREEN_SCK,
 };
 use cloud_chamber_firmware::drivers::display::{self, FramebufferedDisplay};
-use cloud_chamber_firmware::drivers::encoder::RotaryEncoder;
-use cloud_chamber_firmware::shared::data::SHARED_STATE;
+use cloud_chamber_firmware::drivers::encoder::{EncoderEvent, RotaryEncoder};
+use cloud_chamber_firmware::shared::data::{SHARED_STATE, SharedState};
 use cloud_chamber_firmware::ui::app::UiApp;
+use cloud_chamber_firmware::ui::event_queue::EventQueue;
 
 // ─── État partagé avec l'interruption TIMER_IRQ_0 ──────────────────────────
 
@@ -117,17 +128,20 @@ type Encoder = RotaryEncoder<EncPin, EncPin, EncPin>;
 /// `main()`'s setup, l'interruption n'étant démasquée qu'après).
 static ENCODER: Mutex<RefCell<Option<Encoder>>> = Mutex::new(RefCell::new(None));
 static ALARM: Mutex<RefCell<Option<Alarm0>>> = Mutex::new(RefCell::new(None));
-/// Toute l'UI — écrans, pile de navigation, drapeau de redessin — dans un
-/// seul static : mutée par l'ISR (événements encodeur), lue par la boucle
-/// principale (dessin). Un seul `UiApp` partagé plutôt que des compteurs
-/// d'événements en attente : aucune raison de rejouer les événements côté
-/// boucle principale, l'ISR peut appliquer la navigation directement.
-static UI: Mutex<RefCell<Option<UiApp>>> = Mutex::new(RefCell::new(None));
+/// Événements encodeur en attente, entre l'ISR qui les produit et la boucle
+/// qui les applique.
+///
+/// C'est **le** point de la correction de performance : `UiApp` n'est pas
+/// ici, il appartient à `main()`. L'ISR n'a donc rien à emprunter de long,
+/// et la boucle peut dessiner sans section critique. Cf. la doc de module
+/// et celle de [`EventQueue`](cloud_chamber_firmware::ui::event_queue).
+static EVENTS: Mutex<RefCell<EventQueue>> = Mutex::new(RefCell::new(EventQueue::new()));
 
 /// Routine d'interruption : appelée toutes les 1 ms par l'alarme 0 du
 /// `TIMER`, indépendamment de ce que fait `main()` (y compris pendant un
-/// blocage SPI). Fait le travail minimal — poller l'encodeur, lui faire
-/// router l'événement, réarmer l'alarme — puis rend la main.
+/// rendu). Poller l'encodeur, empiler, réarmer l'alarme — et rien d'autre :
+/// tout ce qui prendrait du temps ici allongerait une section critique, ce
+/// qui reviendrait à se masquer soi-même au tour suivant.
 #[interrupt]
 fn TIMER_IRQ_0() {
     critical_section::with(|cs| {
@@ -141,22 +155,10 @@ fn TIMER_IRQ_0() {
             None => return,
         };
 
-        let mut ui_ref = UI.borrow(cs).borrow_mut();
-        let Some(app) = ui_ref.as_mut() else { return };
-
-        // L'état courant est relu d'abord : `UiApp` s'en sert pour refuser
-        // un démarrage si la machine tourne déjà. L'emprunt partagé se
-        // termine avec l'instruction, avant l'emprunt mutable plus bas.
-        let current = SHARED_STATE.borrow_ref(cs).task;
-
-        // Un clic peut demander un changement d'état (premier item du menu :
-        // démarrage d'un cycle). L'UI ne fait que le demander — c'est ici
-        // qu'on l'applique, en réutilisant le jeton `cs` déjà pris ci-dessus
-        // (pas de section critique imbriquée).
-        // `logic::control_loop::tick()` adopte l'écriture au tour suivant.
-        if let Some(task) = app.handle_event(event, current) {
-            SHARED_STATE.borrow_ref_mut(cs).task = task;
-            defmt::info!("demande operateur : nouvel etat systeme");
+        // `None` est de très loin le cas le plus fréquent (1000 scrutations
+        // par seconde) : ne rien empiler évite de saturer la file pour rien.
+        if event != EncoderEvent::None {
+            EVENTS.borrow(cs).borrow_mut().push(event);
         }
     });
 }
@@ -233,10 +235,12 @@ fn main() -> ! {
     critical_section::with(|cs| {
         ENCODER.borrow(cs).replace(Some(encoder));
         ALARM.borrow(cs).replace(Some(alarm));
-        UI.borrow(cs).replace(Some(UiApp::new()));
     });
 
-    // Sûr : ENCODER/ALARM/UI sont déposés juste au-dessus, avant que
+    // L'UI appartient à cette fonction — c'est tout l'objet du découplage.
+    let mut app = UiApp::new();
+
+    // Sûr : ENCODER/ALARM sont déposés juste au-dessus, avant que
     // l'interruption ne puisse jamais se déclencher.
     unsafe {
         pac::NVIC::unmask(pac::Interrupt::TIMER_IRQ_0);
@@ -244,51 +248,56 @@ fn main() -> ! {
 
     defmt::info!("ui_test demarre — premier rendu (MainMenu)");
 
-    // `UiApp`/`SHARED_STATE` sont partagés avec l'ISR : empruntés depuis la
-    // fermeture passée à `render`, rappelée une fois par bande. Le dessin
-    // se fait dans le framebuffer RAM, interruptions coupées ; le transfert
-    // SPI, lui, a lieu après le retour de cette fermeture, interruptions
-    // rouvertes — c'est ce qui permet à l'encodeur de rester lu pendant le
-    // transfert.
+    // Redessin : aucune section critique. `app` appartient à cette
+    // fonction et `state` est une copie déjà prise — le dessin des bandes
+    // dans le framebuffer **et** leur transfert SPI se font donc
+    // interruptions ouvertes, ce qui laisse `TIMER_IRQ_0` scruter
+    // l'encodeur pendant tout le rendu. C'est la différence entre une UI
+    // qui rate des crans et une qui n'en rate pas.
     //
     // Chronométrage : `Timer` est `Copy` (juste un accès aux registres
     // matériels), capturer une copie dans la fermeture ne pose pas de
     // problème de possession face au `board.timer` utilisé plus haut. Sert à
     // vérifier concrètement l'effet des optimisations (framebuffer,
-    // interruption, vitesse SPI) plutôt que de se fier à une impression —
-    // à retirer si le log devient gênant une fois la performance jugée
-    // suffisante.
-    let redraw = |display: &mut FramebufferedDisplay<_, _>| {
+    // interruption, vitesse SPI) plutôt que de se fier à une impression.
+    let redraw = |display: &mut FramebufferedDisplay<_, _>, app: &UiApp, state: &SharedState| {
         let start = board.timer.get_counter();
-        let _ = display.render(|target| {
-            critical_section::with(|cs| {
-                if let Some(app) = UI.borrow(cs).borrow().as_ref() {
-                    let state = SHARED_STATE.borrow(cs).borrow();
-                    app.draw(target, &state)
-                } else {
-                    Ok(())
-                }
-            })
-        });
+        let _ = display.render(|target| app.draw(target, state));
         let elapsed = board.timer.get_counter() - start;
         defmt::info!("redraw termine en {} ms", elapsed.to_millis());
     };
 
-    redraw(&mut display);
+    let initial_state = critical_section::with(|cs| *SHARED_STATE.borrow_ref(cs));
+    redraw(&mut display, &app, &initial_state);
+    app.take_redraw_request();
 
     loop {
-        // Lecture-et-effacement en un seul appel : un événement arrivé
-        // entre les deux serait perdu si c'était en deux temps.
-        let needs_redraw = critical_section::with(|cs| {
-            UI.borrow(cs)
-                .borrow_mut()
-                .as_mut()
-                .is_some_and(UiApp::take_redraw_request)
-        });
+        // Applique les événements empilés par l'interruption. L'état
+        // courant est relu à chaque tour de boucle : `UiApp` s'en sert pour
+        // refuser un démarrage si la machine tourne déjà.
+        while let Some(event) = critical_section::with(|cs| EVENTS.borrow(cs).borrow_mut().pop()) {
+            let current = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).task);
 
-        if needs_redraw {
-            redraw(&mut display);
+            // Un clic peut demander un changement d'état (premier item du
+            // menu : démarrage d'un cycle). L'UI ne fait que le demander —
+            // c'est ici qu'on l'applique.
+            if let Some(task) = app.handle_event(event, current) {
+                critical_section::with(|cs| SHARED_STATE.borrow_ref_mut(cs).task = task);
+                defmt::info!("demande operateur : nouvel etat systeme");
+            }
+        }
+
+        let dropped = critical_section::with(|cs| EVENTS.borrow(cs).borrow_mut().take_dropped());
+        if dropped > 0 {
+            defmt::warn!("{} evenement(s) encodeur perdus : file pleine", dropped);
+        }
+
+        // Copie de l'état sous verrou court ; le dessin travaille dessus,
+        // hors verrou.
+        let state = critical_section::with(|cs| *SHARED_STATE.borrow_ref(cs));
+
+        if app.take_redraw_request() {
+            redraw(&mut display, &app, &state);
         }
     }
 }
-
