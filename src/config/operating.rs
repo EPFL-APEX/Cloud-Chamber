@@ -30,9 +30,10 @@ pub const STABLE_TOLERANCE_C: Celsius = Celsius::new(1.0);
 /// chauffage IPA). Distincte de `STABLE_TOLERANCE_C` : même valeur de
 /// départ, mais concept différent (l'une valide qu'une phase peut avancer,
 /// l'autre évite l'oscillation rapide d'un relais) — pas de raison qu'elles
-/// restent égales si l'une est recalibrée plus tard. TODO : pas encore
-/// consommée — aucun bring-up ne construit encore les actionneurs régulés
-/// avec cette valeur.
+/// restent égales si l'une est recalibrée plus tard.
+///
+/// Consommée par `main.rs`, qui la passe à `Compressor::new` et
+/// `Heater::new`.
 pub const REGULATION_BAND_C: Celsius = Celsius::new(1.0);
 
 /// TODO CALIBRAGE : cible du thermostat chauffage isopropanol (ds3, cf.

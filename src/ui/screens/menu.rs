@@ -457,13 +457,6 @@ mod tests {
         assert_eq!(menu.click(), Some(NavAction::Push(Screen::Info)));
     }
 
-    //#[test]
-    //fn selected_item_returns_correct_label() {
-    //    let mut menu = MainMenuScreen::new();
-    //    menu.select_next();
-    //    todo!()
-    //}
-
     // Le harnais interactif SDL2 vit maintenant dans `ui::router` : il
     // pilote le routeur complet (menu, réglages, stats, suivi de cycle) au
     // lieu de ce seul écran, et applique réellement la navigation — ici,
