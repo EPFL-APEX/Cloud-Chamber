@@ -128,6 +128,11 @@ impl UiApp {
         }
     }
 
+    /// Transmet l'état d'une sauvegarde en attente à l'écran de réglages.
+    pub fn set_save_pending(&mut self, pending: bool) {
+        self.screens.set_save_pending(pending);
+    }
+
     /// Transmet une publication de mesures au graphe de veille.
     pub fn sample(&mut self, state: &SharedState) {
         self.screens.sample(state);

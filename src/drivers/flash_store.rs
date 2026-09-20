@@ -47,7 +47,7 @@
 //! briquent la carte si elles sont fausses, et elles ne se relisent pas,
 //! elles se testent.
 
-use crate::config::settings::{RECORD_LEN, Settings, SettingsStore, StoreError};
+use crate::config::settings::{RECORD_LEN, SaveCost, Settings, SettingsStore, StoreError};
 
 // Ces deux constantes n'ont pas de source amont à laquelle se rattacher, et
 // ce n'est pas un oubli : elles ne décrivent pas le microcontrôleur mais la
@@ -149,6 +149,15 @@ impl<F: FlashOps> FlashSettingsStore<F> {
 }
 
 impl<F: FlashOps> SettingsStore for FlashSettingsStore<F> {
+    /// Cher exactement quand le secteur est plein — une fois toutes les
+    /// [`SLOTS`] sauvegardes.
+    fn next_save_cost(&self) -> SaveCost {
+        match self.first_blank_slot() {
+            Some(_) => SaveCost::Cheap,
+            None => SaveCost::Expensive,
+        }
+    }
+
     /// Remonte les emplacements du plus récent au plus ancien et renvoie le
     /// premier qui se relit correctement.
     ///

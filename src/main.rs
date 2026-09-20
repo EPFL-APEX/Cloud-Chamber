@@ -89,6 +89,11 @@ use embedded_hal_bus::spi::ExclusiveDevice;
 use ili9341::{DisplaySize240x320, Ili9341, Orientation};
 
 use cloud_chamber_firmware::board;
+use cloud_chamber_firmware::config::settings::{Settings, SettingsStore};
+use cloud_chamber_firmware::drivers::flash_rp2040;
+use cloud_chamber_firmware::drivers::flash_store::{self, FlashSettingsStore};
+use cloud_chamber_firmware::logic::persistence;
+use cloud_chamber_firmware::shared::settings;
 use cloud_chamber_firmware::cloud_chamber_hal::actuators::Actuators;
 use cloud_chamber_firmware::cloud_chamber_hal::sensors::{IndependentSensors, Sensors};
 use cloud_chamber_firmware::config::operating::REGULATION_BAND_C;
@@ -408,20 +413,57 @@ fn main() -> ! {
     // Capteurs et actionneurs sont *déplacés* sur le cœur 1, qui en devient
     // seul propriétaire : aucun partage, donc aucun verrou sur le chemin
     // chaud du contrôle. Tout ce qui traverse est dans `SHARED_STATE`.
-    let mut multicore = Multicore::new(&mut board.psm, &mut board.ppb, &mut board.fifo);
-    let core1 = &mut multicore.cores()[1];
-    let stack = CORE1_STACK
-        .take()
-        .expect("la pile du coeur 1 n'est reclamee qu'ici");
+    // Le bloc libère `board.fifo` : `Multicore` ne l'emprunte que le temps
+    // du lancement, et le cœur 0 en a besoin ensuite pour garer le cœur 1
+    // pendant les écritures flash.
+    {
+        let mut multicore = Multicore::new(&mut board.psm, &mut board.ppb, &mut board.fifo);
+        let core1 = &mut multicore.cores()[1];
+        let stack = CORE1_STACK
+            .take()
+            .expect("la pile du coeur 1 n'est reclamee qu'ici");
 
-    if let Err(e) = core1.spawn(stack, move || {
-        control_loop::run(sensors, actuators, board.timer);
-    }) {
-        defmt::error!("echec lancement coeur 1 : {}", defmt::Debug2Format(&e));
-        panic!("boucle de controle indisponible");
+        if let Err(e) = core1.spawn(stack, move || {
+            // Le point où le cœur 0 peut réclamer les deux cœurs, le temps
+            // d'une écriture flash — cf. `drivers::flash_rp2040`.
+            control_loop::run(sensors, actuators, board.timer, flash_rp2040::park_if_requested);
+        }) {
+            defmt::error!("echec lancement coeur 1 : {}", defmt::Debug2Format(&e));
+            panic!("boucle de controle indisponible");
+        }
     }
 
     defmt::info!("cloud-chamber : coeur 1 lance, UI sur coeur 0");
+
+    // ─── Réglages persistants ─────────────────────────────────────────────
+    //
+    // Après le lancement du cœur 1, parce que le store a besoin de la FIFO.
+    // Sans conséquence : la boucle de contrôle démarre sur `Idle`, toutes
+    // sorties coupées, et relit `shared::settings` à chaque tour — elle
+    // prendra les valeurs relues dès le tour suivant.
+    let settings_offset = flash_rp2040::settings_offset();
+    debug_assert_eq!(
+        flash_rp2040::settings_len() as usize,
+        flash_store::SECTOR_SIZE,
+        "rp2040.x doit reserver exactement un secteur"
+    );
+    defmt::info!("secteur reglages a {:#x}", settings_offset);
+
+    let mut store =
+        FlashSettingsStore::new(flash_rp2040::Rp2040Flash::new(board.fifo), settings_offset);
+    match store.load() {
+        Some(saved) => {
+            settings::set(saved);
+            defmt::info!("reglages relus depuis la flash");
+        }
+        None => defmt::info!("aucun reglage en flash, valeurs par defaut"),
+    }
+
+    // Demande de sauvegarde acceptée mais pas encore écrite : le secteur
+    // est plein et la machine tourne, donc l'effacement attend l'arrêt. Le
+    // réglage lui-même est déjà appliqué (`shared::settings`) — seule sa
+    // survie à une coupure est différée.
+    let mut pending_save: Option<Settings> = None;
 
     // ─── Cœur 0 : la boucle d'interface ───────────────────────────────────
     //
@@ -486,12 +528,31 @@ fn main() -> ! {
 
         app.poll_idle((board.timer.get_counter() - last_activity).to_millis());
 
-        // Faute d'implémentation flash pour le RP2040, une demande de
-        // sauvegarde est consommée et journalisée — sinon elle resterait en
-        // attente indéfiniment. Cf. doc de module.
-        if app.take_save_request().is_some() {
-            defmt::warn!("sauvegarde des reglages demandee mais pas encore implementee");
+        // Une nouvelle demande remplace celle qui attendait : c'est la
+        // dernière valeur voulue par l'opérateur qui compte, pas la
+        // première.
+        if let Some(wanted) = app.take_save_request() {
+            pending_save = Some(wanted);
         }
+
+        if let Some(wanted) = pending_save {
+            let task = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).task);
+            match persistence::decide(store.next_save_cost(), task) {
+                persistence::SaveDecision::Now => {
+                    match store.save(&wanted) {
+                        Ok(()) => defmt::info!("reglages sauvegardes"),
+                        Err(e) => {
+                            defmt::error!("sauvegarde impossible : {}", defmt::Debug2Format(&e))
+                        }
+                    }
+                    // Consommée dans les deux cas : réessayer en boucle
+                    // userait la flash sans rien changer au défaut.
+                    pending_save = None;
+                }
+                persistence::SaveDecision::Defer => {}
+            }
+        }
+        app.set_save_pending(pending_save.is_some());
 
         if app.take_redraw_request() {
             redraw(&mut display, &app, &state, board.timer);

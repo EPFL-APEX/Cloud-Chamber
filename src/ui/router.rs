@@ -186,6 +186,12 @@ impl Screens {
         }
     }
 
+    /// Transmet à l'écran de réglages l'état d'une sauvegarde demandée
+    /// mais pas encore écrite — cf. `SettingsScreen::set_save_pending`.
+    pub fn set_save_pending(&mut self, pending: bool) {
+        self.settings.set_save_pending(pending);
+    }
+
     /// Alimente le graphe de veille, quel que soit l'écran affiché. Sinon
     /// elle s'ouvrirait sur un cadre vide.
     pub fn sample(&mut self, state: &SharedState) {

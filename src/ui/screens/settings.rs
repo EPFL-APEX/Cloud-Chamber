@@ -96,6 +96,10 @@ pub struct SettingsScreen {
     /// Sauvegarde demandée, en attente d'être récupérée par la boucle
     /// principale.
     save_requested: bool,
+    /// Une sauvegarde a été demandée mais pas encore écrite — cf.
+    /// `logic::persistence`. Posé par l'appelant, qui seul sait où en est
+    /// le stockage.
+    save_pending: bool,
 }
 
 impl SettingsScreen {
@@ -110,7 +114,17 @@ impl SettingsScreen {
             working: settings,
             saved: settings,
             save_requested: false,
+            save_pending: false,
         }
+    }
+
+    /// Signale qu'une sauvegarde demandée attend son tour.
+    ///
+    /// Sans ça, l'opérateur ne pourrait pas distinguer « écrit » de
+    /// « en attente » — et couperait l'alimentation en croyant ses réglages
+    /// à l'abri.
+    pub fn set_save_pending(&mut self, pending: bool) {
+        self.save_pending = pending;
     }
 
     /// Récupère une demande de sauvegarde, et la consomme.
@@ -179,7 +193,13 @@ impl SettingsScreen {
         }
         lines[SAVE_ROW] = SettingLine {
             label: "Save to flash",
-            value: if self.is_dirty() { "*" } else { "" },
+            value: match (self.save_pending, self.is_dirty()) {
+                // Demandé, pas encore écrit : la flash attend l'arrêt de la
+                // machine pour pouvoir effacer son secteur.
+                (true, _) => "en attente",
+                (false, true) => "*",
+                (false, false) => "",
+            },
         };
         lines[BACK_ROW] = SettingLine { label: "Back", value: "" };
 

@@ -13,7 +13,17 @@ MEMORY {
      * has, but your board may have more or less Flash and you should adjust
      * this value to suit.
      */
-    FLASH : ORIGIN = 0x10000100, LENGTH = 2048K - 0x100
+    FLASH : ORIGIN = 0x10000100, LENGTH = 2048K - 0x100 - 4K
+    /*
+     * Dernier secteur de la flash, réservé aux réglages persistants
+     * (`drivers::flash_store`). Aucune section n'y atterrit : c'est ce qui
+     * garantit qu'un effacement n'emportera jamais du code, même si le
+     * binaire grossit.
+     *
+     * 4 Ko = un secteur d'effacement W25Q, la plus petite chose effaçable.
+     * Si vous changez le 2048K ci-dessus, changez-le ici aussi.
+     */
+    SETTINGS : ORIGIN = 0x10000000 + 2048K - 4K, LENGTH = 4K
     /*
      * RAM consists of 4 banks, SRAM0-SRAM3, with a striped mapping.
      * This is usually good for performance, as it distributes load on
@@ -39,6 +49,14 @@ MEMORY {
 }
 
 EXTERN(BOOT2_FIRMWARE)
+
+/*
+ * Position du secteur des réglages, comptée depuis le début de la flash —
+ * c'est ce qu'attendent les routines ROM, qui ne connaissent pas la fenêtre
+ * XIP. Lu côté Rust par `drivers::flash_rp2040::settings_offset`.
+ */
+__settings_flash_offset = ORIGIN(SETTINGS) - ORIGIN(BOOT2);
+__settings_flash_len = LENGTH(SETTINGS);
 
 SECTIONS {
     /* ### Boot loader

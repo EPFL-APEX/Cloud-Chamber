@@ -19,10 +19,19 @@ use super::probing::{MeasurementHistory, ProbingPlan};
 /// Cette boucle possède le cœur sur lequel elle tourne et n'en rend jamais
 /// la main. Sur la carte réelle elle occupe le cœur 1, l'UI gardant le
 /// cœur 0 (cf. `src/main.rs`).
-pub fn run<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Clk>(
+///
+/// `yield_core` est appelé une fois par tour, entre deux `tick()`. C'est le
+/// seul point où un autre cœur peut demander à celui-ci de s'arrêter — sur
+/// la carte réelle, le temps d'une écriture flash, qui rend tout le code en
+/// flash illisible pour les deux cœurs (cf.
+/// `drivers::flash_rp2040::park_if_requested`). Le type reste une fermeture
+/// quelconque : `logic/` n'a pas à savoir qu'il existe une flash, et les
+/// tests passent une fermeture vide.
+pub fn run<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Clk, Y>(
     mut sensors: Sensors<Ts, Ps>,
     mut actuators: Actuators<Hv, Cool, Iso, Pump, Lights, Glass>,
     clock: Clk,
+    mut yield_core: Y,
 ) -> !
 where
     Ts: DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
@@ -34,6 +43,7 @@ where
     Lights: BinaryActuator,
     Glass: BinaryActuator,
     Clk: MonotonicTimer,
+    Y: FnMut(),
 {
     // Initial values, mais est-ce qu'on veut vraiment ça ?
     let latest_measurement = sensors.probe_all();
@@ -72,6 +82,11 @@ where
 
     // Control loop
     loop {
+        // Avant le tour, pas après : `tick()` peut bloquer plusieurs
+        // centaines de millisecondes sur une conversion DS18B20, et c'est
+        // le cœur 0 qui attend derrière.
+        yield_core();
+
         probing_plan = tick(
             &mut sensors, &mut actuators, &mut phase, &mut safety,
             &mut measurement_history, probing_plan,
