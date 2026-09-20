@@ -29,8 +29,8 @@
 //! attente active. C'est pourquoi rien ici ne dessine ni ne fait d'E/S sous
 //! verrou :
 //!
-//! - l'interruption encodeur ne fait qu'empiler l'événement dans [`EVENTS`]
-//!   et rend la main ;
+//! - l'interruption encodeur ne fait qu'empiler l'événement dans la file de
+//!   [`console`](cloud_chamber_firmware::ui::console) et rend la main ;
 //! - la boucle d'affichage prend une **copie** de `SharedState` sous verrou
 //!   court, puis dessine hors verrou ;
 //! - [`UiApp`] n'est plus partagé du tout : il appartient à la boucle du
@@ -63,30 +63,16 @@
 #![no_std]
 #![no_main]
 
-use core::cell::RefCell;
-
 use defmt_rtt as _;
 use panic_probe as _;
 
-use critical_section::Mutex;
-use embedded_hal::digital::OutputPin;
-use embedded_hal::spi::MODE_0;
 use rp2040_hal::{
     Clock, I2C, self as hal,
-    fugit::{ExtU32, RateExtU32},
-    gpio::{
-        DynBankId, DynPinId, DynPullType, FunctionI2c, FunctionSio, FunctionSpi, Pin, PullUp, SioInput, new_pin,
-    },
+    fugit::RateExtU32,
+    gpio::{DynBankId, DynPinId, FunctionI2c, PullUp, new_pin},
     i2c::{ValidatedPinScl, ValidatedPinSda},
     multicore::{Multicore, Stack},
-    pac::{self, interrupt},
-    spi::{Spi, ValidatedPinSck, ValidatedPinTx},
-    timer::{Alarm, Alarm0},
 };
-
-use display_interface_spi::SPIInterface;
-use embedded_hal_bus::spi::ExclusiveDevice;
-use ili9341::{DisplaySize240x320, Ili9341, Orientation};
 
 use cloud_chamber_firmware::board;
 use cloud_chamber_firmware::cloud_chamber_hal::timer::Duration;
@@ -99,32 +85,24 @@ use cloud_chamber_firmware::cloud_chamber_hal::actuators::Actuators;
 use cloud_chamber_firmware::cloud_chamber_hal::sensors::{IndependentSensors, Sensors};
 use cloud_chamber_firmware::config::operating::REGULATION_BAND_C;
 use cloud_chamber_firmware::config::wiring::{
-    PIN_COMPRESSOR_RELAY, PIN_ENCODER_A,
-    PIN_ENCODER_B, PIN_ENCODER_SW, PIN_HV_RELAY, PIN_I2C_SCL, PIN_I2C_SDA, PIN_ISO_HEATER_RELAY,
-    PIN_LIGHTS_RELAY, PIN_ONEWIRE, PIN_PUMP_RELAY, PIN_SCREEN_CS, PIN_SCREEN_DC, PIN_SCREEN_MOSI,
-    PIN_SCREEN_RESET, PIN_SCREEN_SCK, PIN_WINDOW_HEATER_RELAY,
+    PIN_COMPRESSOR_RELAY, PIN_HV_RELAY, PIN_I2C_SCL, PIN_I2C_SDA, PIN_ISO_HEATER_RELAY,
+    PIN_LIGHTS_RELAY, PIN_ONEWIRE, PIN_PUMP_RELAY, PIN_WINDOW_HEATER_RELAY,
 };
 use cloud_chamber_firmware::drivers::bme280::{Bme280Driver, Bme280Sensor};
 use cloud_chamber_firmware::drivers::breaker::GpioBreaker;
 use cloud_chamber_firmware::drivers::compressor::Compressor;
-use cloud_chamber_firmware::drivers::display::{self, FramebufferedDisplay};
 use cloud_chamber_firmware::drivers::ds18b20::{
     Ds18b20Bus, Ds18b20Sensors, Resolution, rp2040_adapter::Rp2040OpenDrain,
 };
-use cloud_chamber_firmware::drivers::encoder::{EncoderEvent, RotaryEncoder};
 use cloud_chamber_firmware::drivers::heater::Heater;
 use cloud_chamber_firmware::drivers::lights::Lights;
 use cloud_chamber_firmware::drivers::pump::Pump;
 use cloud_chamber_firmware::drivers::window_heater::WindowHeater;
 use cloud_chamber_firmware::logic::control_loop;
-use cloud_chamber_firmware::shared::data::{SHARED_STATE, SharedState, SystemTask};
-use cloud_chamber_firmware::ui::event_queue::EventQueue;
+use cloud_chamber_firmware::shared::data::{SHARED_STATE, SystemTask};
 use cloud_chamber_firmware::ui::app::UiApp;
+use cloud_chamber_firmware::ui::console;
 use cloud_chamber_firmware::ui::navigator::Screen;
-
-/// Vitesse du bus SPI de l'écran — cf. `bin/ui_test.rs` pour le
-/// raisonnement sur cette valeur et le symptôme d'un réglage trop haut.
-const SCREEN_SPI_HZ: u32 = 32_000_000;
 
 /// Taille de la pile du cœur 1, en mots de 32 bits (soit 8 Ko).
 ///
@@ -139,53 +117,11 @@ const CORE1_STACK_WORDS: usize = 2048;
 /// lancée à un tour, résultat lu au suivant).
 const TEMP_RESOLUTION: Resolution = Resolution::Bits12;
 
-// ─── État partagé avec l'interruption TIMER_IRQ_0 ──────────────────────────
-
-type EncPin = Pin<DynPinId, FunctionSio<SioInput>, DynPullType>;
-type Encoder = RotaryEncoder<EncPin, EncPin, EncPin>;
-
-/// `None` jusqu'à ce que `main()` y dépose l'encodeur — l'interruption
-/// n'étant démasquée qu'après, l'ISR ne peut pas observer ce `None`.
-static ENCODER: Mutex<RefCell<Option<Encoder>>> = Mutex::new(RefCell::new(None));
-static ALARM: Mutex<RefCell<Option<Alarm0>>> = Mutex::new(RefCell::new(None));
-
-/// Événements d'encodeur en attente de traitement par la boucle du cœur 0.
-///
-/// L'interruption ne fait qu'empiler ici ; c'est la boucle qui les applique
-/// à `UiApp`. Ce découplage est ce qui permet à `UiApp` de n'être partagé
-/// avec personne (donc de se dessiner hors section critique) tout en
-/// gardant une scrutation à 1 ms qui ne rate jamais un cran. Cf.
-/// [`ui::event_queue`](cloud_chamber_firmware::ui::event_queue) — `ui_test`
-/// s'appuie sur la même file.
-static EVENTS: Mutex<RefCell<EventQueue>> = Mutex::new(RefCell::new(EventQueue::new()));
+// ─── Pile du second cœur ───────────────────────────────────────────────────
 
 /// Pile du cœur 1. Vit en `.bss`, donc prise sur la RAM restante — la pile
 /// du cœur 0 garde tout le bas de la RAM, où loge le framebuffer de 150 Ko.
 static CORE1_STACK: Stack<CORE1_STACK_WORDS> = Stack::new();
-
-/// Scrutation de l'encodeur, toutes les 1 ms sur le cœur 0. Ne fait
-/// qu'empiler : aucune section critique longue, donc aucun risque de faire
-/// attendre le cœur 1 sur le spinlock (cf. doc de module).
-#[interrupt]
-fn TIMER_IRQ_0() {
-    critical_section::with(|cs| {
-        if let Some(alarm) = ALARM.borrow(cs).borrow_mut().as_mut() {
-            alarm.clear_interrupt();
-            let _ = alarm.schedule(1_u32.millis());
-        }
-
-        let event = match ENCODER.borrow(cs).borrow_mut().as_mut() {
-            Some(encoder) => encoder.poll(),
-            None => return,
-        };
-
-        // `None` est le cas de très loin le plus fréquent (1000 scrutations
-        // par seconde) : ne rien empiler évite de saturer la file pour rien.
-        if event != EncoderEvent::None {
-            EVENTS.borrow(cs).borrow_mut().push(event);
-        }
-    });
-}
 
 #[hal::entry]
 fn main() -> ! {
@@ -193,84 +129,29 @@ fn main() -> ! {
 
     defmt::info!("cloud-chamber : demarrage");
 
-    // ─── Écran (SPI0 + CS/DC/RESET logiciels) ──────────────────────────────
-    let tx = unsafe { new_pin(DynPinId { bank: DynBankId::Bank0, num: PIN_SCREEN_MOSI }) }
-        .try_into_function::<FunctionSpi>()
-        .ok()
-        .expect("SPI est une fonction valide sur toute broche de Bank0");
-    let sck = unsafe { new_pin(DynPinId { bank: DynBankId::Bank0, num: PIN_SCREEN_SCK }) }
-        .try_into_function::<FunctionSpi>()
-        .ok()
-        .expect("SPI est une fonction valide sur toute broche de Bank0");
-
-    let tx = ValidatedPinTx::validate(tx, &board.spi0).unwrap_or_else(|_| {
-        panic!("PIN_SCREEN_MOSI (GP{}) n'est pas une broche Tx/MOSI valide pour SPI0", PIN_SCREEN_MOSI)
-    });
-    let sck = ValidatedPinSck::validate(sck, &board.spi0).unwrap_or_else(|_| {
-        panic!("PIN_SCREEN_SCK (GP{}) n'est pas une broche Sck valide pour SPI0", PIN_SCREEN_SCK)
-    });
-
-    // Turbofish DS=8 (taille de trame) : plusieurs impls existent (4/5/8...).
-    let spi = Spi::<_, _, _, 8>::new(board.spi0, (tx, sck)).init(
+    // ─── Console opérateur (écran + encodeur) ──────────────────────────────
+    //
+    // Tout le montage vit dans `ui::console` : même fréquence SPI, même
+    // framebuffer, même interruption de scrutation que les bins de
+    // bring-up. Cf. sa doc de module pour l'architecture ISR/boucle qu'il
+    // impose — et pourquoi le rendu ne doit prendre aucune section
+    // critique sur cette machine à deux cœurs.
+    let mut console = console::init(
+        board.spi0,
         &mut board.resets,
         board.clocks.peripheral_clock.freq(),
-        SCREEN_SPI_HZ.Hz(),
-        MODE_0,
+        &mut board.timer,
     );
-
-    let cs_pin = board::configure_output_pin(PIN_SCREEN_CS);
-    let dc = board::configure_output_pin(PIN_SCREEN_DC);
-    let rst = board::configure_output_pin(PIN_SCREEN_RESET);
-
-    // CS::Error = Infallible (GPIO simple) : ne peut pas échouer en pratique.
-    let spi_device = ExclusiveDevice::new_no_delay(spi, cs_pin).unwrap();
-    let iface = SPIInterface::new(spi_device, dc);
-
-    let ili = match Ili9341::new(iface, rst, &mut board.timer, Orientation::Landscape, DisplaySize240x320)
-    {
-        Ok(display) => display,
-        Err(e) => {
-            // L'écran est le seul canal d'information de l'opérateur : sans
-            // lui, démarrer un cycle serait piloter à l'aveugle. On s'arrête
-            // plutôt que de continuer en silence.
-            defmt::error!("echec init ecran : {}", defmt::Debug2Format(&e));
-            panic!("ecran indisponible");
-        }
-    };
-    let framebuffer = display::take_framebuffer().expect("le framebuffer n'est reclame qu'ici");
-    let mut display = FramebufferedDisplay::new(ili, framebuffer);
-
-    // ─── Encodeur (A/B/SW, pull-up interne) — piloté par interruption ──────
-    let encoder = RotaryEncoder::new(
-        board::configure_input_pin(PIN_ENCODER_A),
-        board::configure_input_pin(PIN_ENCODER_B),
-        board::configure_input_pin(PIN_ENCODER_SW),
-    );
-
-    let mut alarm = board.timer.alarm_0().expect("alarme 0 disponible au premier appel");
-    alarm.schedule(1_u32.millis()).expect("planification initiale valide");
-    alarm.enable_interrupt();
-
-    critical_section::with(|cs| {
-        ENCODER.borrow(cs).replace(Some(encoder));
-        ALARM.borrow(cs).replace(Some(alarm));
-    });
 
     // `UiApp` n'est volontairement pas un static : il appartient à la
     // boucle du cœur 0, seule à le toucher. L'interruption ne communique
-    // avec lui que par la file d'événements.
+    // avec lui que par la file d'événements de `console`.
     let mut app = UiApp::new();
-
-    // Sûr : ENCODER/ALARM sont déposés juste au-dessus, avant que
-    // l'interruption ne puisse se déclencher.
-    unsafe {
-        pac::NVIC::unmask(pac::Interrupt::TIMER_IRQ_0);
-    }
 
     // Premier rendu : l'opérateur voit le menu pendant la découverte des
     // capteurs, qui prend un instant.
     let initial_state = critical_section::with(|cs| *SHARED_STATE.borrow_ref(cs));
-    redraw(&mut display, &app, &initial_state, board.timer);
+    console.redraw(&app, &initial_state);
     app.take_redraw_request();
 
     // ─── Températures : DS18B20 sur 1-Wire ─────────────────────────────────
@@ -421,22 +302,10 @@ fn main() -> ! {
     let mut last_activity = board.timer.get_counter();
 
     loop {
-        // Applique les événements empilés par l'interruption. L'état
-        // courant est relu à chaque fois : entre deux événements, le cœur 1
-        // peut avoir fait avancer la machine, et c'est lui qui décide si un
-        // démarrage est encore légitime.
-        while let Some(event) = critical_section::with(|cs| EVENTS.borrow(cs).borrow_mut().pop()) {
+        // Applique les événements empilés par l'interruption, journalise
+        // les pertes, et dit si l'opérateur vient de se manifester.
+        if console.pump(&mut app) {
             last_activity = board.timer.get_counter();
-            let current = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).task);
-            if let Some(task) = app.handle_event(event, current) {
-                critical_section::with(|cs| SHARED_STATE.borrow_ref_mut(cs).task = task);
-                defmt::info!("demande operateur : nouvel etat systeme");
-            }
-        }
-
-        let dropped = critical_section::with(|cs| EVENTS.borrow(cs).borrow_mut().take_dropped());
-        if dropped > 0 {
-            defmt::warn!("{} evenement(s) encodeur perdus : file pleine", dropped);
         }
 
         // Copie de l'état sous verrou court, et acquittement des nouvelles
@@ -505,29 +374,7 @@ fn main() -> ! {
         app.set_save_pending(pending_save.is_some());
 
         if app.take_redraw_request() {
-            redraw(&mut display, &app, &state, board.timer);
+            console.redraw(&app, &state);
         }
     }
 }
-
-/// Redessine l'écran courant, à partir d'un instantané déjà copié.
-///
-/// Ne prend aucune section critique : `app` appartient au cœur 0 et `state`
-/// est une copie. C'est ce qui garantit qu'un rendu plein écran — des
-/// dizaines de millisecondes — ne fait jamais attendre le cœur 1 sur le
-/// spinlock global (cf. doc de module).
-fn redraw<IFACE, RESET>(
-    display: &mut FramebufferedDisplay<IFACE, RESET>,
-    app: &UiApp,
-    state: &SharedState,
-    timer: hal::Timer,
-) where
-    IFACE: display_interface::WriteOnlyDataCommand,
-    RESET: OutputPin,
-{
-    let start = timer.get_counter();
-    let _ = display.render(|target| app.draw(target, state));
-    let elapsed = timer.get_counter() - start;
-    defmt::debug!("redraw termine en {} ms", elapsed.to_millis());
-}
-
