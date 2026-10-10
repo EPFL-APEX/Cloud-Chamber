@@ -1,10 +1,18 @@
 //! Écran « cycle en cours » : la séquence de refroidissement sous forme de
 //! checklist, avec l'étape courante mise en avant.
 //!
-//! Affichage seul, dérivé de [`SharedState`] — comme [`super::stats`], il
-//! n'a aucun état propre et est reconstruit à chaque rendu par
-//! [`crate::ui::router`]. C'est `logic::control_loop` qui fait avancer la
-//! machine ; cet écran ne fait que montrer où elle en est.
+//! Affichage + **bouton d'action principal**, dérivé de [`SharedState`] —
+//! comme [`super::stats`], il n'a aucun état propre et est reconstruit à
+//! chaque rendu par [`crate::ui::router`]. C'est
+//! `logic::control_loop` qui fait avancer la machine ; cet écran montre où
+//! elle en est, et porte le bouton START/STOP :
+//!
+//! - **rotation** : déplace la sélection entre le bouton d'action et le
+//!   bouton `BACK` — la sélection vit dans le routeur, cet écran est
+//!   reconstruit à chaque rendu et la reçoit en champ ;
+//! - **clic** : active le bouton sélectionné — l'action (`START` machine
+//!   à l'arrêt, `STOP` cycle en cours, `ACQUITTER` déclenchement) ou le
+//!   retour au menu (`BACK`).
 //!
 //! # Ce que la checklist peut et ne peut pas dire
 //!
@@ -29,7 +37,7 @@ use embedded_graphics::{
     geometry::{OriginDimensions, Point, Size},
     mono_font::{MonoTextStyle, ascii::{FONT_6X10, FONT_6X13, FONT_9X18_BOLD}},
     pixelcolor::Rgb565,
-    primitives::{Primitive, PrimitiveStyle, Rectangle},
+    primitives::{Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle},
     text::{Baseline, Text, TextStyleBuilder},
 };
 
@@ -101,9 +109,33 @@ fn header_color(task: SystemTask) -> Rgb565 {
     }
 }
 
-/// Écran « cycle en cours ».
+/// Le bouton de l'écran de suivi actuellement sélectionné par la
+/// rotation — la sélection vit dans `ui::router::Screens`, pas ici :
+/// cet écran est reconstruit à chaque rendu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunningButton {
+    /// Le bouton d'action principal (START / STOP / ACQUITTER).
+    Action,
+    /// Le retour au menu.
+    Back,
+}
+
+impl RunningButton {
+    /// L'autre bouton — la rotation va à l'autre, quel que soit le sens :
+    /// deux boutons, pas d'ordre, un toggle. Sans ça, tourner dans un
+    /// sens sélectionnait BACK et aucun geste ne revenait sur l'action.
+    pub fn other(self) -> Self {
+        match self {
+            RunningButton::Action => RunningButton::Back,
+            RunningButton::Back => RunningButton::Action,
+        }
+    }
+}
+
+/// Écran « cycle en cours ». `selected` vient de la sélection du routeur.
 pub struct RunningScreen<'a> {
     pub state: &'a SharedState,
+    pub selected: RunningButton,
 }
 
 impl<'a> RunningScreen<'a> {
@@ -129,6 +161,27 @@ impl<'a> RunningScreen<'a> {
         )
         .draw(display)?;
 
+        // Température chambre dans la même bande, alignée à droite — la
+        // mesure qui pilote la séquence, visible en permanence sans
+        // prendre la place de la checklist ni des boutons.
+        {
+            let mut s: String<24> = String::new();
+            let (text, color) = match self.state.snapshot.temps[CHAMBER_TEMP_IDX] {
+                Some(m) if !m.value.is_nan() => {
+                    let _ = write!(s, "Chambre: {:+6.1}C", m.value.0);
+                    (s.as_str(), theme::TEXT_COLOR)
+                }
+                _ => ("Chambre: ---", theme::DIM_COLOR),
+            };
+            Text::with_text_style(
+                text,
+                Point::new(SCREEN_WIDTH as i32 - 10 - (text.len() as i32 * 6), 9),
+                MonoTextStyle::new(&FONT_6X10, color),
+                top_style,
+            )
+            .draw(display)?;
+        }
+
         // ─── Checklist des étapes ────────────────────────────────────────────
         let mut lines = [StatusLine { label: "", status: Status::Pending }; PHASES.len()];
         for (row, (_, label)) in PHASES.iter().enumerate() {
@@ -137,32 +190,90 @@ impl<'a> RunningScreen<'a> {
         StatusLines::<{ PHASES.len() }, true> { lines, top: LIST_TOP }.draw(display)?;
 
         // ─── Pied : température chambre, la mesure qui pilote la séquence ────
+        // ─── Boutons : action principal + BACK ───────────────────────
+        //
+        // START à l'arrêt, STOP en course, ACQUITTER en déclenchement —
+        // le même clic fait toujours « la chose évidente » vu l'état
+        // affiché. En `Stopping`, la machine exécute déjà la séquence :
+        // bouton d'action grisé, il n'y a plus rien à demander, seul
+        // BACK reste actif.
+        //
+        // La rotation déplace la sélection entre les deux (cf.
+        // `ui::router`), le clic active le bouton sélectionné : deux
+        // boutons, un seul bouton physique — le pattern encodeur.
+        let (label, fill, text_color, enabled) = match task {
+            SystemTask::Idle => ("START", theme::SUCCESS_COLOR, theme::BACKGROUND_COLOR, true),
+            SystemTask::Cooling(_) | SystemTask::Stabilising => {
+                ("STOP", theme::DANGER_COLOR, theme::BACKGROUND_COLOR, true)
+            }
+            SystemTask::Tripped(_) => {
+                ("ACQUITTER", theme::WARNING_COLOR, theme::BACKGROUND_COLOR, true)
+            }
+            SystemTask::Stopping(_) => ("...", theme::BACKGROUND_COLOR_DARKER, theme::DIM_COLOR, false),
+        };
+
+        // Bouton sélectionné : contour accentué, l'autre en retrait.
+        let action_style = PrimitiveStyleBuilder::new()
+            .fill_color(fill)
+            .stroke_color(if self.selected == RunningButton::Action {
+                theme::HIGHLIGHT_COLOR
+            } else {
+                theme::ACCENT_COLOR
+            })
+            .stroke_width(if self.selected == RunningButton::Action { 3 } else { 1 })
+            .build();
+        // Deux boutons centrés ensemble sous la checklist : 110 + 10
+        // (gouttière) + 80 = 200 px, posés à x = (320-200)/2 = 60.
+        Rectangle::new(Point::new(60, 180), Size::new(110, 36))
+            .into_styled(action_style)
+            .draw(display)?;
         {
-            let mut s: String<24> = String::new();
-            let (text, color) = match self.state.snapshot.temps[CHAMBER_TEMP_IDX] {
-                Some(m) if !m.value.is_nan() => {
-                    let _ = write!(s, "Chambre: {:+6.1} C", m.value.0);
-                    (s.as_str(), theme::TEXT_COLOR)
-                }
-                _ => ("Chambre: ---", theme::DIM_COLOR),
-            };
+            let mut label_buf: String<10> = String::new();
+            let _ = label_buf.push_str(label);
             Text::with_text_style(
-                text,
-                Point::new(10, 186),
-                MonoTextStyle::new(&FONT_9X18_BOLD, color),
+                label_buf.as_str(),
+                Point::new(115 - (label.len() as i32 * 9) / 2, 192),
+                MonoTextStyle::new(&FONT_9X18_BOLD, text_color),
                 top_style,
             )
             .draw(display)?;
         }
 
-        // Pendant un déclenchement, ce clic vaut acquittement (cf.
-        // `ui::router::Screens::take_task_request`) : l'opérateur doit le
-        // savoir avant d'appuyer, pas après.
-        let (hint, hint_color) = match task {
-            SystemTask::Tripped(_) => {
-                ("Clic: acquitter et retour au menu", theme::DANGER_COLOR)
-            }
-            _ => ("Clic: retour au menu", theme::DIM_COLOR),
+        let back_style = PrimitiveStyleBuilder::new()
+            .fill_color(if self.selected == RunningButton::Back {
+                theme::ACCENT_COLOR
+            } else {
+                theme::BACKGROUND_COLOR_DARKER
+            })
+            .stroke_color(if self.selected == RunningButton::Back {
+                theme::HIGHLIGHT_COLOR
+            } else {
+                theme::ACCENT_COLOR
+            })
+            .stroke_width(if self.selected == RunningButton::Back { 3 } else { 1 })
+            .build();
+        // BACK : plus petit que l'action — c'est une sortie, pas une
+        // commande. `FONT_6X13` (6 px/char) pour que « BACK » y tienne.
+        Rectangle::new(Point::new(180, 180), Size::new(80, 36))
+            .into_styled(back_style)
+            .draw(display)?;
+        Text::with_text_style(
+            "BACK",
+            Point::new(220 - (4 * 6) / 2, 191),
+            MonoTextStyle::new(&FONT_6X13, if self.selected == RunningButton::Back {
+                theme::BACKGROUND_COLOR
+            } else {
+                theme::DIM_COLOR
+            }),
+            top_style,
+        )
+        .draw(display)?;
+
+        // ─── Aide de geste ──────────────────────────────────────────
+        let (hint, hint_color) = if enabled {
+            ("Tourner: choisir - Clic: valider", theme::DIM_COLOR)
+        } else {
+            ("Arret en cours...", theme::WARNING_COLOR)
         };
         Text::with_text_style(
             hint,
@@ -193,7 +304,7 @@ mod tests {
     }
 
     fn state_with(task: SystemTask) -> SharedState {
-        SharedState { snapshot: Default::default(), task, new_data: false }
+        SharedState { snapshot: Default::default(), task, new_data: false, core1_panicked: false }
     }
 
     /// Garde-fou : si une variante est ajoutée à `CoolingPhase` sans être
@@ -274,7 +385,7 @@ mod tests {
         for (phase, _) in PHASES {
             let mut d = make_display();
             let state = state_with(SystemTask::Cooling(phase));
-            RunningScreen { state: &state }.draw(&mut d).unwrap();
+            RunningScreen { state: &state, selected: RunningButton::Action }.draw(&mut d).unwrap();
         }
     }
 
@@ -288,7 +399,7 @@ mod tests {
         ] {
             let mut d = make_display();
             let state = state_with(task);
-            RunningScreen { state: &state }.draw(&mut d).unwrap();
+            RunningScreen { state: &state, selected: RunningButton::Action }.draw(&mut d).unwrap();
         }
     }
 
@@ -298,7 +409,7 @@ mod tests {
         let mut state = state_with(SystemTask::Cooling(CoolingPhase::HighVoltage));
         state.snapshot.temps[CHAMBER_TEMP_IDX] =
             Some(Measurement::new(Instant::from_micros(1), Celsius(-32.4)));
-        RunningScreen { state: &state }.draw(&mut d).unwrap();
+        RunningScreen { state: &state, selected: RunningButton::Action }.draw(&mut d).unwrap();
     }
 
     #[test]
@@ -309,7 +420,7 @@ mod tests {
         let mut state = state_with(SystemTask::Cooling(CoolingPhase::SaturatingAirWithIpa));
         state.snapshot.temps[CHAMBER_TEMP_IDX] =
             Some(Measurement::new(Instant::from_micros(1), Celsius(-28.6)));
-        RunningScreen { state: &state }.draw(&mut display)?;
+        RunningScreen { state: &state, selected: RunningButton::Action }.draw(&mut display)?;
 
         let output_settings = OutputSettingsBuilder::new().build();
         let path = std::env::args_os()

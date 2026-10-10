@@ -77,6 +77,13 @@ pub enum SafetyCause {
     CompressorSensorLost,
 }
 
+// Pas de sécurité pression, volontairement : la chambre n'est pas
+// pressurisée. Le capteur monté (BME280) mesure la pression atmosphérique
+// ambiante — une donnée d'expérience, pas un danger à surveiller. Le jour
+// où un circuit de la chambre serait pressurisé (ABP2, cf.
+// `config::wiring`), il faudra ajouter les variantes correspondantes — le
+// `match` exhaustif de `severity_of` imposera de dire comment les mesurer.
+
 impl SafetyCause {
     /// Tous les dangers, dans l'ordre où [`SafetyMonitor::evaluate`] les
     /// interroge.
@@ -350,6 +357,7 @@ mod tests {
         h.temps[COMPRESSOR_OUT_IDX].push(Measurement::new(Instant::from_micros(0), Celsius(value_c)));
         h
     }
+
 
     #[test]
     fn stays_untripped_under_threshold() {

@@ -87,6 +87,20 @@ pub struct SharedState {
     pub task: SystemTask,
     /// Mis à `true` quand de nouvelles données de capteur sont disponibles.
     pub new_data: bool,
+    /// Le cœur 1 (contrôle) a paniqué — écrit une seule fois par le
+    /// gestionnaire de panique, lu par la boucle d'affichage du cœur 0.
+    ///
+    /// Une panique du cœur 1 coupe les sorties de puissance (le
+    /// gestionnaire force les relais au niveau bas avant tout), mais sans
+    /// ce drapeau le cœur 0 continuerait d'afficher une machine normale —
+    /// l'opérateur n'aurait aucune idée que le contrôle est mort et que
+    /// ses relais ne seront plus jamais pilotés.
+    ///
+    /// Le cœur 0 n'écrit jamais ici ; la boucle d'affichage efface le
+    /// drapeau après l'avoir vu, pour que l'écran d'erreur ne revienne pas
+    /// au prochain cycle de dessin (une fois le cœur 1 mort, il n'y a plus
+    /// personne pour le re-lever).
+    pub core1_panicked: bool,
 }
 
 // ─── Point de partage global ─────────────────────────────────────────────────
@@ -101,6 +115,7 @@ pub static SHARED_STATE: Mutex<RefCell<SharedState>> = Mutex::new(RefCell::new(S
     },
     task: SystemTask::Idle,
     new_data: false,
+    core1_panicked: false,
 }));
 
 

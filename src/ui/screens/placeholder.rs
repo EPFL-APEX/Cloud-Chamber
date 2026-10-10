@@ -57,13 +57,13 @@ impl PlaceholderScreen {
     pub fn for_screen(screen: Screen) -> Option<Self> {
         let title = match screen {
             Screen::ManualControl => "COMMANDE MANUELLE",
-            Screen::Data => "DONNEES",
-            Screen::Info => "INFOS",
             Screen::Idle
             | Screen::MainMenu
             | Screen::Settings
             | Screen::Stats
-            | Screen::CurrentTask => return None,
+            | Screen::CurrentTask
+            | Screen::Data
+            | Screen::Info => return None,
         };
         Some(Self { title })
     }
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn unimplemented_screens_have_a_placeholder() {
-        for screen in [Screen::ManualControl, Screen::Data, Screen::Info] {
+        for screen in [Screen::ManualControl] {
             assert!(
                 PlaceholderScreen::for_screen(screen).is_some(),
                 "{screen:?} devrait avoir un ecran de remplacement"
@@ -132,6 +132,8 @@ mod tests {
             Screen::Settings,
             Screen::Stats,
             Screen::CurrentTask,
+            Screen::Data,
+            Screen::Info,
         ] {
             assert!(
                 PlaceholderScreen::for_screen(screen).is_none(),
@@ -143,7 +145,7 @@ mod tests {
     #[test]
     fn draws_without_error() {
         let mut d = display();
-        for screen in [Screen::ManualControl, Screen::Data, Screen::Info] {
+        for screen in [Screen::ManualControl] {
             PlaceholderScreen::for_screen(screen).unwrap().draw(&mut d).unwrap();
         }
     }

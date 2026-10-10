@@ -14,6 +14,8 @@
 /// Drivers ADC : capteurs de tension et de courant via l'ADC embarqué.
 pub mod adc;
 
+/// Gestionnaire de panique qui coupe les sorties de puissance avant tout.
+pub mod safe_panic;
 /// Driver disjoncteur : contrôle d'un relai ou contacteur via GPIO.
 pub mod breaker;
 
