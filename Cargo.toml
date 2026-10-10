@@ -19,6 +19,13 @@ charts = ["dep:embedded-charts"]
 # installé sur la machine de compilation.
 live-menu-test = ["embedded-graphics-simulator/with-sdl"]
 usb-comm = []
+# Simulateur physique : la boucle de contrôle et l'UI sur un modèle
+# thermique, jouable sur PC — cf. `src/simulator/` et le bin `chamber_sim`.
+# Dépend de std (fenêtre SDL2, temps réel) : jamais compilé pour une cible.
+# La fenêtre SDL2 vient de la dépendance optionnelle hôte ci-dessous —
+# un binaire ne voit pas les dev-dependencies, d'où sa déclaration en
+# dépendance de cible.
+sim = ["embedded-graphics-simulator/with-sdl"]
 # N'active rien à elle seule — sert uniquement de garde via `required-features`
 # sur `[[bin]] identify_temp_sensors` (RP2040 uniquement), pour que les jobs
 # CI `cargo check` sur les autres cibles ne tentent pas de le construire.
@@ -63,6 +70,14 @@ bin-cloud-chamber = []
 name = "identify_temp_sensors"
 path = "src/bin/identify_temp_sensors.rs"
 required-features = ["bin-identify-temp-sensors"]
+
+# Simulateur physique : la boucle de contrôle + l'UI sur un modèle
+# thermique, jouable dans un terminal. Hôte uniquement — jamais compilé
+# pour une cible embarquée, il dépend de std (temps réel, clavier).
+[[bin]]
+name = "chamber_sim"
+path = "src/bin/chamber_sim.rs"
+required-features = ["sim"]
 
 [[bin]]
 name = "blinky"
@@ -142,6 +157,17 @@ embedded-graphics-simulator = { version = "0.8", default-features = false }
 # Fournit une implémentation de critical_section basée sur std::sync::Mutex
 # pour les builds sur desktop (cargo test, cargo run --example).
 # Sur les cibles embarquées, cette entrée est ignorée (cfg non satisfait).
+# Le simulateur (`--features sim`) est un programme hôte : critical-section
+# y a fourni par cette implémentation std — sans elle, le link échoue
+# (`_critical_section_1_0_acquire` indéfini), la lib étant std mais
+# n'embarquant pas d'implémentation par elle-même.
+[target.'cfg(not(any(target_arch = "arm", target_arch = "riscv32")))'.dependencies]
+critical-section = { version = "1.1", features = ["std"] }
+# Fenêtre SDL2 du simulateur `chamber_sim` — un binaire ne voit pas les
+# dev-dependencies. Optionnelle : activée (avec `with-sdl`) par la feature
+# `sim`, et absente des builds embarqués.
+embedded-graphics-simulator = { version = "0.8", default-features = false, optional = true }
+
 [target.'cfg(not(any(target_arch = "arm", target_arch = "riscv32")))'.dev-dependencies]
 critical-section = { version = "1.1", features = ["std"] }
 

@@ -9,7 +9,20 @@
 //! En mode test (`cargo test`), `cfg_attr` désactive `no_std` pour que
 //! les tests s'exécutent sur desktop avec accès à la bibliothèque standard.
 
-#![cfg_attr(not(test), no_std)]
+//! # `no_std`… sauf le simulateur
+//!
+//! La lib est `no_std` pour que les modules embarqués compilent sans
+//! std. Deux exceptions, toutes deux hôte uniquement :
+//!
+//! - en mode test (`cargo test`), `cfg_attr` désactive `no_std` pour que
+//!   les tests s'exécutent sur desktop avec la bibliothèque standard ;
+//! - avec la feature `sim`, le simulateur (`src/simulator/`, le bin
+//!   `chamber_sim`) est un programme desktop : temps réel, clavier,
+//!   `Rc`/`RefCell` partagés — il force un build std complet. Cette
+//!   feature n'est jamais activée pour une cible embarquée (le bin
+//!   `chamber_sim` est `required-features = ["sim"]` et ne compile pas
+//!   sur ARM/RISC-V).
+#![cfg_attr(not(any(test, feature = "sim")), no_std)]
 
 /// Mise en route de la carte (horloges, timer, GPIO) et configuration des
 /// broches, partagées par `main.rs` et les binaires de bring-up. RP2040
@@ -30,3 +43,9 @@ pub mod ui;
 /// dépend de `rp2040-hal` (RP2040 uniquement, cf. Cargo.toml).
 #[cfg(feature = "usb-comm")]
 pub mod comm;
+
+/// Simulateur physique de la chambre : la vraie boucle de contrôle et la
+/// vraie UI, alimentées par un modèle thermique — jouable sur un
+/// ordinateur, sans matériel. Cf. `src/simulator/mod.rs`.
+#[cfg(feature = "sim")]
+pub mod simulator;
