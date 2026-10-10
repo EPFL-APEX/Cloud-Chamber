@@ -216,6 +216,7 @@ mod tests {
             snapshot: Default::default(),
             task: SystemTask::Idle,
             new_data: false,
+            core1_panicked: false,
         };
         StatsScreen { state: &state }.draw(&mut d).unwrap();
     }
@@ -227,6 +228,7 @@ mod tests {
             snapshot: Default::default(),
             task: SystemTask::Tripped(SafetyCause::CompressorOverheat),
             new_data: false,
+            core1_panicked: false,
         };
         StatsScreen { state: &state }.draw(&mut d).unwrap();
     }
@@ -238,6 +240,7 @@ mod tests {
             snapshot: Default::default(),
             task: SystemTask::Cooling(CoolingPhase::HighVoltage),
             new_data: false,
+            core1_panicked: false,
         };
         StatsScreen { state: &state }.draw(&mut d).unwrap();
     }

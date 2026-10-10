@@ -867,6 +867,7 @@ mod tests {
         });
     }
 
+
     // ─── D — Réconciliation SHARED_STATE ─────────────────────────────────
 
     #[test]

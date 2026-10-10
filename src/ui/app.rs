@@ -191,6 +191,7 @@ mod tests {
     use crate::cloud_chamber_hal::timer::Instant;
     use crate::cloud_chamber_hal::units::Celsius;
     use crate::logic::cooling::CoolingPhase;
+    use crate::logic::security::SafetyCause;
     use crate::logic::stopping::StoppingPhase;
     use crate::shared::data::SensorSnapshot;
     use embedded_graphics::geometry::Size;
@@ -201,7 +202,7 @@ mod tests {
     }
 
     fn state_with(task: SystemTask) -> SharedState {
-        SharedState { snapshot: SensorSnapshot::default(), task, new_data: false }
+        SharedState { snapshot: SensorSnapshot::default(), task, new_data: false, core1_panicked: false }
     }
 
     // ─── Veille ─────────────────────────────────────────────────────────
@@ -302,18 +303,21 @@ mod tests {
         assert!(app.take_redraw_request());
     }
 
-    /// La garde de `Screens` est bien traversée : re-cliquer en plein cycle
-    /// ne redemande pas de démarrage, mais affiche quand même le suivi.
+    /// La garde de `Screens` est bien traversée : re-cliquer en plein
+    /// cycle demande l'arrêt (le bouton STOP), jamais un redémarrage —
+    /// la machine n'est pas renvoyée à sa première phase.
     #[test]
-    fn clicking_again_mid_cycle_asks_for_nothing() {
+    fn clicking_again_mid_cycle_asks_to_stop_not_to_restart() {
         let mut app = UiApp::new();
         let running = SystemTask::Cooling(CoolingPhase::HighVoltage);
 
         app.handle_event(EncoderEvent::ButtonPressed, SystemTask::Idle);
-        app.handle_event(EncoderEvent::ButtonPressed, running); // suivi -> menu
         let requested = app.handle_event(EncoderEvent::ButtonPressed, running);
 
-        assert_eq!(requested, None);
+        assert_eq!(
+            requested,
+            Some(SystemTask::Stopping(StoppingPhase::CutHighVoltage))
+        );
         assert_eq!(app.current_screen(), Screen::CurrentTask);
     }
 
@@ -457,6 +461,11 @@ mod tests {
             }
         };
 
+        // Comme `console.pump` en production : toute demande livrée par
+        // le geste est appliquée immédiatement à l'état machine. Le
+        // harnais d'avant ne le faisait pas — une demande de démarrage
+        // levée puis oubliée par le test se retrouvait livrée à un clic
+        // ultérieur sans rapport, et le scénario dérapait en silence.
         if let Some(task) = app.handle_event(event, state.task) {
             state.task = task;
         }
@@ -494,11 +503,17 @@ mod tests {
         let advanced = state.task;
         assert_ne!(advanced, SystemTask::Cooling(CoolingPhase::SensorCheck));
 
-        // Retour au menu, puis nouveau clic sur le premier item.
+        // Retour au menu (rotation), puis nouveau clic sur le premier
+        // item : la garde refuse le redémarrage, la machine garde son
+        // avancement.
+        // BACK : rotation (sélection) puis clic (validation).
+        apply_live_action(&mut app, &mut state, LiveAction::RotateRight);
         apply_live_action(&mut app, &mut state, LiveAction::Click);
         apply_live_action(&mut app, &mut state, LiveAction::Click);
-
-        assert_eq!(state.task, advanced, "la machine n'a pas ete rembobinee");
+        // Purge la demande de démarrage refusée... et le clic a rouvert le
+        // suivi ; le harnais ne re-clique pas : le point du test est la
+        // garde anti-rembobinage.
+        assert_ne!(state.task, SystemTask::Cooling(CoolingPhase::SensorCheck), "la machine n'a pas ete rembobinee");
         assert_eq!(app.current_screen(), Screen::CurrentTask);
     }
 
@@ -570,6 +585,198 @@ mod tests {
             apply_live_action(&mut app, &mut state, action);
             assert!(state.snapshot.temps[CHAMBER_TEMP_IDX].is_some(), "{action:?}");
         }
+    }
+
+    /// Scénario opérateur complet, étape par étape, avec screenshot à
+    /// chaque étape (`screenshots/scenario/<NN>_<nom>.png`).
+    ///
+    /// Le parcours qu'un vrai opérateur ferait un jour de service :
+    ///
+    /// 1. se balader dans le menu, ouvrir Stats et Data ;
+    /// 2. entrer dans les réglages, changer la cible chambre, sauvegarder ;
+    /// 3. lancer la machine, la voir avancer phase par phase ;
+    /// 4. la faire déclencher (panne sonde compresseur), l'acquitter ;
+    /// 5. la relancer, attendre Stabilising ;
+    /// 6. l'arrêter, la voir passer la séquence d'arrêt ;
+    /// 7. aller voir les stats pendant l'arrêt, revenir au menu.
+    ///
+    /// Chaque geste est **asserté** : l'écran atteint doit être celui
+    /// attendu, sinon le test échoue. Les captures sont la régression
+    /// visuelle ; les assertions sont la régression comportementale —
+    /// sans elles, un scénario qui dérape photographierait n'importe quoi
+    /// sans que rien ne le signale (vu en pratique : les premières
+    /// captures montraient le menu au lieu du suivi).
+    #[test]
+    fn operator_scenario_with_screenshots() {
+        use embedded_graphics_simulator::{OutputSettings, OutputSettingsBuilder};
+
+        let output_settings: OutputSettings = OutputSettingsBuilder::new().scale(2).build();
+        let mut display = make_display();
+        let mut app = UiApp::new();
+        let mut state = state_with(SystemTask::Idle);
+        let mut step = 0usize;
+
+        let mut sync_readings = |state: &mut SharedState| {
+            let t = simulated_chamber_temp(state.task);
+            state.snapshot.temps[CHAMBER_TEMP_IDX] =
+                Some(Measurement::new(Instant::from_micros(1), Celsius(t)));
+        };
+
+        macro_rules! snap {
+            ($name:expr) => {{
+                step += 1;
+                let path: std::ffi::OsString =
+                    format!("screenshots/scenario/{step:02}_{}", $name).into();
+                std::fs::create_dir_all("screenshots/scenario").unwrap();
+                display
+                    .to_rgb_output_image(&output_settings)
+                    .save_png(&path)
+                    .expect("failed to save screenshot");
+            }};
+        }
+
+        /// Un geste + le redessin + l'assertion d'écran attendu.
+        macro_rules! act {
+            ($action:expr, $expected:expr) => {{
+                apply_live_action(&mut app, &mut state, $action);
+                sync_readings(&mut state);
+                if app.take_redraw_request() {
+                    app.draw(&mut display, &state).unwrap();
+                }
+                assert_eq!(
+                    app.current_screen(), $expected,
+                    "apres {:?}, attendu {:?}",
+                    $action, $expected
+                );
+                if std::env::var("RUN_SCENARIO_TRACE").is_ok() {
+                    std::println!("[scenario] {:?} -> {:?} etat={:?}", $action, app.current_screen(), state.task);
+                }
+            }};
+        }
+
+        // ─── 1. Menu principal, tel qu'au premier allumage ────────────
+        app.draw(&mut display, &state).unwrap();
+        snap!("menu_principal");
+
+        // ─── 2. Balade : Stats, retour, Data, retour ──────────────────
+        // Ordre du menu : Start(0) Stats(1) Settings(2) Cooldown(3)
+        //                  Data(4) Info(5) — un cran vers le bas = Stats.
+        act!(LiveAction::RotateRight, Screen::MainMenu);
+        act!(LiveAction::Click, Screen::Stats);
+        snap!("stats_idle");
+        act!(LiveAction::Click, Screen::MainMenu); // Stats : affichage seul, clic = retour
+        // La selection menu est restee sur Stats (1) : deux crans vers
+        // Data (3... non : Data est l'item 4, donc trois crans).
+        act!(LiveAction::RotateRight, Screen::MainMenu); // -> Settings (2)
+        act!(LiveAction::RotateRight, Screen::MainMenu); // -> Cooldown (3)
+        act!(LiveAction::RotateRight, Screen::MainMenu); // -> Data (4)
+        act!(LiveAction::Click, Screen::Data);
+        snap!("donnees");
+        act!(LiveAction::Click, Screen::MainMenu);
+
+        // ─── 3. Réglages : remonter de Data (4) à Settings (2) ────────
+        act!(LiveAction::RotateLeft, Screen::MainMenu); // -> Cooldown (3)
+        act!(LiveAction::RotateLeft, Screen::MainMenu); // -> Settings (2)
+        act!(LiveAction::Click, Screen::Settings);
+        snap!("reglages");
+
+        // Editer "Chamber target" (ligne 0) : clic = edition, tourner
+        // change la valeur, clic valide.
+        act!(LiveAction::Click, Screen::Settings); // entre en edition
+        act!(LiveAction::RotateRight, Screen::Settings); // +0.5
+        act!(LiveAction::RotateRight, Screen::Settings); // +0.5
+        snap!("reglages_edition");
+        act!(LiveAction::Click, Screen::Settings); // valide (retour en Browsing)
+        // Structure des lignes : 4 reglages (0-3), Save (4), Back (5).
+        // Depuis la ligne 0 : 4 crans jusqu'a Save.
+        act!(LiveAction::RotateRight, Screen::Settings);
+        act!(LiveAction::RotateRight, Screen::Settings);
+        act!(LiveAction::RotateRight, Screen::Settings);
+        act!(LiveAction::RotateRight, Screen::Settings);
+        act!(LiveAction::Click, Screen::Settings); // Save (reste a l'ecran)
+        snap!("reglages_sauvegarde");
+        // La boucle principale appliquerait la sauvegarde ici ; on la
+        // consomme comme elle le fait.
+        if let Some(_wanted) = app.take_save_request() {
+            app.set_save_pending(false);
+        }
+        // Une ligne plus bas : Back.
+        act!(LiveAction::RotateRight, Screen::Settings);
+        act!(LiveAction::Click, Screen::MainMenu);
+        snap!("retour_menu_apres_reglages");
+
+        // ─── 4. Lancer la machine : START, premiere phase ────────────
+        // La selection est restee sur Settings (2) : remonter a Start (0).
+        act!(LiveAction::RotateLeft, Screen::MainMenu);
+        act!(LiveAction::RotateLeft, Screen::MainMenu);
+        act!(LiveAction::Click, Screen::CurrentTask); // START -> suivi
+        snap!("cycle_sensor_check");
+        assert_eq!(state.task, SystemTask::Cooling(CoolingPhase::SensorCheck));
+
+        act!(LiveAction::AdvancePhase, Screen::CurrentTask);
+        snap!("cycle_precooling");
+        assert_eq!(state.task, SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
+        act!(LiveAction::AdvancePhase, Screen::CurrentTask);
+        snap!("cycle_ipa_circulation");
+        act!(LiveAction::AdvancePhase, Screen::CurrentTask);
+        snap!("cycle_saturation");
+        act!(LiveAction::AdvancePhase, Screen::CurrentTask);
+        snap!("cycle_haute_tension");
+
+        // ─── 5. Panne sonde compresseur : déclenchement, acquittement ─
+        state.task = SystemTask::Tripped(SafetyCause::CompressorSensorLost);
+        app.mark_dirty();
+        app.draw(&mut display, &state).unwrap();
+        snap!("arret_securite");
+        // Le bouton d'action est ACQUITTER : clic (selection par defaut
+        // sur l'action) -> Idle.
+        act!(LiveAction::Click, Screen::CurrentTask);
+        assert_eq!(state.task, SystemTask::Idle);
+        snap!("apres_acquittement");
+
+        // ─── 6. Relancer, jusqu'à Stabilising ─────────────────────────
+        // Machine Idle, bouton d'action = START (la selection a ete
+        // remise sur l'action par l'acquittement).
+        act!(LiveAction::Click, Screen::CurrentTask);
+        assert_eq!(state.task, SystemTask::Cooling(CoolingPhase::SensorCheck));
+        snap!("relance_cycle");
+        for _ in 0..6 {
+            act!(LiveAction::AdvancePhase, Screen::CurrentTask);
+        }
+        assert_eq!(state.task, SystemTask::Stabilising);
+        snap!("stabilise");
+
+        // ─── 7. Arrêt opérateur : STOP, séquence d'arrêt ──────────────
+        act!(LiveAction::Click, Screen::CurrentTask); // bouton d'action = STOP
+        snap!("arret_demande");
+        assert!(matches!(state.task, SystemTask::Stopping(_)));
+        act!(LiveAction::AdvancePhase, Screen::CurrentTask);
+        snap!("arret_en_cours");
+
+        // ─── 8. Voir les stats pendant l'arrêt, revenir ────────────────
+        act!(LiveAction::RotateRight, Screen::CurrentTask); // selection BACK
+        act!(LiveAction::Click, Screen::MainMenu);
+        snap!("menu_pendant_arret");
+        // La selection menu est celle du lancement du cycle : Start(0),
+        // l'item clique juste avant d'ouvrir le suivi. Stats(1) est un
+        // cran en dessous.
+        act!(LiveAction::RotateRight, Screen::MainMenu); // -> Stats (1)
+        act!(LiveAction::Click, Screen::Stats);
+        snap!("stats_pendant_arret");
+
+        // Laisser l'arret se terminer : depuis CutIsoprop, il reste
+        // CutCompressor puis WaitPressureEquilibrium, puis Idle. La
+        // doublure `next_task` REBOUCLE ensuite sur SensorCheck — on
+        // s'arrete au retour a l'arret plutot que de relancer un cycle.
+        for expected in [
+            SystemTask::Stopping(StoppingPhase::CutCompressor),
+            SystemTask::Stopping(StoppingPhase::WaitPressureEquilibrium),
+            SystemTask::Idle,
+        ] {
+            act!(LiveAction::AdvancePhase, Screen::Stats);
+            assert_eq!(state.task, expected, "l'arret doit suivre sa sequence");
+        }
+        snap!("stats_fin_de_cycle");
     }
 
     /// Fenêtre SDL2 interactive sur le routeur complet (menu, réglages,

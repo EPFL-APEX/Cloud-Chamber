@@ -364,6 +364,7 @@ mod tests {
             snapshot,
             task: SystemTask::Cooling(CoolingPhase::HighVoltage),
             new_data: false,
+            core1_panicked: false,
         }
     }
 
@@ -386,6 +387,7 @@ mod tests {
             snapshot: SensorSnapshot::default(),
             task: SystemTask::Idle,
             new_data: false,
+            core1_panicked: false,
         };
         MainMenuScreen::new().draw(&mut d, &state).unwrap();
     }

@@ -17,7 +17,13 @@
 //! - [`protocol`] : commandes reçues de l'hôte
 
 pub mod protocol;
+// Transport USB : uniquement sur cible — il est entier à rp2040-hal, qui
+// n'est pas compilé sur hôte. `protocol`, lui, est compilable partout et
+// testé sur hôte : c'est la moitié du module qui a une valeur sans
+// matériel.
+#[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
 pub mod usb;
 
-pub use protocol::{handle_command, parse_f32};
+pub use protocol::{decide, handle_command};
+#[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
 pub use usb::{Serial, keepalive, usb_write};

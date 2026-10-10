@@ -32,9 +32,13 @@ pub fn usb_write(
             break;
         }
         match serial.write(&data[pos..]) {
-            Ok(0) => usb_dev.poll(&mut [serial]),
+            Ok(0) => {
+                let _ = usb_dev.poll(&mut [serial]);
+            }
             Ok(n) => pos += n,
-            Err(UsbError::WouldBlock) => usb_dev.poll(&mut [serial]),
+            Err(UsbError::WouldBlock) => {
+                let _ = usb_dev.poll(&mut [serial]);
+            }
             Err(_) => break,
         }
     }
@@ -50,6 +54,6 @@ pub fn keepalive(
 ) {
     let end = timer.get_counter().ticks() + ms * 1_000;
     while timer.get_counter().ticks() < end {
-        usb_dev.poll(&mut [serial]);
+        let _ = usb_dev.poll(&mut [serial]);
     }
 }

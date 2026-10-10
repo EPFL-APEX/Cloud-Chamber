@@ -64,16 +64,16 @@
 #![no_main]
 
 use defmt_rtt as _;
-use panic_probe as _;
 
 use rp2040_hal::{
     Clock, I2C, self as hal,
-    fugit::RateExtU32,
+    fugit::{ExtU32, RateExtU32},
     gpio::{DynBankId, DynPinId, FunctionI2c, PullUp, new_pin},
     i2c::{ValidatedPinScl, ValidatedPinSda},
     multicore::{Multicore, Stack},
 };
 
+use cloud_chamber_firmware::drivers::safe_panic;
 use cloud_chamber_firmware::board;
 use cloud_chamber_firmware::cloud_chamber_hal::timer::Duration;
 use cloud_chamber_firmware::config::settings::{Settings, SettingsStore};
@@ -122,6 +122,28 @@ const TEMP_RESOLUTION: Resolution = Resolution::Bits12;
 /// Pile du cœur 1. Vit en `.bss`, donc prise sur la RAM restante — la pile
 /// du cœur 0 garde tout le bas de la RAM, où loge le framebuffer de 150 Ko.
 static CORE1_STACK: Stack<CORE1_STACK_WORDS> = Stack::new();
+
+/// Gestionnaire de panique du firmware complet (les deux cœurs).
+///
+/// Priorité absolue aux sorties de puissance : la coupure précède tout,
+/// même la trace defmt — une écriture RTT n'aura jamais l'occasion de
+/// déclencher quoi que ce soit sur les relais. Ensuite seulement, le
+/// drapeau est publié pour l'écran (cœur 0) et la trace émise pour la
+/// sonde ; l'un comme l'autre sont du meilleur effort, la coupure ne
+/// l'est pas.
+///
+/// `panic_probe` faisait la trace et s'arrêtait là : les relais restaient
+/// en l'état — HT comprise — et l'écran affichait une machine saine. Ce
+/// gestionnaire inverse l'ordre des priorités.
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
+    safe_panic::cut_power_outputs();
+    safe_panic::mark_core1_panicked();
+    defmt::error!("PANIQUE : {}", defmt::Debug2Format(&info));
+    loop {
+        core::hint::spin_loop();
+    }
+}
 
 #[hal::entry]
 fn main() -> ! {
@@ -294,6 +316,14 @@ fn main() -> ! {
     // survie à une coupure est différée.
     let mut pending_save: Option<Settings> = None;
 
+    // Chien de garde : armé uniquement si le cœur 1 meurt (cf. bloc
+    // `core1_panicked` dans la boucle). Pris ici car le bloc
+    // d'initialisation des réglages consomme `board.fifo` avant.
+    let mut watchdog = board.watchdog;
+    // `Some(())` une fois l'écran d'erreur affiché : plus rien ne
+    // réalimente le chien de garde ensuite.
+    let mut dead: Option<()> = None;
+
     // ─── Cœur 0 : la boucle d'interface ───────────────────────────────────
     //
     // Rien ici ne dessine sous section critique : on prend une copie de
@@ -302,6 +332,20 @@ fn main() -> ! {
     let mut last_activity = board.timer.get_counter();
 
     loop {
+        // Une fois le cœur 1 mort, le seul geste qui reste : un clic
+        // (n'importe quel événement encodeur — le bouton est le seul qui
+        // en produise) coupe le chien de garde et force le reset au plus
+        // vite. Avant `pump`, qui sinon consommerait le clic pour le
+        // routeur — de toute façon hors jeu à ce point : plus personne
+        // ne navigue sur une machine dont le contrôle est mort.
+        if dead.is_some() && cloud_chamber_firmware::ui::console::next_event().is_some() {
+            defmt::error!("redemarrage demande par l'operateur");
+            watchdog.disable();
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+
         // Applique les événements empilés par l'interruption, journalise
         // les pertes, et dit si l'opérateur vient de se manifester.
         if console.pump(&mut app) {
@@ -315,8 +359,40 @@ fn main() -> ! {
             let mut shared = SHARED_STATE.borrow_ref_mut(cs);
             let copy = *shared;
             shared.new_data = false;
+            // Vu une fois suffit : plus personne ne peut re-lever ce
+            // drapeau (le cœur 1 est mort), le garder rendrait l'écran
+            // d'erreur permanent même après un hypothétique nouveau
+            // démarrage du cœur.
+            shared.core1_panicked = false;
             copy
         });
+
+        // Le cœur de contrôle est mort : l'écran d'erreur prend la place,
+        // et le chien de garde est armé — la boucle ne le réalimentera
+        // plus jamais. Deux façons de repartir, la même pour l'opérateur
+        // et la machine :
+        //
+        // - **clic sur REDEMARRER** : reset immédiat, en arrêtant
+        //   d'alimenter le chien de garde (`disable` puis plus rien) ;
+        // - **inaction** : le watchdog déclenche tout seul au bout du
+        //   délai ci-dessous. Une chambre qui a perdu son contrôle ne
+        //   doit pas rester muette indéfiniment.
+        //
+        // Les deux passent par le même reset matériel : au redémarrage,
+        // `main()` reconfigure tout depuis zéro, relais forcés au niveau
+        // bas par les constructeurs des drivers — l'état de panique ne
+        // survit pas au reset.
+        let error_pending = state.core1_panicked;
+        if error_pending && dead.is_none() {
+            defmt::error!("coeur 1 arrete : affichage de l'ecran d'erreur");
+            let screen = cloud_chamber_firmware::ui::screens::error::ErrorScreen;
+            let _ = console.display().render(|target| screen.draw(target));
+            // 60 s de délai avant l'auto-reset : assez pour lire
+            // l'écran, assez court pour ne pas laisser la chambre
+            // sans supervision très longtemps.
+            watchdog.start(60_000u32.micros());
+            dead = Some(());
+        }
 
         // Un changement de phase décidé par le cœur 1 ne passe par aucun
         // événement d'encodeur : sans ça l'écran de suivi resterait figé
@@ -372,6 +448,15 @@ fn main() -> ! {
             }
         }
         app.set_save_pending(pending_save.is_some());
+
+        if error_pending {
+            defmt::error!("coeur 1 arrete : affichage de l'ecran d'erreur");
+            let screen = cloud_chamber_firmware::ui::screens::error::ErrorScreen;
+            let _ = console.display().render(|target| screen.draw(target));
+            // Rien d'autre à redessiner par-dessus : le prochain tour
+            // relit `core1_panicked`, que la copie ci-dessus a déjà
+            // acquitté — le drapeau ne sera plus jamais levé.
+        }
 
         if app.take_redraw_request() {
             console.redraw(&app, &state);

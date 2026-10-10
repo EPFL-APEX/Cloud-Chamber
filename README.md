@@ -202,7 +202,7 @@ sans relancer la séquence.
 
 ## Tests
 
-187 tests, tous sur poste (`#![cfg_attr(not(test), no_std)]`) :
+272 tests, tous sur poste (`#![cfg_attr(not(test), no_std)]`) :
 
 - **Logique pure** — chaque transition, chaque timeout, `SafetyMonitor`.
 - **`control_loop`** — `run()` boucle indéfiniment, donc son corps est
@@ -225,22 +225,39 @@ d'intégration et de durcissement.
 
 ### Sécurité
 
-- **Une panique du cœur 1 ne coupe rien** : les relais restent en l'état
-  (HV éventuellement enclenchée) et le cœur 0 continue d'afficher une
-  machine normale. Il faudrait un gestionnaire de panique qui force les
-  sorties au niveau bas et le signale à l'écran.
-- **Surveillance réduite à la température compresseur.** Aucune sur la
-  pression, aucune sur le courant.
-- **`SafetyMonitor::reset()` n'est jamais appelé** : `Tripped` est définitif
-  jusqu'au reflash. Testé et documenté, mais le réarmement reste à concevoir.
+- **Une panique coupe tout et le dit** : le gestionnaire de panique
+  (`drivers/safe_panic.rs` + `main.rs`) force d'abord les six relais au
+  niveau bas par accès registre direct, puis publie un drapeau dans
+  `SHARED_STATE` que la boucle du cœur 0 transforme en écran d'erreur —
+  plus d'affichage d'une machine saine pendant que le contrôle est mort.
+  L'écran d'erreur porte un bouton **REDEMARRER** : le clic coupe le
+  chien de garde et force un reset immédiat ; à défaut, le watchdog
+  armé réinitialise la machine au bout de 60 s.
+- **Pas de sécurité pression, par design** : la chambre n'est pas
+  pressurisée — le BME280 mesure la pression atmosphérique ambiante,
+  une **donnée d'expérience** (elle entre dans le calcul des conditions
+  de nucléation), pas un danger à surveiller. Le jour où un circuit
+  serait pressurisé, le `match` exhaustif de `SafetyMonitor::severity_of`
+  imposera de dire comment le mesurer.
+- **Réarmement opérateur câblé** : un clic sur l'écran de suivi pendant un
+  déclenchement demande `Idle`, que `control_loop::tick` lit comme
+  acquittement — `Tripped` n'est plus définitif jusqu'au reflash.
 - **Broches et seuils provisoires** (`TODO CÂBLAGE`, `IPA_HEATER_TARGET_C`).
 
 ### Manquant
 
-- **Pas d'arrêt depuis l'UI.** Le canal existe (`take_task_request` renvoie
-  un `SystemTask`), il reste à câbler un bouton.
-- **Réglages non persistants** : pas d'implémentation `FlashOps` pour RP2040.
-- **Écrans incomplets** : `ui::router` a des `todo!()` sur `Idle`,
-  `ManualControl`, `Data`, `Info` — les ouvrir fait paniquer le cœur 0.
-- **`comm/` ne compile pas** sous `usb-comm` (4 erreurs : `request_start` /
-  `request_stop` inexistants, `PhaseClock` via un ré-export privé).
+- **Écran de suivi à boutons** : l'action principale suit l'état —
+  **START** à l'arrêt, **STOP** en course (séquence d'arrêt complète de
+  `logic::stopping`, coupure HV d'abord, pas un `Idle` sec),
+  **ACQUITTER** en déclenchement — plus un bouton **BACK**. La rotation
+  déplace la sélection entre les deux, le clic valide : deux boutons,
+  un seul bouton physique, le pattern encodeur.
+- **Surintensité** : les drivers `AdcCurrentSensor`/`AdcVoltageSensor`
+  existent et sont testés, mais aucune broche n'y est affectée et aucun
+  `SafetyCause` ne les consomme — à câbler avec le shunt réel.
+- **Écran `ManualControl`** : encore un carton d'attente — le mode manuel
+  n'existe pas.
+- **`comm/`** : réparé (protocole décorrélé de `logic/`, écrit dans
+  `SHARED_STATE` comme l'UI ; commandes `CYCLE 0|1`, `ACK`, `STATE`), mais
+  **pas de point d'entrée** : aucun binaire ne lit le port série pour
+  l'instant.

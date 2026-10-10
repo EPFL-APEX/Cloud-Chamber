@@ -223,6 +223,7 @@ mod tests {
             snapshot: SensorSnapshot::default(),
             task: SystemTask::Idle,
             new_data: false,
+            core1_panicked: false,
         }
     }
 
@@ -315,6 +316,7 @@ mod tests {
             snapshot,
             task: SystemTask::Cooling(CoolingPhase::PreCoolingThePlate),
             new_data: false,
+            core1_panicked: false,
         };
         screen.draw(&mut display, &state)?;
 
