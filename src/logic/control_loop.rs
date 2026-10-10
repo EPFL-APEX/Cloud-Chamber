@@ -97,9 +97,11 @@ where
 /// Un tour de la boucle de contrôle : sondage, réconciliation avec
 /// `SHARED_STATE`, décision (sécurité en priorité absolue, sinon logique de
 /// phase), application des actionneurs, publication. Extrait de `run()`
-/// uniquement pour être testable (`run()` ne retourne jamais) — même
-/// contenu que l'ancien corps de `loop`, aucun changement de comportement.
-fn tick<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Clk>(
+/// pour être testable (`run()` ne retourne jamais) et pour le simulateur
+/// (`chamber_sim`) qui a besoin d'intercaler ses pas de physique entre
+/// deux tours — même contenu que l'ancien corps de `loop`, aucun
+/// changement de comportement.
+pub fn tick<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Clk>(
     sensors: &mut Sensors<Ts, Ps>,
     actuators: &mut Actuators<Hv, Cool, Iso, Pump, Lights, Glass>,
     phase: &mut PhaseClock<Clk>,
@@ -1049,5 +1051,118 @@ mod tests {
             let after = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[CHAMBER_TEMP_IDX]);
             assert_eq!(after.unwrap().value.0, -10.0);
         });
+    }
+
+    // ─── Simulateur physique (feature `sim`) ─────────────────────────────
+
+    /// Régression du blocage en `CoolingPhase::HighVoltage` dans le
+    /// simulateur (`chamber_sim`) : la fenêtre de stabilité de
+    /// `high_voltage` (max−min ≤ 1 °C sur 60 s d'historique) exige deux
+    /// choses que le premier jet du simulateur n'avait pas —
+    ///
+    /// - sonder à la cadence du DS18B20 (~750 ms) : sinon les 90 cases
+    ///   de l'historique couvrent moins de 60 s, aucun échantillon
+    ///   n'est jamais assez ancien, et la fenêtre est déclarée non
+    ///   couverte pour toujours ;
+    /// - une plaque dont le réchauffement passif est lent (fuite
+    ///   faible, cf. `physics::ChamberParams::plate_leak`) : sinon le
+    ///   régulateur à hystérésis la fait osciller de plusieurs °C en
+    ///   quelques secondes, au-delà de la tolérance.
+    ///
+    /// Ce test rejoue la boucle de `chamber_sim` (même plomberie,
+    /// cadence ×60, sondage 750 ms) et doit atteindre `Stabilising` —
+    /// avant le correctif, la phase HV tournait jusqu'au timeout de
+    /// phase puis abandonnait vers `Idle`.
+    #[cfg(feature = "sim")]
+    #[test]
+    fn cooling_sequence_completes_through_simulated_physics() {
+        use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
+        use crate::cloud_chamber_hal::sensors::IndependentSensors;
+        use crate::cloud_chamber_hal::timer::MonotonicTimer;
+        use crate::simulator::actuators::SimActuators;
+        use crate::simulator::clock::VirtualClock;
+        use crate::simulator::physics::{ChamberParams, ChamberPhysics};
+        use crate::simulator::sensors::{SimPressureSensor, SimTempSensors};
+
+        with_isolated_shared_state(|| {
+            let clock = VirtualClock::new();
+            let physics = std::rc::Rc::new(std::cell::RefCell::new(
+                ChamberPhysics::new(ChamberParams::default()),
+            ));
+            let sim = SimActuators::new();
+            let power_panel = sim.panel();
+            let mut actuators = Actuators {
+                high_voltage: sim.high_voltage,
+                cooling: sim.cooling,
+                iso_heater: sim.iso_heater,
+                iso_pump: sim.iso_pump,
+                lights: sim.lights,
+                glass_heater: sim.glass_heater,
+            };
+            let mut sensors = Sensors::new(
+                SimTempSensors::new(std::rc::Rc::clone(&physics), &clock),
+                IndependentSensors([SimPressureSensor::new(&clock)]),
+            );
+
+            let mut phase = PhaseClock::new(&clock, SystemTask::Idle);
+            let mut safety = SafetyMonitor::new(SafetyConfig::default(), phase.now());
+            let mut history = MeasurementHistory::new();
+            let mut last_probe = Instant::ZERO;
+
+            // Démarre un cycle, comme le ferait l'UI depuis le menu.
+            critical_section::with(|cs| {
+                SHARED_STATE.borrow_ref_mut(cs).task =
+                    SystemTask::Cooling(CoolingPhase::SensorCheck)
+            });
+
+            // Un tour de boucle de `chamber_sim` à vitesse ×60 :
+            // ~0,66 s virtuelles par itération, sondage à 750 ms.
+            let mut last_task = SystemTask::Idle;
+            for _ in 0..20_000 {
+                let mut remaining = 0.66_f32;
+                while remaining > 0.0 {
+                    let step = remaining.min(0.5);
+                    physics.borrow_mut().step(step);
+                    clock.advance_seconds(step);
+                    remaining -= step;
+                }
+                physics.borrow_mut().apply_power(power_panel.borrow().0);
+
+                let plan =
+                    if clock.now().since(last_probe).as_millis() as u64 >= 750 {
+                        last_probe = clock.now();
+                        ProbingPlan::all()
+                    } else {
+                        ProbingPlan::new(false, false)
+                    };
+                tick(
+                    &mut sensors,
+                    &mut actuators,
+                    &mut phase,
+                    &mut safety,
+                    &mut history,
+                    plan,
+                );
+
+                let task = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).task);
+                if task != last_task {
+                    last_task = task;
+                    let plate = history.temps[CHAMBER_TEMP_IDX]
+                        .get(0)
+                        .map(|m| m.value.0)
+                        .unwrap_or(f32::NAN);
+                    let t = clock.now().since(Instant::ZERO).as_secs();
+                    println!("t={t:>6}s  {task:?}  plaque {plate:.2}");
+                    if task == SystemTask::Stabilising {
+                        assert!(
+                            plate < -30.0,
+                            "la plaque doit etre pres de la cible ({plate})"
+                        );
+                        return;
+                    }
+                }
+            }
+            panic!("la sequence n'atteint pas Stabilising : bloqué à {last_task:?}");
+        })
     }
 }

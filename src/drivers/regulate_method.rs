@@ -4,6 +4,7 @@ use crate::cloud_chamber_hal::measurement::Measurement;
 use crate::cloud_chamber_hal::ring_buffer::RingBuffer;
 use crate::cloud_chamber_hal::units::Unit;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegulationDirection {
     Upward,
     Downward,

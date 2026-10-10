@@ -209,7 +209,14 @@ impl<'a> RunningScreen<'a> {
             SystemTask::Tripped(_) => {
                 ("ACQUITTER", theme::WARNING_COLOR, theme::BACKGROUND_COLOR, true)
             }
-            SystemTask::Stopping(_) => ("...", theme::BACKGROUND_COLOR_DARKER, theme::DIM_COLOR, false),
+            // Pendant la séquence d'arrêt, le bouton propose REPRENDRE :
+            // tout est déjà coupé proprement et reprendre repasse par
+            // `SensorCheck` (cf. la garde dans `ui::router`). Un « ... »
+            // muet ici redémarrait la machine sans le dire — le bouton
+            // doit annoncer ce qu'il fait, pas le cacher.
+            SystemTask::Stopping(_) => {
+                ("REPRENDRE", theme::ACCENT_COLOR, theme::HIGHLIGHT_COLOR, true)
+            }
         };
 
         // Bouton sélectionné : contour accentué, l'autre en retrait.
