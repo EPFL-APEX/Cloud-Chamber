@@ -6,11 +6,15 @@
 //! confondre. Chaque cran d'encodeur pousse la nouvelle valeur dans
 //! [`crate::shared::settings`], d'où `logic/` la lit au tour suivant : c'est
 //! ça, « les changements s'appliquent tout de suite ». La flash, elle, n'est
-//! écrite que sur la ligne « Save », et pas par cet écran — il lève un
-//! drapeau que la boucle principale récupère via
+//! écrite que sur la ligne « Save & quit », et pas par cet écran — il lève
+//! un drapeau que la boucle principale récupère via
 //! [`SettingsScreen::take_save_request`], parce que c'est elle qui possède
 //! le `SettingsStore`. Même séparation que `ActuatorPlan`/`Actuators::apply`
 //! : l'écran décide, il n'agit pas.
+//!
+//! « Discard & quit » reprend le dernier état sauvegardé, y compris dans
+//! [`crate::shared::settings`] : abandonner doit défaire les publications
+//! à chaud de chaque cran, pas seulement quitter l'écran.
 
 use core::fmt::Write;
 
@@ -118,6 +122,21 @@ impl SettingsScreen {
         }
     }
 
+    /// Reprend les réglages courants de [`crate::shared::settings`].
+    ///
+    /// Nécessaire au démarrage : l'UI se monte **avant** le lancement du
+    /// cœur 1 (cf. `main.rs`), donc avant la relecture de la flash —
+    /// sans ce rappel, la copie de travail contiendrait les valeurs par
+    /// défaut tandis que le reste de la machine vivrait sur les
+    /// réglages relus. C'est l'écran d'affichage seul qui lit
+    /// `shared::settings` à chaque dessin ; celui-ci travaille sur une
+    /// copie, il faut la rafraîchir explicitement.
+    pub fn reload_from_shared(&mut self) {
+        let settings = shared_settings::get();
+        self.working = settings;
+        self.saved = settings;
+    }
+
     /// Signale qu'une sauvegarde demandée attend son tour.
     ///
     /// Sans ça, l'opérateur ne pourrait pas distinguer « écrit » de
@@ -192,7 +211,7 @@ impl SettingsScreen {
             lines[i] = SettingLine { label: spec.label, value: buffers[i].as_str() };
         }
         lines[SAVE_ROW] = SettingLine {
-            label: "Save to flash",
+            label: "Save & quit",
             value: match (self.save_pending, self.is_dirty()) {
                 // Demandé, pas encore écrit : la flash attend l'arrêt de la
                 // machine pour pouvoir effacer son secteur.
@@ -201,7 +220,7 @@ impl SettingsScreen {
                 (false, false) => "",
             },
         };
-        lines[BACK_ROW] = SettingLine { label: "Back", value: "" };
+        lines[BACK_ROW] = SettingLine { label: "Discard & quit", value: "" };
 
         SettingLines::<N_ROWS> {
             lines,
@@ -232,16 +251,25 @@ impl Rotary for SettingsScreen {
 }
 
 impl Click for SettingsScreen {
-    /// Sur la ligne Back, quitte l'écran. Sur la ligne Save, lève le
-    /// drapeau de sauvegarde sans changer de mode. Ailleurs, bascule entre
+    /// « Save & quit » lève le drapeau de sauvegarde **puis quitte** :
+    /// sortir de l'écran est le retour visuel que la demande a été prise
+    /// en compte — y rester laissait croire que le bouton ne faisait
+    /// rien. « Discard & quit » reprend le dernier état sauvegardé :
+    /// chaque cran avait déjà été publié à chaud (`nudge`), abandonner
+    /// doit aussi défaire l'effet live. Ailleurs, bascule entre
     /// navigation et édition sans naviguer.
     fn click(&mut self) -> Option<NavAction> {
-        if self.selected == BACK_ROW {
-            return Some(NavAction::Back);
-        }
         if self.selected == SAVE_ROW {
             self.save_requested = true;
-            return None;
+            return Some(NavAction::Back);
+        }
+        if self.selected == BACK_ROW {
+            self.working = self.saved;
+            // Re-publie : sans ça, « abandonner » quitterait l'écran en
+            // laissant la boucle de contrôle tourner sur les valeurs
+            // « abandonnées ».
+            shared_settings::set(self.working);
+            return Some(NavAction::Back);
         }
         self.mode = match self.mode {
             Mode::Browsing => Mode::Editing,
@@ -355,13 +383,52 @@ mod tests {
     }
 
     #[test]
-    fn save_row_flags_a_request_without_changing_mode() {
+    fn save_row_requests_and_quits() {
         with_isolated_settings(|| {
             let mut screen = SettingsScreen::new();
             screen.selected = SAVE_ROW;
-            assert_eq!(screen.click(), None);
-            assert_eq!(screen.mode, Mode::Browsing);
+            assert_eq!(screen.click(), Some(NavAction::Back));
             assert_eq!(screen.take_save_request(), Some(screen.working));
+        });
+    }
+
+    #[test]
+    fn discard_row_reverts_to_the_last_saved_state() {
+        with_isolated_settings(|| {
+            let mut screen = SettingsScreen::new();
+            let initial = screen.working;
+            let _ = screen.click(); // entre en édition
+            screen.right_turn(); // un cran, publié à chaud par `nudge`
+            assert!(screen.is_dirty());
+            assert_ne!(shared_settings::get(), initial);
+
+            screen.selected = BACK_ROW;
+            assert_eq!(screen.click(), Some(NavAction::Back));
+
+            assert_eq!(screen.working, initial);
+            assert_eq!(shared_settings::get(), initial);
+            assert!(!screen.is_dirty());
+        });
+    }
+
+    /// La séquence de démarrage réelle : l'écran est créé **avant** que
+    /// la flash soit relue, et `reload_from_shared` est appelé après —
+    /// sans lui, la copie de travail resterait aux valeurs par défaut
+    /// pendant que le reste de la machine vit sur les réglages relus.
+    #[test]
+    fn reload_from_shared_picks_up_the_boot_time_load() {
+        with_isolated_settings(|| {
+            let mut screen = SettingsScreen::new(); // avant le chargement
+
+            let mut loaded = Settings::defaults();
+            loaded.chamber_target = Celsius(-33.0);
+            shared_settings::set(loaded); // la relecture flash
+
+            screen.reload_from_shared();
+
+            assert_eq!(screen.working, loaded);
+            assert_eq!(screen.saved, loaded);
+            assert!(!screen.is_dirty());
         });
     }
 

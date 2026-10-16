@@ -63,6 +63,7 @@ use critical_section::Mutex;
 use display_interface::WriteOnlyDataCommand;
 use embedded_hal::digital::OutputPin;
 use embedded_graphics::pixelcolor::{Rgb565, raw::RawU16};
+use embedded_graphics::primitives::Rectangle;
 use embedded_graphics::prelude::*;
 use ili9341::Ili9341;
 
@@ -131,23 +132,59 @@ where
     /// réellement écrits selon la bande courante — `draw_fn` n'a pas à en
     /// tenir compte, elle dessine "l'écran entier" à chaque appel comme
     /// n'importe quel `DrawTarget` normal.
-    pub fn render<F, E>(&mut self, mut draw_fn: F) -> Result<(), E>
+    pub fn render<F, E>(&mut self, draw_fn: F) -> Result<(), E>
     where
         F: FnMut(&mut FbTarget<'_>) -> Result<(), E>,
     {
+        // Horloge constante : les durées mesurées tombent à zéro.
+        self.render_timed(draw_fn, || 0).map(|_| ())
+    }
+
+    /// Comme [`render`](Self::render), en mesurant séparément le temps
+    /// passé à dessiner dans le framebuffer (`draw_fn`) et le temps passé
+    /// à transférer sur SPI — `micros` rend un compteur monotone en
+    /// microsecondes.
+    ///
+    /// C'est l'instrument du diagnostic « un redraw prend combien, et
+    /// où » : les deux moitiés se soignent différemment (le dessin dépend
+    /// de l'écran et de ses icônes, le transfert du débit SPI et du
+    /// câblage).
+    pub fn render_timed<F, E>(
+        &mut self,
+        mut draw_fn: F,
+        mut micros: impl FnMut() -> u64,
+    ) -> Result<RenderStats, E>
+    where
+        F: FnMut(&mut FbTarget<'_>) -> Result<(), E>,
+    {
+        let mut stats = RenderStats::default();
         let mut band_start_y = 0;
         while band_start_y < SCREEN_HEIGHT {
             let mut target = FbTarget { pixels: self.framebuffer, band_start_y };
+            let t0 = micros();
             draw_fn(&mut target)?;
+            stats.draw_us += micros() - t0;
 
             let y0 = band_start_y as u16;
             let y1 = (band_start_y + BAND_HEIGHT - 1) as u16;
+            let t1 = micros();
             let _ = self.display.draw_raw_slice(0, y0, (SCREEN_WIDTH - 1) as u16, y1, self.framebuffer);
+            stats.transfer_us += micros() - t1;
 
             band_start_y += BAND_HEIGHT;
         }
-        Ok(())
+        Ok(stats)
     }
+}
+
+/// Durées des deux phases d'un rendu, en microsecondes — cf.
+/// [`FramebufferedDisplay::render_timed`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RenderStats {
+    /// Temps passé dans `draw_fn` — dessin dans le framebuffer.
+    pub draw_us: u64,
+    /// Temps passé à transférer le framebuffer sur SPI.
+    pub transfer_us: u64,
 }
 
 /// `DrawTarget` dessinant dans le framebuffer RAM d'une bande plutôt que
@@ -185,6 +222,37 @@ impl DrawTarget for FbTarget<'_> {
                     self.pixels[local_y * SCREEN_WIDTH + x] = RawU16::from(color).into_inner();
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Remplissage plein par la voie rapide : une rangée de l'aire est
+    /// une tranche contiguë du framebuffer, écrite d'un seul geste
+    /// plutôt que pixel par pixel à travers `draw_iter`.
+    ///
+    /// C'est le chemin de `clear()` et de chaque rectangle plein — de
+    /// très loin le premier poste de pixels d'un rendu (76 800 pour le
+    /// seul `clear`, que chaque écran paie) : sur M0+, la voie itérative
+    /// coûte des dizaines de cycles par pixel, celle-ci en coûte ~2.
+    /// Même clipping que `draw_iter` : hors écran, hors bande.
+    fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
+        let band_end_y = self.band_start_y + BAND_HEIGHT;
+        let x0 = area.top_left.x.max(0).min(SCREEN_WIDTH as i32) as usize;
+        let x1 = (area.top_left.x + area.size.width as i32)
+            .clamp(0, SCREEN_WIDTH as i32) as usize;
+        let y0 = area.top_left.y.max(self.band_start_y as i32);
+        let y1 = (area.top_left.y + area.size.height as i32)
+            .min(band_end_y as i32)
+            .max(self.band_start_y as i32);
+
+        if x0 >= x1 || y0 >= y1 {
+            return Ok(());
+        }
+
+        let value = RawU16::from(color).into_inner();
+        for y in y0..y1 {
+            let row = (y - self.band_start_y as i32) as usize * SCREEN_WIDTH;
+            self.pixels[row + x0..row + x1].fill(value);
         }
         Ok(())
     }
@@ -250,5 +318,41 @@ mod tests {
         let mut buf = [0u16; SCREEN_WIDTH * BAND_HEIGHT];
         let target = FbTarget { pixels: &mut buf, band_start_y: BAND_HEIGHT };
         assert_eq!(target.size(), Size::new(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32));
+    }
+
+    /// `fill_solid` doit produire exactement ce que la voie générique
+    /// (pixel par pixel via `draw_iter`) produisait — seule la vitesse
+    /// change. Couvre les aires à cheval sur les bords d'écran et sur
+    /// les bords de bande.
+    #[test]
+    fn fill_solid_matches_the_pixel_by_pixel_reference() {
+        let cases = [
+            Rectangle::new(Point::new(0, 0), Size::new(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32)),
+            Rectangle::new(Point::new(-10, -5), Size::new(30, 20)),
+            Rectangle::new(Point::new(300, 220), Size::new(50, 50)),
+            Rectangle::new(Point::new(100, 100), Size::new(0, 10)),
+        ];
+        for case in cases {
+            for band_start_y in [0, BAND_HEIGHT] {
+                let color = point_color(0xABCD);
+
+                let mut fast = [0u16; SCREEN_WIDTH * BAND_HEIGHT];
+                let mut target = FbTarget { pixels: &mut fast, band_start_y };
+                target.fill_solid(&case, color).unwrap();
+
+                let mut reference = [0u16; SCREEN_WIDTH * BAND_HEIGHT];
+                let mut ref_target = FbTarget { pixels: &mut reference, band_start_y };
+                ref_target
+                    .draw_iter(
+                        case.points().map(|p| Pixel(p, color)),
+                    )
+                    .unwrap();
+
+                assert_eq!(
+                    fast, reference,
+                    "fill_solid != reference pour {case:?} bande {band_start_y}"
+                );
+            }
+        }
     }
 }
