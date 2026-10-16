@@ -104,13 +104,39 @@ use cloud_chamber_firmware::ui::app::UiApp;
 use cloud_chamber_firmware::ui::console;
 use cloud_chamber_firmware::ui::navigator::Screen;
 
-/// Taille de la pile du cœur 1, en mots de 32 bits (soit 8 Ko).
+/// Taille de la pile du cœur 1, en mots de 32 bits (8192 mots = 32 Ko).
 ///
-/// La boucle de contrôle n'y alloue rien de volumineux : historique de
-/// mesures et état de phase sont des structures de quelques centaines
-/// d'octets, et l'appel le plus profond est le bit-banging 1-Wire. 8 Ko
-/// laisse une marge confortable sans mordre inutilement sur la RAM.
-const CORE1_STACK_WORDS: usize = 2048;
+/// `control_loop::run()` vit presque tout sur sa pile : historique de
+/// mesures (~13 Ko à 90 échantillons × 9 sondes × 16 octets), états de
+/// phase et de sécurité, `tick` inliné — le cadre complet de `run()`
+/// mesure ~28 Ko sur le binaire release (lu au désassemblage). La pile
+/// doit contenir ce cadre, plus la profondeur d'appel sous `run()`
+/// (`probe`, bit-banging 1-Wire) et une marge d'exception.
+///
+/// Une pile trop petite ne reste pas silencieuse : `CORE1_STACK` est un
+/// tableau en `.bss`, pas une région protégée — le débordement écrase
+/// les statics voisins (le bloc RTT, vu corrompu en pratique), puis
+/// finit en HardFault dans le `memcpy` de `MeasurementHistory::new`.
+/// C'est le crash vu au démarrage du cœur 1 avec les 8 Ko d'origine,
+/// devenus insuffisants quand l'historique est passé de 10 à 90
+/// échantillons.
+const CORE1_STACK_WORDS: usize = 8192;
+
+/// La pile du cœur 1 doit dépasser le cadre de `control_loop::run()`,
+/// dont l'historique de mesures est la part qui grandit quand la boucle
+/// garde plus d'échantillons. Le garde-fou ne peut pas mesurer le cadre
+/// compilé (il n'existe qu'après codegen, ~28 Ko mesurés en release) ;
+/// il borne au moins l'historique — le reste du cadre est couvert par
+/// la marge ci-dessous (~15 Ko, mesurés : cadre moins historique).
+const _: () = {
+    let stack = CORE1_STACK_WORDS * 4;
+    let history =
+        core::mem::size_of::<cloud_chamber_firmware::logic::probing::MeasurementHistory>();
+    assert!(
+        stack > history + 15 * 1024,
+        "pile du coeur 1 trop petite pour le cadre de control_loop::run"
+    );
+};
 
 /// Résolution des DS18B20. 12 bits est la valeur usine ; c'est aussi la
 /// plus lente à convertir, mais `probe()` ne bloque pas dessus (conversion
