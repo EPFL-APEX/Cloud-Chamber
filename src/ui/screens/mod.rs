@@ -8,7 +8,6 @@
 // gestionnaire de panique a signalé la mort du cœur 1 — le routeur est
 // déjà hors jeu à ce point (plus personne ne navigue).
 pub mod error;
-pub(super) mod data;
 pub(super) mod lights;
 pub(super) mod menu;
 pub(super) mod running;

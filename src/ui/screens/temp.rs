@@ -23,7 +23,7 @@ use embedded_graphics::{
     Drawable,
     draw_target::DrawTarget,
     geometry::{OriginDimensions, Point, Size},
-    mono_font::{MonoTextStyle, ascii::{FONT_6X10, FONT_6X13}},
+    mono_font::{MonoTextStyle, ascii::{FONT_6X10, FONT_6X13, FONT_9X18_BOLD}},
     pixelcolor::Rgb565,
     primitives::{Line, Primitive, PrimitiveStyle, Rectangle},
     text::{Alignment, Baseline, Text, TextStyleBuilder},
@@ -39,13 +39,11 @@ use crate::cloud_chamber_hal::{
 use crate::shared::data::SharedState;
 use crate::ui::theme;
 
-use super::stats::phase_label;
 
 const TEMP_GRAPH_BUFFER_LENGTH: usize = 100;
 
 const SCREEN_WIDTH: u32 = 320;
-const TOP_BAND_HEIGHT: u32 = 29;
-const PLOT: Rectangle = Rectangle::new(Point::new(10, 40), Size::new(300, 160));
+const PLOT: Rectangle = Rectangle::new(Point::new(10, 44), Size::new(300, 160));
 
 /// Intervalle minimal entre deux points retenus. En durée plutôt qu'en
 /// nombre d'appels, la cadence de sondage suivant le nombre de sondes.
@@ -111,28 +109,29 @@ impl TempGraphScreen {
             .alignment(Alignment::Right)
             .build();
 
-        // ─── Bande de titre, phase courante et valeur du moment ──────────────
-        Rectangle::new(Point::zero(), Size::new(SCREEN_WIDTH, TOP_BAND_HEIGHT))
-            .into_styled(PrimitiveStyle::with_fill(theme::BACKGROUND_COLOR_DARKER))
-            .draw(display)?;
-
+        // ─── Bandeau : le mot de l'écran, la sonde pilote à droite ───────────
+        // Même écran pour la veille et pour l'entrée COURBE du menu — le
+        // tampon se remplit en continu, l'entrée ne fait que l'afficher.
         Text::with_text_style(
-            phase_label(state.task),
-            Point::new(10, 8),
-            MonoTextStyle::new(&FONT_6X13, theme::HIGHLIGHT_COLOR),
+            "COURBE",
+            Point::new(12, 8),
+            MonoTextStyle::new(&FONT_9X18_BOLD, theme::HIGHLIGHT_COLOR),
             top_style,
         )
         .draw(display)?;
+        Line::new(Point::new(0, 36), Point::new(SCREEN_WIDTH as i32, 36))
+            .into_styled(PrimitiveStyle::with_stroke(theme::DIM_COLOR, 1))
+            .draw(display)?;
 
         match state.snapshot.temps[CHAMBER_TEMP_IDX] {
             Some(m) if !m.value.is_nan() => {
-                // Nommee, sinon rien ne dit de quelle sonde vient la
-                // courbe. Meme vocabulaire que `running.rs`.
+                // Nommée, sinon rien ne dit de quelle sonde vient la
+                // courbe. Même vocabulaire que `running.rs`.
                 let mut s: String<20> = String::new();
-                let _ = write!(s, "Chambre {:+.1} C", m.value.0);
+                let _ = write!(s, "CHAMBRE {:+.1} C", m.value.0);
                 Text::with_text_style(
                     s.as_str(),
-                    Point::new(SCREEN_WIDTH as i32 - 10, 8),
+                    Point::new(SCREEN_WIDTH as i32 - 12, 20),
                     MonoTextStyle::new(&FONT_6X13, theme::TEXT_COLOR),
                     right_style,
                 )

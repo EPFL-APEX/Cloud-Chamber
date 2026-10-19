@@ -129,6 +129,12 @@ impl UiApp {
         }
     }
 
+    /// Publie l'uptime lu par la boucle du cœur 0 — l'écran Info
+    /// l'affiche, personne d'autre ne s'en sert.
+    pub fn set_uptime(&mut self, uptime: Duration) {
+        self.screens.set_uptime(uptime);
+    }
+
     /// Transmet l'état d'une sauvegarde en attente à l'écran de réglages.
     pub fn set_save_pending(&mut self, pending: bool) {
         self.screens.set_save_pending(pending);
@@ -675,24 +681,29 @@ mod tests {
         app.draw(&mut display, &state).unwrap();
         snap!("menu_principal");
 
-        // ─── 2. Balade : Stats, retour, Data, retour ──────────────────
-        // Ordre du menu : Start(0) Stats(1) Settings(2) Cooldown(3)
-        //                  Data(4) Lights(5) — un cran vers le bas = Stats.
+        // ─── 2. Balade : Stats, retour, Courbe, retour, Infos, retour ───
+        // Ordre du menu : Start(0) Stats(1) Settings(2) Courbe(3)
+        //                  Lights(4) Infos(5) — un cran vers le bas = Stats.
         act!(LiveAction::RotateRight, Screen::MainMenu);
         act!(LiveAction::Click, Screen::Stats);
         snap!("stats_idle");
         act!(LiveAction::Click, Screen::MainMenu); // Stats : affichage seul, clic = retour
         // La selection menu est restee sur Stats (1) : deux crans vers
-        // Data (3... non : Data est l'item 4, donc trois crans).
+        // Courbe (item 3), deux de plus pour Infos (item 5).
         act!(LiveAction::RotateRight, Screen::MainMenu); // -> Settings (2)
-        act!(LiveAction::RotateRight, Screen::MainMenu); // -> Cooldown (3)
-        act!(LiveAction::RotateRight, Screen::MainMenu); // -> Data (4)
-        act!(LiveAction::Click, Screen::Data);
-        snap!("donnees");
+        act!(LiveAction::RotateRight, Screen::MainMenu); // -> Courbe (3)
+        act!(LiveAction::Click, Screen::Graph);
+        snap!("courbe");
+        act!(LiveAction::Click, Screen::MainMenu); // affichage seul, clic = retour
+        act!(LiveAction::RotateRight, Screen::MainMenu); // -> Lights (4)
+        act!(LiveAction::RotateRight, Screen::MainMenu); // -> Infos (5)
+        act!(LiveAction::Click, Screen::Info);
+        snap!("infos");
         act!(LiveAction::Click, Screen::MainMenu);
 
-        // ─── 3. Réglages : remonter de Data (4) à Settings (2) ────────
-        act!(LiveAction::RotateLeft, Screen::MainMenu); // -> Cooldown (3)
+        // ─── 3. Réglages : remonter de Infos (5) à Settings (2) ────────
+        act!(LiveAction::RotateLeft, Screen::MainMenu); // -> Lights (4)
+        act!(LiveAction::RotateLeft, Screen::MainMenu); // -> Courbe (3)
         act!(LiveAction::RotateLeft, Screen::MainMenu); // -> Settings (2)
         act!(LiveAction::Click, Screen::Settings);
         snap!("reglages");
