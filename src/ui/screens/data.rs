@@ -7,6 +7,9 @@
 //! l'état de fermeture — la vue de diagnostic, pour vérifier un capteur
 //! précis au banc plutôt qu'une grandeur de contrôle.
 //!
+//! Même facture que les autres écrans : bandeau d'un mot, filet, table
+//! libellé gris / valeur blanche alignée à droite, pied de deux cases.
+//!
 //! Une sonde muette affiche `---`, pas une valeur inventée — même règle
 //! que la bande du bas du menu principal.
 
@@ -14,13 +17,13 @@ use core::fmt::Write as _;
 use heapless::String;
 
 use embedded_graphics::{
+    Drawable,
     draw_target::DrawTarget,
     geometry::{OriginDimensions, Point, Size},
-    mono_font::{ascii::{FONT_6X10, FONT_9X18_BOLD}, MonoTextStyle},
+    mono_font::{MonoTextStyle, ascii::{FONT_6X10, FONT_6X13, FONT_9X18_BOLD}},
     pixelcolor::Rgb565,
-    primitives::{Primitive, PrimitiveStyleBuilder, Rectangle},
-    text::Text,
-    Drawable,
+    primitives::{Line, Primitive, PrimitiveStyle},
+    text::{Baseline, Text, TextStyleBuilder},
 };
 
 use crate::{
@@ -30,20 +33,24 @@ use crate::{
     ui::theme,
 };
 
+/// Marge gauche, celle de toute la grille.
+const MARGIN: i32 = 12;
+/// Filet sous le bandeau de titre.
+const RULE_TITLE: i32 = 36;
+/// Filet au-dessus du pied.
+const RULE_FOOTER: i32 = 164;
+
 /// Écran Données : les huit températures + pression + fermeture.
 pub struct DataScreen<'a> {
     pub state: &'a SharedState,
 }
 
-/// Une ligne « label : valeur » — `---` si la sonde n'a rien dit.
-fn temp_line(label: &str, value: Option<f32>, out: &mut String<32>) {
-    match value {
-        Some(v) if !v.is_nan() => {
-            let _ = write!(out, "{label}: {v:+6.1}C");
-        }
-        _ => {
-            let _ = write!(out, "{label}: ---");
-        }
+/// Libellé de câblage en capitales — la vue de diagnostic montre
+/// l'identité exacte de la sonde, un emplacement sans rôle câblé reste
+/// « LIBRE » : c'est une information en soi.
+fn push_upper(out: &mut String<24>, label: &str) {
+    for c in label.chars() {
+        let _ = out.push(c.to_ascii_uppercase());
     }
 }
 
@@ -53,70 +60,104 @@ impl<'a> DataScreen<'a> {
         D: DrawTarget<Color = Rgb565> + OriginDimensions,
     {
         let snap = &self.state.snapshot;
+        let top_style = TextStyleBuilder::new().baseline(Baseline::Top).build();
 
-        let bg = PrimitiveStyleBuilder::new().fill_color(theme::BACKGROUND_COLOR).build();
-        Rectangle::new(Point::zero(), Size::new(320, 240)).into_styled(bg).draw(display)?;
+        display.clear(theme::BACKGROUND_COLOR)?;
 
-        Text::new(
+        // ─── Bandeau : le mot de l'écran, un filet ────────────────────────
+        Text::with_text_style(
             "DONNEES",
-            Point::new(4, 14),
+            Point::new(MARGIN, 8),
             MonoTextStyle::new(&FONT_9X18_BOLD, theme::HIGHLIGHT_COLOR),
+            top_style,
+        )
+        .draw(display)?;
+        Line::new(Point::new(0, RULE_TITLE), Point::new(320, RULE_TITLE))
+            .into_styled(PrimitiveStyle::with_stroke(theme::DIM_COLOR, 1))
+            .draw(display)?;
+
+        // ─── Les huit sondes : deux colonnes, valeurs alignées à droite ───
+        for i in 0..NUMBER_OF_TEMP_SENSOR {
+            let col = (i % 2) as i32;
+            let row = (i / 2) as i32;
+            let x = MARGIN + col * 156;
+            let y = 48 + row * 28;
+
+            let mut label: String<24> = String::new();
+            if TEMP_LABELS[i].is_empty() {
+                let _ = label.push_str("LIBRE");
+            } else {
+                push_upper(&mut label, TEMP_LABELS[i]);
+            }
+            Text::with_text_style(
+                label.as_str(),
+                Point::new(x, y),
+                MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
+                top_style,
+            )
+            .draw(display)?;
+
+            let mut v: String<12> = String::new();
+            let (text, color) = match snap.temps[i] {
+                Some(m) if !m.value.is_nan() => {
+                    let _ = write!(v, "{:+.1}", m.value.0);
+                    (v.as_str(), theme::TEXT_COLOR)
+                }
+                _ => ("---", theme::DIM_COLOR),
+            };
+            Text::with_text_style(
+                text,
+                Point::new(x + 148 - text.len() as i32 * 6, y + 11),
+                MonoTextStyle::new(&FONT_6X13, color),
+                top_style,
+            )
+            .draw(display)?;
+        }
+
+        // ─── Pied : pression et fermeture, deux cases ─────────────────────
+        Line::new(Point::new(0, RULE_FOOTER), Point::new(320, RULE_FOOTER))
+            .into_styled(PrimitiveStyle::with_stroke(theme::DIM_COLOR, 1))
+            .draw(display)?;
+
+        Text::with_text_style(
+            "PRESSION",
+            Point::new(MARGIN, 174),
+            MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
+            top_style,
+        )
+        .draw(display)?;
+        // `HectoPascal` porte bien des hPa — même convention d'unité que
+        // l'écran de statistiques.
+        let mut p: String<16> = String::new();
+        let (p_text, p_color) = match snap.press[CHAMBER_PRESSURE_IDX] {
+            Some(m) if !m.value.is_nan() => {
+                let _ = write!(p, "{:.0} hPa", m.value.0);
+                (p.as_str(), theme::TEXT_COLOR)
+            }
+            _ => ("---", theme::DIM_COLOR),
+        };
+        Text::with_text_style(
+            p_text,
+            Point::new(MARGIN, 186),
+            MonoTextStyle::new(&FONT_6X13, p_color),
+            top_style,
         )
         .draw(display)?;
 
-        // Huit sondes sur deux colonnes : 6 lignes de 20 px à partir de
-        // y=34 tiennent dans 240 px avec la pression et la fermeture.
-        const LINE_HEIGHT: i32 = 20;
-        const COLUMN_WIDTH: i32 = 160;
-        const TOP: i32 = 34;
-
-        for i in 0..NUMBER_OF_TEMP_SENSOR {
-            let mut line: String<32> = String::new();
-            // Label vide pour un emplacement sans rôle câblé : montre
-            // l'index plutôt que rien — c'est une vue de diagnostic, un
-            // emplacement « ds5 » muet est une information en soi.
-            let label = if TEMP_LABELS[i].is_empty() { "libre" } else { TEMP_LABELS[i] };
-            temp_line(
-                label,
-                snap.temps[i].map(|m| m.value.0),
-                &mut line,
-            );
-            let x = 4 + (i as i32 % 2) * COLUMN_WIDTH;
-            let y = TOP + (i as i32 / 2) * LINE_HEIGHT;
-            Text::new(line.as_str(), Point::new(x, y), MonoTextStyle::new(&FONT_6X10, theme::TEXT_COLOR))
-                .draw(display)?;
-        }
-
-        // ─── Pression chambre ────────────────────────────────────────
-        {
-            let mut line: String<32> = String::new();
-            match snap.press[CHAMBER_PRESSURE_IDX].map(|m| m.value.0) {
-                Some(p) if !p.is_nan() => {
-                    let _ = write!(line, "pression chambre: {p:7.1} hPa");
-                }
-                _ => {
-                    let _ = write!(line, "pression chambre: ---");
-                }
-            }
-            Text::new(
-                line.as_str(),
-                Point::new(4, TOP + 4 * LINE_HEIGHT),
-                MonoTextStyle::new(&FONT_6X10, theme::TEXT_COLOR),
-            )
-            .draw(display)?;
-        }
-
-        // ─── Fermeture ────────────────────────────────────────────────
-        {
-            let mut line: String<32> = String::new();
-            let _ = write!(line, "chambre fermee: {}", if snap.is_closed { "oui" } else { "non" });
-            Text::new(
-                line.as_str(),
-                Point::new(4, TOP + 5 * LINE_HEIGHT),
-                MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
-            )
-            .draw(display)?;
-        }
+        Text::with_text_style(
+            "CHAMBRE",
+            Point::new(172, 174),
+            MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
+            top_style,
+        )
+        .draw(display)?;
+        Text::with_text_style(
+            if snap.is_closed { "FERMEE" } else { "OUVERTE" },
+            Point::new(172, 186),
+            MonoTextStyle::new(&FONT_6X13, theme::TEXT_COLOR),
+            top_style,
+        )
+        .draw(display)?;
 
         Ok(())
     }
@@ -129,7 +170,6 @@ mod tests {
     use crate::cloud_chamber_hal::timer::Instant;
     use crate::cloud_chamber_hal::units::Celsius;
     use crate::shared::data::{SensorSnapshot, SystemTask};
-    use embedded_graphics::pixelcolor::Rgb565;
     use embedded_graphics_simulator::SimulatorDisplay;
 
     fn make_display() -> SimulatorDisplay<Rgb565> {

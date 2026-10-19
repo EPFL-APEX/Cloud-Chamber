@@ -12,7 +12,7 @@ use embedded_graphics::{
     geometry::{OriginDimensions, Point, Size},
     mono_font::{ascii::FONT_6X13, MonoTextStyle},
     pixelcolor::Rgb565,
-    primitives::{Circle, Line, Primitive, PrimitiveStyle, Rectangle},
+    primitives::{Line, Primitive, PrimitiveStyle, Rectangle},
     text::{Alignment, Baseline, Text, TextStyle, TextStyleBuilder},
 };
 
@@ -39,7 +39,10 @@ pub struct StatusLine {
 }
 
 const WIDTH: i32 = 320;
-const ICON_SIZE: i32 = 14;
+/// Taille du carré d'état — même marqueur que l'écran de statistiques
+/// (`StatsScreen::state_mark`), la cohérence visuelle entre écrans se
+/// juge sur les détails.
+const ICON_SIZE: i32 = 8;
 const ICON_MARGIN_RIGHT: i32 = 10;
 
 /// Liste de `N_LINES` lignes statut, avec séparateurs optionnels
@@ -50,21 +53,23 @@ pub struct StatusLines<const N_LINES: usize, const SEPARATOR: bool> {
     /// l'écran place la liste sous sa bande de titre sans avoir à
     /// envelopper la cible de dessin.
     pub top: i32,
+    /// Hauteur d'un rang. Paramètre et non constante : l'écran de suivi
+    /// donne à sa checklist le rythme qui remplit sa zone — 6 rangs
+    /// serrés pour la séquence de démarrage, 4 rangs aérés pour celle
+    /// d'arrêt, même zone, même grille.
+    pub line_height: i32,
 }
 
 impl<const N_LINES: usize, const SEPARATOR: bool> StatusLines<N_LINES, SEPARATOR> {
-    const LINE_HEIGHT: i32 = if SEPARATOR { 22 } else { 20 };
-
     pub fn draw<D>(&self, display: &mut D) -> Result<(), D::Error>
     where
         D: DrawTarget<Color = Rgb565> + OriginDimensions,
     {
-        let char_style = MonoTextStyle::new(&FONT_6X13, theme::TEXT_COLOR);
         let text_style: TextStyle = TextStyleBuilder::new().baseline(Baseline::Top).build();
-        let separator_style = PrimitiveStyle::with_stroke(theme::ACCENT_COLOR, 1);
+        let separator_style = PrimitiveStyle::with_stroke(theme::DIM_COLOR, 1);
 
         for (i, line) in self.lines.iter().enumerate() {
-            let y = self.top + i as i32 * Self::LINE_HEIGHT;
+            let y = self.top + i as i32 * self.line_height;
 
             if SEPARATOR {
                 Line::new(Point::new(0, y), Point::new(WIDTH, y))
@@ -72,25 +77,25 @@ impl<const N_LINES: usize, const SEPARATOR: bool> StatusLines<N_LINES, SEPARATOR
                     .draw(display)?;
             }
 
-            // L'étape en cours est la seule mise en avant : libellé en
-            // couleur de sélection, les autres en texte normal.
-            let label_style = if line.status == Status::Active {
-                MonoTextStyle::new(&FONT_6X13, theme::HIGHLIGHT_COLOR)
+            // L'étape en cours porte le seul carré rouge de la liste —
+            // la marque fait l'emphase, pas la couleur du texte.
+            let label_style = if line.status == Status::Pending {
+                MonoTextStyle::new(&FONT_6X13, theme::DIM_COLOR)
             } else {
-                char_style
+                MonoTextStyle::new(&FONT_6X13, theme::TEXT_COLOR)
             };
-            Text::with_text_style(line.label, Point::new(10, y + 4), label_style, text_style)
+            Text::with_text_style(line.label, Point::new(10, y + 2), label_style, text_style)
                 .draw(display)?;
 
             let icon_top_left = Point::new(
                 WIDTH - ICON_MARGIN_RIGHT - ICON_SIZE,
-                y + (Self::LINE_HEIGHT - ICON_SIZE) / 2,
+                y + (self.line_height - ICON_SIZE) / 2,
             );
             draw_status_icon(display, icon_top_left, line.status)?;
         }
 
         if SEPARATOR {
-            let y = self.top + N_LINES as i32 * Self::LINE_HEIGHT;
+            let y = self.top + N_LINES as i32 * self.line_height;
             Line::new(Point::new(0, y), Point::new(WIDTH, y))
                 .into_styled(separator_style)
                 .draw(display)?;
@@ -149,9 +154,14 @@ impl<'a, const N_LINES: usize> SettingLines<'a, N_LINES> {
                 .draw(display)?;
             }
 
-            let label_color = if selected { theme::HIGHLIGHT_COLOR } else { theme::TEXT_COLOR };
-            let value_color = if selected && self.editing {
-                theme::WARNING_COLOR
+            // Sur la ligne sélectionnée, le texte reste blanc : l'azur
+            // sur le remplissage bleu manquait de contraste. La sélection
+            // se lit sur le fond rempli, pas sur une couleur de texte.
+            let label_color = theme::TEXT_COLOR;
+            let value_color = if selected {
+                // En édition, la valeur passe en avertissement : c'est le
+                // seul signal du mode, le libellé ne change pas.
+                if self.editing { theme::WARNING_COLOR } else { theme::TEXT_COLOR }
             } else {
                 theme::DIM_COLOR
             };
@@ -177,44 +187,33 @@ impl<'a, const N_LINES: usize> SettingLines<'a, N_LINES> {
     }
 }
 
-/// Dessine l'icône de statut. Fonction séparée (pas une branche de `match`
-/// qui retournerait une valeur `Drawable` commune) car les statuts
-/// dessinent des primitives de types concrets différents (`Circle` vs deux
-/// `Line`) — chaque branche appelle `.draw()` elle-même.
+/// Carré d'état — le même pictogramme partout (cf. `screens::stats`) :
+/// plein gris = fait, plein azur = en cours, contour = en attente.
+/// « L'écran ne doit pas raconter » : le carré porte le statut, le
+/// libellé reste du texte.
 fn draw_status_icon<D>(display: &mut D, top_left: Point, status: Status) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
     match status {
-        // "Spinner qui tourne" simplifié en icône statique : draw() n'a pas
-        // accès à une frame/au temps pour animer quoi que ce soit.
-        Status::Pending => Circle::new(top_left, ICON_SIZE as u32)
-            .into_styled(PrimitiveStyle::with_stroke(theme::DIM_COLOR, 2))
+        Status::Pending => Rectangle::new(top_left, Size::new(ICON_SIZE as u32, ICON_SIZE as u32))
+            .into_styled(PrimitiveStyle::with_stroke(theme::DIM_COLOR, 1))
             .draw(display),
 
-        // Même cercle que `Pending`, mais plein et en couleur d'alerte —
-        // se distingue au premier coup d'œil sans animation.
-        Status::Active => Circle::new(top_left, ICON_SIZE as u32)
-            .into_styled(PrimitiveStyle::with_fill(theme::WARNING_COLOR))
+        Status::Active => Rectangle::new(top_left, Size::new(ICON_SIZE as u32, ICON_SIZE as u32))
+            .into_styled(PrimitiveStyle::with_fill(theme::HIGHLIGHT_COLOR))
             .draw(display),
 
-        Status::Done => {
-            let style = PrimitiveStyle::with_stroke(theme::SUCCESS_COLOR, 2);
-            let p1 = top_left + Point::new(1, ICON_SIZE / 2);
-            let p2 = top_left + Point::new(ICON_SIZE / 2 - 1, ICON_SIZE - 3);
-            let p3 = top_left + Point::new(ICON_SIZE - 1, 1);
-            Line::new(p1, p2).into_styled(style).draw(display)?;
-            Line::new(p2, p3).into_styled(style).draw(display)
-        }
+        Status::Done => Rectangle::new(top_left, Size::new(ICON_SIZE as u32, ICON_SIZE as u32))
+            .into_styled(PrimitiveStyle::with_fill(theme::DIM_COLOR))
+            .draw(display),
 
-        Status::Failed => {
-            let style = PrimitiveStyle::with_stroke(theme::DANGER_COLOR, 2);
-            let top_right = top_left + Point::new(ICON_SIZE - 1, 0);
-            let bottom_left = top_left + Point::new(0, ICON_SIZE - 1);
-            let bottom_right = top_left + Point::new(ICON_SIZE - 1, ICON_SIZE - 1);
-            Line::new(top_left, bottom_right).into_styled(style).draw(display)?;
-            Line::new(top_right, bottom_left).into_styled(style).draw(display)
-        }
+        // Jamais produit aujourd'hui (aucun écran ne lève l'état) : le
+        // carré contour rouge dit « anomalie » sans réutiliser le plein
+        // de l'étape active.
+        Status::Failed => Rectangle::new(top_left, Size::new(ICON_SIZE as u32, ICON_SIZE as u32))
+            .into_styled(PrimitiveStyle::with_stroke(theme::DANGER_COLOR, 1))
+            .draw(display),
     }
 }
 
@@ -234,6 +233,7 @@ mod tests {
     fn draws_without_separator() {
         let mut d = make_display();
         let widget = StatusLines::<3, false> {
+            line_height: 18,
             lines: [
                 StatusLine { label: "Etape 1", status: Status::Done },
                 StatusLine { label: "Etape 2", status: Status::Active },
@@ -248,6 +248,7 @@ mod tests {
     fn draws_with_separator() {
         let mut d = make_display();
         let widget = StatusLines::<2, true> {
+            line_height: 22,
             lines: [
                 StatusLine { label: "A", status: Status::Pending },
                 StatusLine { label: "B", status: Status::Pending },
@@ -260,7 +261,7 @@ mod tests {
     #[test]
     fn draws_empty_list() {
         let mut d = make_display();
-        let widget = StatusLines::<0, false> { lines: [], top: 0 };
+        let widget = StatusLines::<0, false> { lines: [], top: 0, line_height: 18 };
         widget.draw(&mut d).unwrap();
     }
 
@@ -272,6 +273,7 @@ mod tests {
 
         let mut d = make_display();
         let widget = StatusLines::<2, true> {
+            line_height: 22,
             lines: [
                 StatusLine { label: "A", status: Status::Done },
                 StatusLine { label: "B", status: Status::Active },
@@ -306,6 +308,7 @@ mod tests {
                 StatusLine { label: "Haute tension", status: Status::Pending },
             ],
             top: 0,
+            line_height: 22,
         };
         widget.draw(&mut display)?;
 

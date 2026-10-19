@@ -73,7 +73,8 @@ const FIRST_COOLING_PHASE: SystemTask = SystemTask::Cooling(CoolingPhase::Sensor
 /// FONT_6X10 : une valeur plus longue est tronquée plutôt que de déborder
 /// sur la case voisine.
 fn bottom_value(slot: usize, state: &SharedState, out: &mut String<8>) {
-    let (compressor, high_voltage) = expected_outputs(state.task);
+    let outputs = expected_outputs(state.task);
+    let (compressor, high_voltage) = (outputs.compressor, outputs.high_voltage);
     match slot {
         0 => write_state(compressor, out),
         1 => write_temp(state.snapshot.temps[CHAMBER_TEMP_IDX], out),

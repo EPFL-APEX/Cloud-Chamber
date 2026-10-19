@@ -61,7 +61,10 @@ pub(super) fn phase_label(task: SystemTask) -> &'static str {
     }
 }
 
-fn alert_message(cause: SafetyCause) -> &'static str {
+/// Cause de déclenchement en toutes lettres — partagé avec
+/// `screens::running`, qui l'affiche dans son bandeau sur l'état
+/// `Tripped` (même vocabulaire des deux côtés, une seule table).
+pub(super) fn alert_message(cause: SafetyCause) -> &'static str {
     match cause {
         SafetyCause::CompressorOverheat => "SURCHAUFFE COMPRESSEUR",
         SafetyCause::CompressorSensorLost => "SONDE COMPRESSEUR PERDUE",
@@ -73,30 +76,45 @@ fn alert_message(cause: SafetyCause) -> &'static str {
 /// `logic::cooling`/`logic::stopping`, volontairement pas exposées comme
 /// table séparée pour éviter qu'elle diverge de la vraie logique de
 /// contrôle ; ici on ne fait qu'informer l'opérateur, pas piloter).
-pub(super) fn expected_outputs(task: SystemTask) -> (bool, bool) {
+///
+/// Quatre sorties, pas seulement les deux pilotant la sécurité : la pompe
+/// d'isopropanol et le chauffage de vitre font partie de ce que
+/// l'opérateur vient vérifier. Les valeurs reflètent les `ActuatorPlan`
+/// de chaque phase, relus à la main — `Stabilising` maintient tout ce
+/// que `FinalCheckBeforeStabilising` avait mis en marche, pompe, vitre
+/// et éclairage compris (le régime d'observation).
+pub(super) struct ExpectedOutputs {
+    pub compressor: bool,
+    pub high_voltage: bool,
+    pub iso_pump: bool,
+    pub glass_heater: bool,
+}
+
+pub(super) fn expected_outputs(task: SystemTask) -> ExpectedOutputs {
     use CoolingPhase::*;
     use StoppingPhase::*;
-    match task {
-        SystemTask::Cooling(SensorCheck) => (false, false),
-        SystemTask::Cooling(PreCoolingThePlate) => (true, false),
-        SystemTask::Cooling(StartingIpaCirculation) => (true, false),
-        SystemTask::Cooling(SaturatingAirWithIpa) => (true, false),
-        SystemTask::Cooling(HighVoltage) => (true, true),
-        SystemTask::Cooling(FinalCheckBeforeStabilising) => (true, true),
-        SystemTask::Stabilising => (true, true),
-        SystemTask::Stopping(CutHighVoltage) => (true, false),
-        SystemTask::Stopping(CutIsoprop) => (true, false),
-        SystemTask::Stopping(CutCompressor) => (false, false),
-        SystemTask::Stopping(WaitPressureEquilibrium) => (false, false),
-        SystemTask::Idle | SystemTask::Tripped(_) => (false, false),
-    }
+    let (compressor, high_voltage, iso_pump, glass_heater) = match task {
+        SystemTask::Cooling(SensorCheck) => (false, false, false, false),
+        SystemTask::Cooling(PreCoolingThePlate) => (true, false, false, false),
+        SystemTask::Cooling(StartingIpaCirculation) => (true, false, true, true),
+        SystemTask::Cooling(SaturatingAirWithIpa) => (true, false, true, true),
+        SystemTask::Cooling(HighVoltage) => (true, true, true, true),
+        SystemTask::Cooling(FinalCheckBeforeStabilising) => (true, true, true, true),
+        SystemTask::Stabilising => (true, true, true, true),
+        SystemTask::Stopping(CutHighVoltage) => (true, false, true, true),
+        SystemTask::Stopping(CutIsoprop) => (true, false, false, true),
+        SystemTask::Stopping(CutCompressor) => (false, false, false, false),
+        SystemTask::Stopping(WaitPressureEquilibrium) => (false, false, false, false),
+        SystemTask::Idle | SystemTask::Tripped(_) => (false, false, false, false),
+    };
+    ExpectedOutputs { compressor, high_voltage, iso_pump, glass_heater }
 }
 
 /// Écran de statistiques en direct : la machine entière sur un coup
 /// d'œil — phase, sonde pilote, cible, pression, fermeture, sorties
 /// attendues, et les huit sondes.
 ///
-/// # Mise en page, style suisse
+/// # Mise en page
 ///
 /// Trois zones coupées par des filets d'un pixel — le seul ornement :
 ///
@@ -195,33 +213,44 @@ impl<'a> StatsScreen<'a> {
             .draw(display)?;
         }
 
-        // Sorties attendues, alignées à droite du bandeau : un carré
-        // rouge par sortie active, un carré gris pour éteinte — lu
-        // comme un pictogramme, pas une phrase.
-        let (compressor, hv) = expected_outputs(task);
+        // Sorties attendues, à droite du bandeau : les quatre sorties
+        // de la machine en grille 2×2, un carré azur par sortie active,
+        // gris pour éteinte — lu comme un pictogramme, pas une phrase.
+        // Le carré est calé sur l'axe optique de son libellé : mark à
+        // label_y + 2, soit le même centre (le décalage de la première
+        // version se voyait).
+        let outputs = expected_outputs(task);
         Text::with_text_style(
             "SORTIES",
-            Point::new(240, 8),
+            Point::new(180, 6),
             MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
             top_style,
         )
         .draw(display)?;
-        state_mark(display, Point::new(240, 20), compressor)?;
-        Text::with_text_style(
-            "COMP",
-            Point::new(252, 21),
-            MonoTextStyle::new(&FONT_6X13, theme::TEXT_COLOR),
-            top_style,
-        )
-        .draw(display)?;
-        state_mark(display, Point::new(240, 34), hv)?;
-        Text::with_text_style(
-            "HV",
-            Point::new(252, 35),
-            MonoTextStyle::new(&FONT_6X13, theme::TEXT_COLOR),
-            top_style,
-        )
-        .draw(display)?;
+        // Colonne des libellés : la marque puis 4 px de gouttière, le
+        // libellé 6×13. Deux rangs de deux.
+        for (col, (label, on)) in [
+            ("COMP", outputs.compressor),
+            ("HV", outputs.high_voltage),
+            ("IPA", outputs.iso_pump),
+            ("VITRE", outputs.glass_heater),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let row = col / 2;
+            let col_x = col % 2;
+            let x = 180 + col_x as i32 * 68;
+            let y = 18 + row as i32 * 16;
+            state_mark(display, Point::new(x, y + 2), *on)?;
+            Text::with_text_style(
+                label,
+                Point::new(x + 12, y),
+                MonoTextStyle::new(&FONT_6X13, theme::TEXT_COLOR),
+                top_style,
+            )
+            .draw(display)?;
+        }
 
         // ─── Héroïne : sonde pilote + métadonnées ────────────────────────────
         let mut val: String<12> = String::new();
@@ -240,7 +269,7 @@ impl<'a> StatsScreen<'a> {
                     // Pas de « ° » : les fontes `ascii` n'ont pas ce
                     // glyphe, le caractère serait ignoré au rendu.
                     "C",
-                    Point::new(MARGIN + width + 2, 86),
+                    Point::new(MARGIN + width + 2, 81),
                     MonoTextStyle::new(&FONT_6X13, theme::DIM_COLOR),
                     top_style,
                 )
@@ -377,13 +406,13 @@ impl<'a> StatsScreen<'a> {
     }
 }
 
-/// Carré d'état 8×8 : rouge si la sortie est attendue active, gris discret
-/// sinon — l'unique touche de couleur du bandeau.
+/// Carré d'état 8×8 : azur si la sortie est attendue active, gris discret
+/// sinon — le pictogramme du bandeau, dans la couleur des icônes.
 fn state_mark<D>(display: &mut D, top_left: Point, on: bool) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565> + OriginDimensions,
 {
-    let color = if on { theme::DANGER_COLOR } else { theme::DIM_COLOR };
+    let color = if on { theme::HIGHLIGHT_COLOR } else { theme::DIM_COLOR };
     Rectangle::new(top_left, Size::new(8, 8))
         .into_styled(PrimitiveStyle::with_fill(color))
         .draw(display)
@@ -436,3 +465,4 @@ mod tests {
         StatsScreen { state: &state }.draw(&mut d).unwrap();
     }
 }
+
