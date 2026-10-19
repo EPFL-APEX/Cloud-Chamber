@@ -134,6 +134,15 @@ impl UiApp {
         self.screens.set_save_pending(pending);
     }
 
+    /// Recharge la copie de travail de l'écran de réglages depuis
+    /// `shared::settings` — à appeler au démarrage, après la relecture
+    /// de la flash : l'UI se monte avant elle (cf. `main.rs`), et
+    /// l'écran de réglages travaille sur une copie, pas sur une
+    /// lecture à chaque dessin.
+    pub fn reload_settings_from_shared(&mut self) {
+        self.screens.reload_settings_from_shared();
+    }
+
     /// Transmet une publication de mesures au graphe de veille.
     pub fn sample(&mut self, state: &SharedState) {
         self.screens.sample(state);
@@ -687,22 +696,20 @@ mod tests {
         act!(LiveAction::RotateRight, Screen::Settings); // +0.5
         snap!("reglages_edition");
         act!(LiveAction::Click, Screen::Settings); // valide (retour en Browsing)
-        // Structure des lignes : 4 reglages (0-3), Save (4), Back (5).
-        // Depuis la ligne 0 : 4 crans jusqu'a Save.
+        // Structure des lignes : 4 reglages (0-3), Save & quit (4),
+        // Discard & quit (5). Depuis la ligne 0 : 4 crans jusqu'a Save.
         act!(LiveAction::RotateRight, Screen::Settings);
         act!(LiveAction::RotateRight, Screen::Settings);
         act!(LiveAction::RotateRight, Screen::Settings);
         act!(LiveAction::RotateRight, Screen::Settings);
-        act!(LiveAction::Click, Screen::Settings); // Save (reste a l'ecran)
+        act!(LiveAction::Click, Screen::MainMenu); // Save & quit : quitte l'ecran
         snap!("reglages_sauvegarde");
         // La boucle principale appliquerait la sauvegarde ici ; on la
-        // consomme comme elle le fait.
+        // consomme comme elle le fait. L'écran de réglages vit dans le
+        // routeur, pas dans la pile : la demande survit au départ.
         if let Some(_wanted) = app.take_save_request() {
             app.set_save_pending(false);
         }
-        // Une ligne plus bas : Back.
-        act!(LiveAction::RotateRight, Screen::Settings);
-        act!(LiveAction::Click, Screen::MainMenu);
         snap!("retour_menu_apres_reglages");
 
         // ─── 4. Lancer la machine : START, premiere phase ────────────

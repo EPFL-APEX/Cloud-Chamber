@@ -262,6 +262,11 @@ impl CoreLockout {
         // ignoré au tour suivant.
         while !self.fifo.is_write_ready() {}
         self.fifo.write(RESUME);
+        // C'est le seul point de défaillance qui rend `Write` sans que la
+        // flash ait été touchée : la demande de sauvegarde est abandonnée
+        // par `persistence` (cf. main.rs), et sans cette trace l'échec ne
+        // se verrait que comme des réglages disparus au redémarrage.
+        defmt::warn!("ecriture flash annulee : le coeur 1 n'a pas confirme son stationnement");
         Err(StoreError::Write)
     }
 

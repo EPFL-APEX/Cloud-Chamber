@@ -390,11 +390,28 @@ impl Console {
     /// `TIMER_IRQ_0` scruter l'encodeur pendant tout le rendu — dessin des
     /// bandes compris, pas seulement le transfert SPI — et, sur la machine
     /// complète, ce qui évite de bloquer le cœur 1 sur le spinlock.
+    ///
+    /// Le temps est logué écran par écran, dessin et transfert séparés :
+    /// les deux se soignent différemment, et c'est ce qui a permis
+    /// d'attribuer les ~900 ms du menu au décodage de ses icônes (cf.
+    /// `ui::utils::Icons::draw_icon`).
     pub fn redraw(&mut self, app: &UiApp, state: &SharedState) {
-        let start = self.timer.get_counter();
-        let _ = self.display.render(|target| app.draw(target, state));
-        let elapsed = self.timer.get_counter() - start;
-        defmt::debug!("redraw termine en {} ms", elapsed.to_millis());
+        let timer = &self.timer;
+        let stats = match self.display.render_timed(
+            |target| app.draw(target, state),
+            || timer.get_counter().ticks(),
+        ) {
+            Ok(stats) => stats,
+            // `FbTarget::Error` est `Infallible` : ce bras n'existe que
+            // pour le prouver au compilateur.
+            Err(e) => match e {},
+        };
+        defmt::debug!(
+            "redraw {} : dessin {} ms + transfert {} ms",
+            defmt::Debug2Format(&app.current_screen()),
+            stats.draw_us / 1_000,
+            stats.transfer_us / 1_000,
+        );
     }
 
     /// L'écran nu, pour les usages qui ne passent pas par [`UiApp`] —

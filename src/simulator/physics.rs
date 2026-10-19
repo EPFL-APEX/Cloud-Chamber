@@ -61,9 +61,14 @@ pub struct ChamberParams {
     /// plus faible que `leak` : une vraie plaque froide est une masse
     /// isolée qui garde son froid des dizaines de minutes. C'est aussi
     /// ce qui rend la fenêtre de stabilité de `logic::cooling`
-    /// (`high_voltage` : max−min ≤ 1 °C sur 60 s) franchissable : entre
-    /// deux crêtes du régulateur à hystérésis, la plaque ne remonte
-    /// que de quelques dixièmes de degré par minute.
+    /// (`high_voltage` : max−min ≤ 1 °C sur 60 s) franchissable.
+    ///
+    /// **Plafond dur** : à −35 °C, la dérive vaut `plate_leak × 55 °C`.
+    /// La fenêtre ne passe que si 60 s de dérive tiennent dans la
+    /// tolérance, soit `plate_leak ≤ 0.00025` environ. Au-dessus (essayé
+    /// à 0.0004 : 1,32 °C par fenêtre), la phase HV ne passe jamais et
+    /// chaque cycle finit au timeout — cf. le test de régression
+    /// `cooling_sequence_completes_through_simulated_physics`.
     pub plate_leak: f32,
     /// Bruit de mesure (±°C) : une sonde réelle n'est pas nette, et le
     /// régulateur à hystérésis doit le tolérer.
@@ -83,7 +88,7 @@ impl Default for ChamberParams {
             compressor_cool_tau: 0.02,
             conduction: 0.004,
             leak: 0.0012,
-            plate_leak: 0.0004,
+            plate_leak: 0.0002,
             noise: 0.05,
         }
     }

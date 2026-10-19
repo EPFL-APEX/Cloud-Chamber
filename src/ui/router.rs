@@ -273,6 +273,13 @@ impl Screens {
         self.settings.set_save_pending(pending);
     }
 
+    /// Recharge la copie de travail de l'écran de réglages depuis
+    /// `shared::settings` — cf. `SettingsScreen::reload_from_shared`,
+    /// appelé au démarrage après la relecture de la flash.
+    pub fn reload_settings_from_shared(&mut self) {
+        self.settings.reload_from_shared();
+    }
+
     /// Alimente le graphe de veille, quel que soit l'écran affiché. Sinon
     /// elle s'ouvrirait sur un cadre vide.
     pub fn sample(&mut self, state: &SharedState) {

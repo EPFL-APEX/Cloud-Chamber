@@ -31,7 +31,6 @@ use embedded_graphics::{
 
 use crate::{
     cloud_chamber_hal::config::{CHAMBER_PRESSURE_IDX, CHAMBER_TEMP_IDX},
-    config::operating::{SATURATION_TARGET_C, TARGET_CHAMBER_TEMP},
     config::wiring::TEMP_LABELS,
     logic::{cooling::CoolingPhase, security::SafetyCause, stopping::StoppingPhase},
     shared::data::{SharedState, SystemTask},
@@ -105,6 +104,12 @@ impl<'a> StatsScreen<'a> {
     {
         let snap = &self.state.snapshot;
         let task = self.state.task;
+        // Les cibles affichées sont celles de l'opérateur, pas les
+        // constantes de `operating` : l'écran de réglages les change à
+        // chaud, et afficher la constante ferait croire que l'édition
+        // n'a pas pris (vu en pratique : « Cible: -40.0C » quoi qu'il
+        // arrive).
+        let settings = crate::shared::settings::get();
 
         let bg = PrimitiveStyleBuilder::new().fill_color(theme::BACKGROUND_COLOR).build();
         Rectangle::new(Point::zero(), Size::new(320, 240)).into_styled(bg).draw(display)?;
@@ -132,7 +137,7 @@ impl<'a> StatsScreen<'a> {
             let (text, color) = match snap.temps[CHAMBER_TEMP_IDX] {
                 Some(m) if !m.value.is_nan() => {
                     write!(val, "{:+6.1}C", m.value.0).ok();
-                    let color = if m.value <= SATURATION_TARGET_C { theme::ACCENT_COLOR }
+                    let color = if m.value <= settings.saturation_target { theme::ACCENT_COLOR }
                         else { theme::TEXT_COLOR };
                     (val.as_str(), color)
                 }
@@ -142,11 +147,11 @@ impl<'a> StatsScreen<'a> {
         }
 
         // ─── Cible ────────────────────────────────────────────────────────────
-        // Pas encore de consigne opérateur dynamique sur cette branche —
-        // affiche la constante de configuration en attendant.
+        // La consigne opérateur, celle que la boucle de contrôle suit
+        // réellement (`shared::settings`).
         {
             let mut s: String<24> = String::new();
-            write!(s, "Cible: {:+5.1}C", TARGET_CHAMBER_TEMP.0).ok();
+            write!(s, "Cible: {:+5.1}C", settings.chamber_target.0).ok();
             Text::new(s.as_str(), Point::new(4, 84), MonoTextStyle::new(&FONT_6X10, theme::TEXT_COLOR))
                 .draw(display)?;
         }

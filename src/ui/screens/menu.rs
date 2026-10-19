@@ -17,7 +17,6 @@ use embedded_graphics::{
     Drawable,
     draw_target::DrawTarget,
     geometry::{OriginDimensions, Point, Size},
-    image::Image,
     mono_font::{MonoTextStyle, ascii::{FONT_6X10, FONT_6X13}},
     pixelcolor::Rgb565,
     primitives::{Line, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle},
@@ -261,12 +260,10 @@ impl MainMenuScreen {
         const VALUE_MARGIN: i32 = 22;
 
         for i in 0..4 {
-            let icon = stats_icons.get(i).unwrap();
-
             let icon_x = STATS_ICON_STARTING_COORDS.0 + i as i32 * SEPARATION_STEP_SIZE;
             let icon_y = STATS_ICON_STARTING_COORDS.1;
 
-            Image::new(&icon, Point::new(icon_x, icon_y)).draw(display)?;
+            stats_icons.draw_icon(display, i, Point::new(icon_x, icon_y))?;
 
             let mut value: String<8> = String::new();
             bottom_value(i, state, &mut value);
@@ -294,12 +291,12 @@ impl MainMenuScreen {
             for j in 0..3 {
                 let id: usize = i * 3 + j;
                 let selected_menu_shift: usize = if id == self.selected as usize { 6 } else { 0 };
-                let icon = menu_icons.get(id + selected_menu_shift).unwrap();
 
                 let icon_x = ICON_STARTING_COORDS.0 + j as i32 * ICON_STEP_SIZE.0;
                 let icon_y = ICON_STARTING_COORDS.1 + i as i32 * ICON_STEP_SIZE.1;
 
-                Image::new(&icon, Point::new(icon_x, icon_y)).draw(display)?;
+                menu_icons
+                    .draw_icon(display, id + selected_menu_shift, Point::new(icon_x, icon_y))?;
             }
         }
 

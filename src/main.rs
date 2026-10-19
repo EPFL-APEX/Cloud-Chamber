@@ -330,8 +330,22 @@ fn main() -> ! {
         FlashSettingsStore::new(flash_rp2040::Rp2040Flash::new(board.fifo), settings_offset);
     match store.load() {
         Some(saved) => {
+            // La trace des valeurs elles-mêmes : si le contenu relu est
+            // faux (mauvais secteur, corruption silencieuse), c'est ici
+            // que ça se voit, avant que la boucle n'applique quoi que
+            // ce soit.
+            defmt::info!(
+                "reglages relus depuis la flash : {}",
+                defmt::Debug2Format(&saved)
+            );
             settings::set(saved);
-            defmt::info!("reglages relus depuis la flash");
+            // L'écran de réglages travaille sur une copie prise à sa
+            // création — avant le lancement du cœur 1, donc avant cette
+            // relecture : sans ce rappel, il afficherait (et
+            // republierait au premier cran d'encodeur) les valeurs par
+            // défaut, pendant que le reste de la machine vivrait sur
+            // les réglages relus.
+            app.reload_settings_from_shared();
         }
         None => defmt::info!("aucun reglage en flash, valeurs par defaut"),
     }
