@@ -143,6 +143,14 @@ impl UiApp {
         self.screens.reload_settings_from_shared();
     }
 
+    /// Récupère un changement d'état demandé pour la bande LED du
+    /// compartiment machine, et le consomme — cf.
+    /// `screens::lights::LightsScreen::take_strip_request`. La boucle
+    /// du cœur 0 applique, seule propriétaire du GPIO.
+    pub fn take_strip_request(&mut self) -> Option<bool> {
+        self.screens.take_strip_request()
+    }
+
     /// Transmet une publication de mesures au graphe de veille.
     pub fn sample(&mut self, state: &SharedState) {
         self.screens.sample(state);
@@ -669,7 +677,7 @@ mod tests {
 
         // ─── 2. Balade : Stats, retour, Data, retour ──────────────────
         // Ordre du menu : Start(0) Stats(1) Settings(2) Cooldown(3)
-        //                  Data(4) Info(5) — un cran vers le bas = Stats.
+        //                  Data(4) Lights(5) — un cran vers le bas = Stats.
         act!(LiveAction::RotateRight, Screen::MainMenu);
         act!(LiveAction::Click, Screen::Stats);
         snap!("stats_idle");
