@@ -104,8 +104,8 @@ pub(super) fn expected_outputs(task: SystemTask) -> (bool, bool) {
 /// PHASE                        SORTIES
 /// HAUTE TENSION                ▪ COMP    ▪ HV
 /// ─────────────────────────────────────────────  y=56
-/// BASE CHAMBRE    │  CIBLE -40.0 °C   CHAMBRE
-/// -35.2 °C        │  1013 hPa         FERMEE
+/// BASE CHAMBRE    |  CIBLE -40.0 C    CHAMBRE
+/// -35.2 C        |  1013 hPa         FERMEE
 /// ─────────────────────────────────────────────  y=128
 /// SORTIE COMPRESSION  +42.3 │ SORTIE CONDENSEUR  +38.9
 /// ENTREE EVAPOR.      -12.4 │ SORTIE EVAPOR.    -18.7
@@ -237,7 +237,9 @@ impl<'a> StatsScreen<'a> {
                 )
                 .draw(display)?;
                 Text::with_text_style(
-                    "°C",
+                    // Pas de « ° » : les fontes `ascii` n'ont pas ce
+                    // glyphe, le caractère serait ignoré au rendu.
+                    "C",
                     Point::new(MARGIN + width + 2, 86),
                     MonoTextStyle::new(&FONT_6X13, theme::DIM_COLOR),
                     top_style,
@@ -266,7 +268,7 @@ impl<'a> StatsScreen<'a> {
             top_style,
         )
         .draw(display)?;
-        let _ = write!(s, "{:+.1} °C", settings.chamber_target.0);
+        let _ = write!(s, "{:+.1} C", settings.chamber_target.0);
         Text::with_text_style(
             s.as_str(),
             Point::new(172, 76),
