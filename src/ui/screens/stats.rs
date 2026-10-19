@@ -24,14 +24,15 @@ use embedded_graphics::{
     geometry::{OriginDimensions, Point, Size},
     mono_font::{ascii::{FONT_6X10, FONT_6X13, FONT_9X18_BOLD, FONT_10X20}, MonoTextStyle},
     pixelcolor::Rgb565,
-    primitives::{Primitive, PrimitiveStyleBuilder, Rectangle},
-    text::Text,
+    primitives::{Line, Primitive, PrimitiveStyle, Rectangle},
+    text::{Baseline, Text, TextStyleBuilder},
     Drawable,
 };
 
 use crate::{
-    cloud_chamber_hal::config::{CHAMBER_PRESSURE_IDX, CHAMBER_TEMP_IDX},
-    config::wiring::TEMP_LABELS,
+    cloud_chamber_hal::config::{
+        CHAMBER_PRESSURE_IDX, CHAMBER_TEMP_IDX, NUMBER_OF_TEMP_SENSOR,
+    },
     logic::{cooling::CoolingPhase, security::SafetyCause, stopping::StoppingPhase},
     shared::data::{SharedState, SystemTask},
     ui::theme,
@@ -91,11 +92,57 @@ pub(super) fn expected_outputs(task: SystemTask) -> (bool, bool) {
     }
 }
 
-/// Écran de statistiques en direct : mesures, phase courante, sorties
-/// actionneurs attendues pour cette phase.
+/// Écran de statistiques en direct : la machine entière sur un coup
+/// d'œil — phase, sonde pilote, cible, pression, fermeture, sorties
+/// attendues, et les huit sondes.
+///
+/// # Mise en page, style suisse
+///
+/// Trois zones coupées par des filets d'un pixel — le seul ornement :
+///
+/// ```text
+/// PHASE                        SORTIES
+/// HAUTE TENSION                ▪ COMP    ▪ HV
+/// ─────────────────────────────────────────────  y=56
+/// BASE CHAMBRE    │  CIBLE -40.0 °C   CHAMBRE
+/// -35.2 °C        │  1013 hPa         FERMEE
+/// ─────────────────────────────────────────────  y=128
+/// SORTIE COMPRESSION  +42.3 │ SORTIE CONDENSEUR  +38.9
+/// ENTREE EVAPOR.      -12.4 │ SORTIE EVAPOR.    -18.7
+/// SONDE 5              +21.7 │ SONDE 6            +21.2
+/// SONDE 7              +20.9 │
+/// ```
+///
+/// La grille et les alignements font le travail : libellés en petit
+/// gris, valeurs en blanc, une seule couleur vive (le carré d'état
+/// rouge quand la sortie est attendue active, le mot de phase en rouge
+/// sur déclenchement sécurité).
 pub struct StatsScreen<'a> {
     pub state: &'a SharedState,
 }
+
+/// Libellés d'affichage des sondes, dans l'ordre du bus
+/// (`config::wiring::TEMP_LABELS`). Sans accents : les fontes `ascii`
+/// n'ont pas de É. La sonde pilote (index 4) y a sa place pour garder
+/// l'alignement des index, mais elle est rendue en zone héroïne, pas
+/// dans la table.
+const DISPLAY_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
+    "SORTIE COMPRESSION",
+    "SORTIE CONDENSEUR",
+    "ENTREE EVAPOR.",
+    "SORTIE EVAPOR.",
+    "BASE CHAMBRE",
+    "SONDE 5",
+    "SONDE 6",
+    "SONDE 7",
+];
+
+/// Ordonnées des deux filets qui découpent l'écran.
+const RULE_Y: [i32; 2] = [56, 128];
+/// Abscisse du filet vertical de la zone héroïne.
+const VERTICAL_RULE_X: i32 = 160;
+/// Marge gauche, celle de toutes les zones.
+const MARGIN: i32 = 12;
 
 impl<'a> StatsScreen<'a> {
     pub fn draw<D>(&self, display: &mut D) -> Result<(), D::Error>
@@ -111,96 +158,233 @@ impl<'a> StatsScreen<'a> {
         // arrive).
         let settings = crate::shared::settings::get();
 
-        let bg = PrimitiveStyleBuilder::new().fill_color(theme::BACKGROUND_COLOR).build();
-        Rectangle::new(Point::zero(), Size::new(320, 240)).into_styled(bg).draw(display)?;
+        display.clear(theme::BACKGROUND_COLOR)?;
 
-        // ─── En-tête : SAFE ou cause de déclenchement ────────────────────────
-        let (header, header_color) = match task {
-            SystemTask::Tripped(cause) => (alert_message(cause), theme::DANGER_COLOR),
-            _ => ("SAFE", theme::SUCCESS_COLOR),
-        };
-        Text::new(header, Point::new(4, 14), MonoTextStyle::new(&FONT_9X18_BOLD, header_color))
-            .draw(display)?;
+        // ─── Bandeau : phase + sorties attendues ─────────────────────────────
+        let top_style = TextStyleBuilder::new().baseline(Baseline::Top).build();
+        Text::with_text_style(
+            "PHASE",
+            Point::new(MARGIN, 8),
+            MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
+            top_style,
+        )
+        .draw(display)?;
 
-        // ─── Phase courante ───────────────────────────────────────────────────
         let phase_color = match task {
             SystemTask::Tripped(_) => theme::DANGER_COLOR,
             SystemTask::Idle => theme::DIM_COLOR,
-            _ => theme::WARNING_COLOR,
+            _ => theme::TEXT_COLOR,
         };
-        Text::new(phase_label(task), Point::new(4, 34), MonoTextStyle::new(&FONT_9X18_BOLD, phase_color))
+        Text::with_text_style(
+            phase_label(task),
+            Point::new(MARGIN, 20),
+            MonoTextStyle::new(&FONT_9X18_BOLD, phase_color),
+            top_style,
+        )
+        .draw(display)?;
+
+        // Sur déclenchement, la cause sous la phase — c'est elle que
+        // l'opérateur cherche en traversant la pièce.
+        if let SystemTask::Tripped(cause) = task {
+            Text::with_text_style(
+                alert_message(cause),
+                Point::new(MARGIN, 42),
+                MonoTextStyle::new(&FONT_6X10, theme::DANGER_COLOR),
+                top_style,
+            )
+            .draw(display)?;
+        }
+
+        // Sorties attendues, alignées à droite du bandeau : un carré
+        // rouge par sortie active, un carré gris pour éteinte — lu
+        // comme un pictogramme, pas une phrase.
+        let (compressor, hv) = expected_outputs(task);
+        Text::with_text_style(
+            "SORTIES",
+            Point::new(240, 8),
+            MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
+            top_style,
+        )
+        .draw(display)?;
+        state_mark(display, Point::new(240, 20), compressor)?;
+        Text::with_text_style(
+            "COMP",
+            Point::new(252, 21),
+            MonoTextStyle::new(&FONT_6X13, theme::TEXT_COLOR),
+            top_style,
+        )
+        .draw(display)?;
+        state_mark(display, Point::new(240, 34), hv)?;
+        Text::with_text_style(
+            "HV",
+            Point::new(252, 35),
+            MonoTextStyle::new(&FONT_6X13, theme::TEXT_COLOR),
+            top_style,
+        )
+        .draw(display)?;
+
+        // ─── Héroïne : sonde pilote + métadonnées ────────────────────────────
+        let mut val: String<12> = String::new();
+        match snap.temps[CHAMBER_TEMP_IDX] {
+            Some(m) if !m.value.is_nan() => {
+                let _ = write!(val, "{:+.1}", m.value.0);
+                let width = val.len() as i32 * 10;
+                Text::with_text_style(
+                    val.as_str(),
+                    Point::new(MARGIN, 76),
+                    MonoTextStyle::new(&FONT_10X20, theme::TEXT_COLOR),
+                    top_style,
+                )
+                .draw(display)?;
+                Text::with_text_style(
+                    "°C",
+                    Point::new(MARGIN + width + 2, 86),
+                    MonoTextStyle::new(&FONT_6X13, theme::DIM_COLOR),
+                    top_style,
+                )
+                .draw(display)?;
+            }
+            // Rien plutôt que « --- » en gros : une sonde muette ne doit
+            // pas ressembler à une mesure.
+            _ => {
+                Text::with_text_style(
+                    "---",
+                    Point::new(MARGIN, 80),
+                    MonoTextStyle::new(&FONT_6X13, theme::DIM_COLOR),
+                    top_style,
+                )
+                .draw(display)?;
+            }
+        }
+
+        let mut s: String<24> = String::new();
+        // Cible opérateur.
+        Text::with_text_style(
+            "CIBLE",
+            Point::new(172, 64),
+            MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
+            top_style,
+        )
+        .draw(display)?;
+        let _ = write!(s, "{:+.1} °C", settings.chamber_target.0);
+        Text::with_text_style(
+            s.as_str(),
+            Point::new(172, 76),
+            MonoTextStyle::new(&FONT_6X13, theme::TEXT_COLOR),
+            top_style,
+        )
+        .draw(display)?;
+
+        // Pression — `HectoPascal` porte bien des hPa (cf. doc du
+        // module pour l'unité, corrigée d'un affichage 1000× trop grand).
+        Text::with_text_style(
+            "PRESSION",
+            Point::new(172, 92),
+            MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
+            top_style,
+        )
+        .draw(display)?;
+        let mut p: String<24> = String::new();
+        let (p_text, p_color) = match snap.press[CHAMBER_PRESSURE_IDX].map(|m| m.value.0) {
+            Some(v) => {
+                let _ = write!(p, "{:.0} hPa", v);
+                (p.as_str(), theme::TEXT_COLOR)
+            }
+            None => ("---", theme::DIM_COLOR),
+        };
+        Text::with_text_style(
+            p_text,
+            Point::new(172, 104),
+            MonoTextStyle::new(&FONT_6X13, p_color),
+            top_style,
+        )
+        .draw(display)?;
+
+        // Fermeture de la chambre.
+        Text::with_text_style(
+            "CHAMBRE",
+            Point::new(252, 64),
+            MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
+            top_style,
+        )
+        .draw(display)?;
+        Text::with_text_style(
+            if snap.is_closed { "FERMEE" } else { "OUVERTE" },
+            Point::new(252, 76),
+            MonoTextStyle::new(&FONT_6X13, theme::TEXT_COLOR),
+            top_style,
+        )
+        .draw(display)?;
+
+        // ─── Filets de la grille ─────────────────────────────────────────────
+        Line::new(Point::new(0, RULE_Y[0]), Point::new(320, RULE_Y[0]))
+            .into_styled(PrimitiveStyle::with_stroke(theme::DIM_COLOR, 1))
+            .draw(display)?;
+        Line::new(Point::new(0, RULE_Y[1]), Point::new(320, RULE_Y[1]))
+            .into_styled(PrimitiveStyle::with_stroke(theme::DIM_COLOR, 1))
+            .draw(display)?;
+        Line::new(
+            Point::new(VERTICAL_RULE_X, 64),
+            Point::new(VERTICAL_RULE_X, 112),
+        )
+        .into_styled(PrimitiveStyle::with_stroke(theme::DIM_COLOR, 1))
+        .draw(display)?;
+
+        // ─── Table des autres sondes : deux colonnes ─────────────────────────
+        // La sonde pilote vit en zone héroïne ; les sept autres, une par
+        // cellule, libellé gris sur valeur blanche, valeurs alignées à
+        // droite de leur colonne.
+        let mut cell = 0usize;
+        for i in 0..NUMBER_OF_TEMP_SENSOR {
+            if i == CHAMBER_TEMP_IDX {
+                continue;
+            }
+            let col = (cell % 2) as i32;
+            let row = (cell / 2) as i32;
+            let x = MARGIN + col * 156;
+            let y = 138 + row * 26;
+
+            Text::with_text_style(
+                DISPLAY_LABELS[i],
+                Point::new(x, y),
+                MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
+                top_style,
+            )
             .draw(display)?;
 
-        // ─── Base chambre (ds4) — grande valeur ──────────────────────────────
-        {
-            let mut val: String<12> = String::new();
-            let (text, color) = match snap.temps[CHAMBER_TEMP_IDX] {
-                Some(m) if !m.value.is_nan() => {
-                    write!(val, "{:+6.1}C", m.value.0).ok();
-                    let color = if m.value <= settings.saturation_target { theme::ACCENT_COLOR }
-                        else { theme::TEXT_COLOR };
-                    (val.as_str(), color)
-                }
-                _ => ("  ---  ", theme::DIM_COLOR),
-            };
-            Text::new(text, Point::new(4, 66), MonoTextStyle::new(&FONT_10X20, color)).draw(display)?;
-        }
-
-        // ─── Cible ────────────────────────────────────────────────────────────
-        // La consigne opérateur, celle que la boucle de contrôle suit
-        // réellement (`shared::settings`).
-        {
-            let mut s: String<24> = String::new();
-            write!(s, "Cible: {:+5.1}C", settings.chamber_target.0).ok();
-            Text::new(s.as_str(), Point::new(4, 84), MonoTextStyle::new(&FONT_6X10, theme::TEXT_COLOR))
-                .draw(display)?;
-        }
-
-        // ─── Compresseur + HT (attendus pour la phase courante) ──────────────
-        {
-            let (compressor, hv) = expected_outputs(task);
-            let (ct, cc) = if compressor { ("COMP: ON ", theme::SUCCESS_COLOR) }
-                else { ("COMP: OFF", theme::DIM_COLOR) };
-            let (ht, hc) = if hv { ("HV: ON ", theme::WARNING_COLOR) }
-                else { ("HV: OFF", theme::DIM_COLOR) };
-            Text::new(ct, Point::new(4, 100), MonoTextStyle::new(&FONT_6X13, cc)).draw(display)?;
-            Text::new(ht, Point::new(140, 100), MonoTextStyle::new(&FONT_6X13, hc)).draw(display)?;
-        }
-
-        // ─── Circuit ds0..ds3 ─────────────────────────────────────────────────
-        for i in 0..4usize {
-            let mut s: String<16> = String::new();
+            let mut s: String<12> = String::new();
             let (text, color) = match snap.temps[i] {
                 Some(m) if !m.value.is_nan() => {
-                    write!(s, "{}: {:+5.1}C", &TEMP_LABELS[i][..3.min(TEMP_LABELS[i].len())], m.value.0).ok();
+                    let _ = write!(s, "{:+.1}", m.value.0);
                     (s.as_str(), theme::TEXT_COLOR)
                 }
                 _ => ("---", theme::DIM_COLOR),
             };
-            let x = 4 + (i as i32 % 2) * 158;
-            let y = 118 + (i as i32 / 2) * 14;
-            Text::new(text, Point::new(x, y), MonoTextStyle::new(&FONT_6X10, color)).draw(display)?;
-        }
+            Text::with_text_style(
+                text,
+                Point::new(x + 148 - text.len() as i32 * 6, y + 10),
+                MonoTextStyle::new(&FONT_6X13, color),
+                top_style,
+            )
+            .draw(display)?;
 
-        // ─── Pression chambre ─────────────────────────────────────────────────
-        {
-            let mut s: String<32> = String::new();
-            // `HectoPascal` porte bien des hPa (`Abp2Sensor` convertit les
-            // bar du capteur, `Bme280Sensor` lit déjà des hPa) — l'ancien
-            // libellé « bar » affichait donc la valeur 1000× trop grande.
-            match snap.press[CHAMBER_PRESSURE_IDX].map(|m| m.value.0) {
-                Some(p) => { write!(s, "Pression: {:7.1} hPa", p).ok(); }
-                None => { write!(s, "Pression: ---").ok(); }
-            }
-            Text::new(s.as_str(), Point::new(4, 150), MonoTextStyle::new(&FONT_6X10, theme::TEXT_COLOR))
-                .draw(display)?;
+            cell += 1;
         }
-
-        // BME280 (ambiance) et sursaturation IPA : non représentables,
-        // cf. doc du module en tête de fichier.
 
         Ok(())
     }
+}
+
+/// Carré d'état 8×8 : rouge si la sortie est attendue active, gris discret
+/// sinon — l'unique touche de couleur du bandeau.
+fn state_mark<D>(display: &mut D, top_left: Point, on: bool) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565> + OriginDimensions,
+{
+    let color = if on { theme::DANGER_COLOR } else { theme::DIM_COLOR };
+    Rectangle::new(top_left, Size::new(8, 8))
+        .into_styled(PrimitiveStyle::with_fill(color))
+        .draw(display)
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
