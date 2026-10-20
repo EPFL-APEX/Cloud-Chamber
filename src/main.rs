@@ -86,7 +86,8 @@ use cloud_chamber_firmware::cloud_chamber_hal::sensors::{IndependentSensors, Sen
 use cloud_chamber_firmware::config::operating::REGULATION_BAND_C;
 use cloud_chamber_firmware::config::wiring::{
     PIN_COMPRESSOR_RELAY, PIN_HV_RELAY, PIN_I2C_SCL, PIN_I2C_SDA, PIN_ISO_HEATER_RELAY,
-    PIN_LED_STRIP, PIN_LIGHTS_RELAY, PIN_ONEWIRE, PIN_PUMP_RELAY, PIN_WINDOW_HEATER_RELAY,
+    PIN_FANS_RELAY, PIN_LED_STRIP, PIN_LIGHTS_RELAY, PIN_ONEWIRE, PIN_PUMP_RELAY,
+    PIN_WINDOW_HEATER_RELAY,
 };
 use cloud_chamber_firmware::drivers::bme280::{Bme280Driver, Bme280Sensor};
 use cloud_chamber_firmware::drivers::breaker::GpioBreaker;
@@ -97,6 +98,7 @@ use cloud_chamber_firmware::drivers::ds18b20::{
 };
 use cloud_chamber_firmware::drivers::heater::Heater;
 use cloud_chamber_firmware::drivers::lights::Lights;
+use cloud_chamber_firmware::drivers::fans::Fans;
 use cloud_chamber_firmware::drivers::pump::Pump;
 use cloud_chamber_firmware::drivers::window_heater::WindowHeater;
 use cloud_chamber_firmware::logic::control_loop;
@@ -292,6 +294,7 @@ fn main() -> ! {
         iso_pump: Pump::new(board::configure_relay_pin(PIN_PUMP_RELAY)),
         lights: Lights::new(board::configure_relay_pin(PIN_LIGHTS_RELAY)),
         glass_heater: WindowHeater::new(board::configure_relay_pin(PIN_WINDOW_HEATER_RELAY)),
+        fans: Fans::new(board::configure_relay_pin(PIN_FANS_RELAY)),
     };
 
     // ─── Cœur 1 : la boucle de contrôle ───────────────────────────────────

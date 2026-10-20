@@ -41,7 +41,7 @@
 //! reflash ou d'un reset.
 
 use crate::config::wiring::{
-    PIN_COMPRESSOR_RELAY, PIN_HV_RELAY, PIN_ISO_HEATER_RELAY, PIN_LIGHTS_RELAY,
+    PIN_COMPRESSOR_RELAY, PIN_FANS_RELAY, PIN_HV_RELAY, PIN_ISO_HEATER_RELAY, PIN_LIGHTS_RELAY,
     PIN_PUMP_RELAY, PIN_WINDOW_HEATER_RELAY,
 };
 
@@ -51,13 +51,14 @@ const SIO_BASE: u32 = 0xd000_0000;
 const GPIO_OUT_W1TC: u32 = SIO_BASE + 0x04;
 
 /// Toutes les broches de sortie de puissance, coupées ensemble.
-const POWER_OUTPUT_PINS: [u8; 6] = [
+const POWER_OUTPUT_PINS: [u8; 7] = [
     PIN_HV_RELAY,
     PIN_COMPRESSOR_RELAY,
     PIN_ISO_HEATER_RELAY,
     PIN_PUMP_RELAY,
     PIN_LIGHTS_RELAY,
     PIN_WINDOW_HEATER_RELAY,
+    PIN_FANS_RELAY,
 ];
 
 /// Force toutes les sorties de puissance au niveau bas.

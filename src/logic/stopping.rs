@@ -59,6 +59,7 @@ fn cut_high_voltage(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan)
     // circuler pendant la décharge) ; chauffage IPA coupé.
     let plan = ActuatorPlan::all_off()
         .with_cooling(settings::get().saturation_target)
+        .with_fans()
         .with_iso_pump()
         .with_glass_heater();
     (SystemTask::Stopping(StoppingPhase::CutHighVoltage), plan)
@@ -72,7 +73,7 @@ fn cut_isoprop(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
     // pompe s'arrête sans que la plaque se réchauffe.
     (SystemTask::Stopping(StoppingPhase::CutIsoprop), ActuatorPlan{
         cooling: Some(settings::get().saturation_target), iso_heater:None, high_voltage: false,
-        iso_pump: false, lights: None, glass_heater: true,
+        iso_pump: false, lights: None, glass_heater: true, fans: true,
     })
 }
 

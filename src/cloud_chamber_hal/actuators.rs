@@ -106,6 +106,10 @@ pub struct ActuatorPlan {
     pub iso_pump: bool,
     pub lights: Option<bool>,
     pub glass_heater: bool,
+    /// Ventilateurs du radiateur : évacuent la chaleur que le circuit
+    /// frigoriférant y dépose. Binaires — ils suivent l'activité du
+    /// circuit, pas une mesure.
+    pub fans: bool,
 }
 
 impl ActuatorPlan {
@@ -122,6 +126,7 @@ impl ActuatorPlan {
             iso_pump: false,
             lights: None,
             glass_heater: false,
+            fans: false,
         }
     }
 
@@ -167,11 +172,18 @@ impl ActuatorPlan {
         self.glass_heater = true;
         self
     }
+
+    /// Allume les ventilateurs du radiateur.
+    #[must_use]
+    pub const fn with_fans(mut self) -> Self {
+        self.fans = true;
+        self
+    }
 }
 
-/// Regroupe les six actionneurs de la chambre. Ne décide rien — exécute
+/// Regroupe les sept actionneurs de la chambre. Ne décide rien — exécute
 /// seulement ce qu'on lui demande.
-pub struct Actuators<Hv, Cool, Iso, Pump, Lights, Glass> {
+pub struct Actuators<Hv, Cool, Iso, Pump, Lights, Glass, Fans> {
     pub high_voltage: Hv,
     pub cooling: Cool,
     pub iso_heater: Iso,
@@ -182,6 +194,8 @@ pub struct Actuators<Hv, Cool, Iso, Pump, Lights, Glass> {
     pub lights: Lights,
     /// Chauffage anti-buée de la vitre supérieure.
     pub glass_heater: Glass,
+    /// Ventilateurs du radiateur.
+    pub fans: Fans,
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

@@ -32,24 +32,24 @@ pub const NUMBER_OF_AMPMETER: usize = 0;
 // porte sa propre sonde pour son thermostat.
 
 /// Sonde posée sur le corps du compresseur — surveillance surchauffe.
-pub const COMPRESSOR_IDX: usize = 0;
+pub const COMPRESSOR_IDX: usize = 2;
 /// Entrée du radiateur.
-pub const RADIATOR_IN_IDX: usize = 1;
+pub const RADIATOR_IN_IDX: usize = 6;
 /// Sortie du radiateur.
-pub const RADIATOR_OUT_IDX: usize = 2;
+pub const RADIATOR_OUT_IDX: usize = 1;
 /// Entrée de la plaque froide.
 pub const PLATE_IN_IDX: usize = 3;
 /// Milieu de la plaque froide — LA sonde pilote : c'est elle que la
 /// séquence de refroidissement cible, que la sécurité surveille, que
 /// l'écran Stats met en héroïne.
-pub const PLATE_MID_IDX: usize = 4;
+pub const PLATE_MID_IDX: usize = 0;
 /// Sortie de la plaque froide.
 pub const PLATE_OUT_IDX: usize = 5;
 /// Corps de chauffe de l'isopropanol — sonde du thermostat IPA.
-pub const ISO_HEATER_IDX: usize = 6;
+pub const ISO_HEATER_IDX: usize = 7;
 /// Gaz à l'entrée du compresseur (aspiration). Lu, affiché — aucun rôle
 /// de contrôle pour l'instant.
-pub const COMPRESSOR_IN_IDX: usize = 7;
+pub const COMPRESSOR_IN_IDX: usize = 4;
 
 /// Le placement doit couvrir le bus sans doublon — vérifié à la
 /// compilation, comme `ASSIGNED_PINS` pour les broches : réaffecter un

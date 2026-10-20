@@ -16,6 +16,9 @@ pub struct PowerState {
     pub high_voltage: bool,
     pub iso_pump: bool,
     pub glass_heater: bool,
+    // Ventilateurs du radiateur : suivis pour le panneau, sans effet
+    // thermique (cf. RelayKind::Fans).
+    pub fans: bool,
     /// Injecté par le scénario de test (`SimSensors::fail_compressor_probe`)
     /// quand on simule une panne : la sonde sortie-compresseur devient
     /// muette, mais la physique, elle, continue de calculer sa température

@@ -105,7 +105,9 @@ fn sensor_check(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
 
 fn pre_cooling_the_plate(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
     let precool_target = settings::get().precool_target;
-    let plan = ActuatorPlan::all_off().with_cooling(precool_target);
+    let plan = ActuatorPlan::all_off().with_cooling(precool_target).with_fans();
+    // Ventilateurs dès que le circuit travaille : le radiateur évacue
+    // ce que le compresseur y dépose.
     match history.is_at_or_below(PLATE_MID_IDX, precool_target) {
         true => (SystemTask::Cooling(CoolingPhase::StartingIpaCirculation), plan),
         false => (SystemTask::Cooling(CoolingPhase::PreCoolingThePlate), plan),
@@ -119,6 +121,7 @@ fn starting_ipa_circulation(_history: &MeasurementHistory) -> (SystemTask, Actua
     let plan = ActuatorPlan::all_off()
         .with_cooling(settings.precool_target)
         .with_iso_heater(settings.ipa_heater_target)
+        .with_fans()
         .with_iso_pump()
         .with_glass_heater();
     (SystemTask::Cooling(CoolingPhase::StartingIpaCirculation), plan)
@@ -129,6 +132,7 @@ fn saturating_air_with_ipa(history: &MeasurementHistory) -> (SystemTask, Actuato
     let plan = ActuatorPlan::all_off()
         .with_cooling(settings.saturation_target)
         .with_iso_heater(settings.ipa_heater_target)
+        .with_fans()
         .with_iso_pump()
         .with_glass_heater();
     // #todo faire une vrai estimation de la saturation....
@@ -144,6 +148,7 @@ fn high_voltage(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
         .with_cooling(settings.saturation_target)
         .with_iso_heater(settings.ipa_heater_target)
         .with_high_voltage()
+        .with_fans()
         .with_iso_pump()
         .with_lights(true)
         .with_glass_heater();
@@ -161,6 +166,7 @@ fn final_check_before_stabilising(history: &MeasurementHistory) -> (SystemTask, 
         .with_cooling(settings.saturation_target)
         .with_iso_heater(settings.ipa_heater_target)
         .with_high_voltage()
+        .with_fans()
         .with_iso_pump()
         .with_lights(true)
         .with_glass_heater();

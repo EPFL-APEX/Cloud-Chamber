@@ -99,6 +99,7 @@ fn main() {
         iso_pump: sim.iso_pump,
         lights: sim.lights,
         glass_heater: sim.glass_heater,
+        fans: sim.fans,
     };
 
     use cloud_chamber_firmware::cloud_chamber_hal::sensors::IndependentSensors;
@@ -336,9 +337,9 @@ fn render(
     );
 
     // ─── Sorties (ce que la physique applique) ─────────────────────
-    println!("  froid[{}] IPA[{}] HV[{}] pompe[{}] vitre[{}]",
+    println!("  froid[{}] IPA[{}] HV[{}] pompe[{}] vitre[{}] ventilo[{}]",
         on(power.cooling), on(power.iso_heater), on(power.high_voltage),
-        on(power.iso_pump), on(power.glass_heater),
+        on(power.iso_pump), on(power.glass_heater), on(power.fans),
     );
 
     // ─── Températures : réelles (physique) et lues (avec bruit) ────

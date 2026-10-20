@@ -62,6 +62,9 @@ pub mod regulated_relay;
 /// Driver pompe : relais GPIO tout-ou-rien (marche/arrêt).
 pub mod pump;
 
+/// Driver ventilateurs du radiateur : relais GPIO tout-ou-rien.
+pub mod fans;
+
 /// Driver éclairage : relais GPIO tout-ou-rien (marche/arrêt).
 pub mod lights;
 

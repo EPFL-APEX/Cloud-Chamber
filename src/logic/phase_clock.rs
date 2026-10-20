@@ -303,6 +303,7 @@ mod tests {
                     iso_heater: Some(IPA_HEATER_TARGET_C),
                     high_voltage: true,
                     iso_pump: true, lights: Some(true), glass_heater: true,
+                    fans: true,
                 }
             );
         });

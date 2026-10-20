@@ -27,9 +27,9 @@ use super::probing::{MeasurementHistory, ProbingPlan};
 /// `drivers::flash_rp2040::park_if_requested`). Le type reste une fermeture
 /// quelconque : `logic/` n'a pas à savoir qu'il existe une flash, et les
 /// tests passent une fermeture vide.
-pub fn run<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Clk, Y>(
+pub fn run<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Fans, Clk, Y>(
     mut sensors: Sensors<Ts, Ps>,
-    mut actuators: Actuators<Hv, Cool, Iso, Pump, Lights, Glass>,
+    mut actuators: Actuators<Hv, Cool, Iso, Pump, Lights, Glass, Fans>,
     clock: Clk,
     mut yield_core: Y,
 ) -> !
@@ -42,6 +42,7 @@ where
     Pump: BinaryActuator,
     Lights: BinaryActuator,
     Glass: BinaryActuator,
+    Fans: BinaryActuator,
     Clk: MonotonicTimer,
     Y: FnMut(),
 {
@@ -101,9 +102,9 @@ where
 /// (`chamber_sim`) qui a besoin d'intercaler ses pas de physique entre
 /// deux tours — même contenu que l'ancien corps de `loop`, aucun
 /// changement de comportement.
-pub fn tick<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Clk>(
+pub fn tick<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Fans, Clk>(
     sensors: &mut Sensors<Ts, Ps>,
-    actuators: &mut Actuators<Hv, Cool, Iso, Pump, Lights, Glass>,
+    actuators: &mut Actuators<Hv, Cool, Iso, Pump, Lights, Glass, Fans>,
     phase: &mut PhaseClock<Clk>,
     safety: &mut SafetyMonitor,
     measurement_history: &mut MeasurementHistory,
@@ -118,6 +119,7 @@ where
     Pump: BinaryActuator,
     Lights: BinaryActuator,
     Glass: BinaryActuator,
+    Fans: BinaryActuator,
     Clk: MonotonicTimer,
 {
     let latest_measurement = sensors.probe(probing_plan);
@@ -276,7 +278,8 @@ impl SystemTask {
                         .with_high_voltage()
                         .with_iso_pump()
                         .with_lights(true)
-                        .with_glass_heater(),
+                        .with_glass_heater()
+                        .with_fans(),
                 )
             }
             Stopping(phase) => phase.react_to(history),
@@ -292,7 +295,7 @@ impl SystemTask {
 }
 
 
-impl<Hv, Cool, Iso, Pump, Lights, Glass> Actuators<Hv, Cool, Iso, Pump, Lights, Glass>
+impl<Hv, Cool, Iso, Pump, Lights, Glass, Fans> Actuators<Hv, Cool, Iso, Pump, Lights, Glass, Fans>
 where
     Hv: BinaryActuator,
     Cool: TargetActuator<Celsius, CONTROL_LOOP_HISTORY_SIZE>,
@@ -300,6 +303,7 @@ where
     Pump: BinaryActuator,
     Lights: BinaryActuator,
     Glass: BinaryActuator,
+    Fans: BinaryActuator,
 {
     pub fn apply(&mut self, plan: ActuatorPlan, hist: &MeasurementHistory) {
         let cooling_hist = &hist.temps[PLATE_MID_IDX];
@@ -316,6 +320,7 @@ where
             set_binary(&mut self.lights, on);
         }
         set_binary(&mut self.glass_heater, plan.glass_heater);
+        set_binary(&mut self.fans, plan.fans);
     }
 }
 
@@ -386,7 +391,7 @@ mod tests {
     struct Harness<'a> {
         clock: &'a MockClock,
         sensors: Sensors<MockTempSensor, MockPressureSensor>,
-        actuators: Actuators<MockActuator, MockActuator, MockActuator, MockActuator, MockActuator, MockActuator>,
+        actuators: Actuators<MockActuator, MockActuator, MockActuator, MockActuator, MockActuator, MockActuator, MockActuator>,
         phase: PhaseClock<&'a MockClock>,
         safety: SafetyMonitor,
         history: MeasurementHistory,
@@ -443,6 +448,7 @@ mod tests {
                 iso_pump: MockActuator::new(),
                 lights: MockActuator::new(),
                 glass_heater: MockActuator::new(),
+                fans: MockActuator::new(),
             };
             let history = MeasurementHistory::new();
             let probing_plan = task.create_probing_plan(&history);
@@ -989,6 +995,7 @@ mod tests {
                 iso_pump: MockActuator::new(),
                 lights: MockActuator::new(),
                 glass_heater: MockActuator::new(),
+                fans: MockActuator::new(),
             };
             let mut history = MeasurementHistory::new();
             let mut phase = PhaseClock::new(&clock, SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
@@ -1110,6 +1117,7 @@ mod tests {
                 iso_pump: sim.iso_pump,
                 lights: sim.lights,
                 glass_heater: sim.glass_heater,
+                fans: sim.fans,
             };
             let mut sensors = Sensors::new(
                 SimTempSensors::new(std::rc::Rc::clone(&physics), &clock),

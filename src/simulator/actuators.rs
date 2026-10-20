@@ -29,6 +29,7 @@ pub enum RelayKind {
     HighVoltage,
     IsoPump,
     Lights,
+    Fans,
     GlassHeater,
 }
 
@@ -61,6 +62,10 @@ impl SimRelay {
             RelayKind::HighVoltage => p.0.high_voltage = on,
             RelayKind::IsoPump => p.0.iso_pump = on,
             RelayKind::Lights => {} // pas de physique de l'éclairage
+            // Ni des ventilateurs : ils aident le radiateur, la physique
+            // du circuit passe déjà par la charge du compresseur — la
+            // commande est suivie dans le panneau, pas modélisée.
+            RelayKind::Fans => p.0.fans = on,
             RelayKind::GlassHeater => p.0.glass_heater = on,
         }
     }
@@ -133,6 +138,7 @@ impl TargetActuator<Celsius, 90> for SimRegulatedRelay {
 pub struct SimActuators {
     pub high_voltage: SimRelay,
     pub cooling: SimRegulatedRelay,
+    pub fans: SimRelay,
     pub iso_heater: SimRegulatedRelay,
     pub iso_pump: SimRelay,
     pub lights: SimRelay,
@@ -167,6 +173,7 @@ impl SimActuators {
             iso_pump: SimRelay::new(RelayKind::IsoPump, power.clone()),
             lights: SimRelay::new(RelayKind::Lights, power.clone()),
             glass_heater: SimRelay::new(RelayKind::GlassHeater, power.clone()),
+            fans: SimRelay::new(RelayKind::Fans, power.clone()),
             power,
         }
     }
