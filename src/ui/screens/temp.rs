@@ -7,7 +7,7 @@
 //! # Une seule courbe, celle qui pilote
 //!
 //! La plaque porte trois sondes sur la machine, entrée, milieu et sortie.
-//! Le firmware n'en désigne qu'une, `CHAMBER_TEMP_IDX`, et c'est la seule
+//! Le firmware n'en désigne qu'une, `PLATE_MID_IDX`, et c'est la seule
 //! que `logic::cooling` regarde pour décider ses transitions. Les deux
 //! autres n'ont pas d'index attribué, `config::wiring::TEMP_LABELS`
 //! décrivant encore l'ancien jeu de sondes de circuit frigorifique.
@@ -29,7 +29,7 @@ use embedded_graphics::{
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
 
-use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
+use crate::cloud_chamber_hal::config::PLATE_MID_IDX;
 use crate::cloud_chamber_hal::{
     measurement::Measurement,
     ring_buffer::RingBuffer,
@@ -125,12 +125,12 @@ impl TempGraphScreen {
             .into_styled(PrimitiveStyle::with_stroke(theme::DIM_COLOR, 1))
             .draw(display)?;
 
-        match state.snapshot.temps[CHAMBER_TEMP_IDX] {
+        match state.snapshot.temps[PLATE_MID_IDX] {
             Some(m) if !m.value.is_nan() => {
                 // Nommée, sinon rien ne dit de quelle sonde vient la
                 // courbe. Même vocabulaire que `running.rs`.
                 let mut s: String<20> = String::new();
-                let _ = write!(s, "CHAMBRE {:+.1} C", m.value.0);
+                let _ = write!(s, "PLAQUE {:+.1} C", m.value.0);
                 Text::with_text_style(
                     s.as_str(),
                     Point::new(SCREEN_WIDTH as i32 - 12, 20),
@@ -379,7 +379,7 @@ mod tests {
         // Machine en cours de cycle et sonde renseignee : la capture montre
         // alors la bande de titre complete, valeur du moment comprise.
         let mut snapshot = SensorSnapshot::default();
-        snapshot.temps[CHAMBER_TEMP_IDX] = Some(last);
+        snapshot.temps[PLATE_MID_IDX] = Some(last);
         let state = SharedState {
             snapshot,
             task: SystemTask::Cooling(CoolingPhase::PreCoolingThePlate),

@@ -209,7 +209,7 @@ impl UiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
+    use crate::cloud_chamber_hal::config::PLATE_MID_IDX;
     use crate::cloud_chamber_hal::measurement::Measurement;
     use crate::cloud_chamber_hal::timer::Instant;
     use crate::cloud_chamber_hal::units::Celsius;
@@ -377,7 +377,7 @@ mod tests {
             SystemTask::Idle,
         ] {
             let mut state = state_with(task);
-            state.snapshot.temps[CHAMBER_TEMP_IDX] =
+            state.snapshot.temps[PLATE_MID_IDX] =
                 Some(Measurement::new(Instant::from_micros(1), Celsius(-20.0)));
             let mut d = make_display();
             app.draw(&mut d, &state).unwrap();
@@ -493,7 +493,7 @@ mod tests {
             state.task = task;
         }
 
-        state.snapshot.temps[CHAMBER_TEMP_IDX] = Some(Measurement::new(
+        state.snapshot.temps[PLATE_MID_IDX] = Some(Measurement::new(
             Instant::from_micros(1),
             Celsius(simulated_chamber_temp(state.task)),
         ));
@@ -606,7 +606,7 @@ mod tests {
             LiveAction::Reset,
         ] {
             apply_live_action(&mut app, &mut state, action);
-            assert!(state.snapshot.temps[CHAMBER_TEMP_IDX].is_some(), "{action:?}");
+            assert!(state.snapshot.temps[PLATE_MID_IDX].is_some(), "{action:?}");
         }
     }
 
@@ -641,7 +641,7 @@ mod tests {
 
         let mut sync_readings = |state: &mut SharedState| {
             let t = simulated_chamber_temp(state.task);
-            state.snapshot.temps[CHAMBER_TEMP_IDX] =
+            state.snapshot.temps[PLATE_MID_IDX] =
                 Some(Measurement::new(Instant::from_micros(1), Celsius(t)));
         };
 

@@ -7,7 +7,7 @@
 //! abandon si trop long) sont du ressort de l'appelant (`control_loop.rs`),
 //! qui seul connaît la durée passée dans la phase courante.
 
-use crate::cloud_chamber_hal::config::{CHAMBER_TEMP_IDX, ControlSensor};
+use crate::cloud_chamber_hal::config::{PLATE_MID_IDX, ControlSensor};
 use crate::cloud_chamber_hal::units::Celsius;
 use crate::config::operating::{STABLE_TOLERANCE_C, STABLE_WINDOW};
 use crate::cloud_chamber_hal::actuators::ActuatorPlan;
@@ -70,14 +70,14 @@ const fn required_to_start(sensor: ControlSensor) -> bool {
     match sensor {
         // Pilote toute la séquence : chaque phase compare sa température à
         // une cible. Sans elle, rien ne peut avancer.
-        ControlSensor::ChamberTemp => true,
+        ControlSensor::PlateMid => true,
         // C'est la sonde que surveille `logic::security`. Démarrer sans
         // elle, c'est démarrer sans protection contre la surchauffe — et
         // se faire abandonner 10 s plus tard par `CompressorSensorLost`,
         // sans savoir laquelle manquait.
-        ControlSensor::CompressorOut => true,
+        ControlSensor::Compressor => true,
         // Le thermostat IPA régule dessus dès `StartingIpaCirculation`.
-        ControlSensor::IsoTemp => true,
+        ControlSensor::IsoHeater => true,
         // Aucune phase ni aucune règle de sécurité ne s'en sert
         // aujourd'hui : elle est affichée, pas décisionnelle. À repasser à
         // `true` le jour où une transition en dépend.
@@ -106,7 +106,7 @@ fn sensor_check(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
 fn pre_cooling_the_plate(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
     let precool_target = settings::get().precool_target;
     let plan = ActuatorPlan::all_off().with_cooling(precool_target);
-    match history.is_at_or_below(CHAMBER_TEMP_IDX, precool_target) {
+    match history.is_at_or_below(PLATE_MID_IDX, precool_target) {
         true => (SystemTask::Cooling(CoolingPhase::StartingIpaCirculation), plan),
         false => (SystemTask::Cooling(CoolingPhase::PreCoolingThePlate), plan),
     }
@@ -132,7 +132,7 @@ fn saturating_air_with_ipa(history: &MeasurementHistory) -> (SystemTask, Actuato
         .with_iso_pump()
         .with_glass_heater();
     // #todo faire une vrai estimation de la saturation....
-    match history.is_at_or_below(CHAMBER_TEMP_IDX, settings.saturation_target) {
+    match history.is_at_or_below(PLATE_MID_IDX, settings.saturation_target) {
         true => (SystemTask::Cooling(CoolingPhase::HighVoltage), plan),
         false => (SystemTask::Cooling(CoolingPhase::SaturatingAirWithIpa), plan),
     }
@@ -149,7 +149,7 @@ fn high_voltage(history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
         .with_glass_heater();
 
     // Est-ce qu'on veut vraiment check la stabilité ? Ou est-ce qu'on veut juste allumer le HV
-    match history.is_temp_stable(CHAMBER_TEMP_IDX, STABLE_WINDOW, STABLE_TOLERANCE_C) {
+    match history.is_temp_stable(PLATE_MID_IDX, STABLE_WINDOW, STABLE_TOLERANCE_C) {
         true  => (SystemTask::Cooling(CoolingPhase::FinalCheckBeforeStabilising), plan),
         false => (SystemTask::Cooling(CoolingPhase::HighVoltage), plan),
     }
@@ -166,7 +166,7 @@ fn final_check_before_stabilising(history: &MeasurementHistory) -> (SystemTask, 
         .with_glass_heater();
 
     // Qu'est-ce qu'on veut check ici ??
-    match history.is_at_or_below(CHAMBER_TEMP_IDX, settings.saturation_target + FINAL_CHECK_MARGIN) {
+    match history.is_at_or_below(PLATE_MID_IDX, settings.saturation_target + FINAL_CHECK_MARGIN) {
         true => (SystemTask::Stabilising, plan),
         false => (SystemTask::Cooling(CoolingPhase::FinalCheckBeforeStabilising), plan),
     }
@@ -177,7 +177,7 @@ fn final_check_before_stabilising(history: &MeasurementHistory) -> (SystemTask, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud_chamber_hal::config::{COMPRESSOR_OUT_IDX, ISO_TEMP_IDX};
+    use crate::cloud_chamber_hal::config::{COMPRESSOR_IDX, ISO_HEATER_IDX};
     use crate::cloud_chamber_hal::measurement::Measurement;
     use crate::cloud_chamber_hal::timer::Instant;
     use crate::cloud_chamber_hal::units::HectoPascal;
@@ -186,9 +186,9 @@ mod tests {
     fn all_sensors_alive() -> MeasurementHistory {
         let mut h = MeasurementHistory::new();
         let t0 = Instant::from_micros(1);
-        h.temps[CHAMBER_TEMP_IDX].push(Measurement::new(t0, Celsius(20.0)));
-        h.temps[COMPRESSOR_OUT_IDX].push(Measurement::new(t0, Celsius(20.0)));
-        h.temps[ISO_TEMP_IDX].push(Measurement::new(t0, Celsius(20.0)));
+        h.temps[PLATE_MID_IDX].push(Measurement::new(t0, Celsius(20.0)));
+        h.temps[COMPRESSOR_IDX].push(Measurement::new(t0, Celsius(20.0)));
+        h.temps[ISO_HEATER_IDX].push(Measurement::new(t0, Celsius(20.0)));
         h
     }
 
@@ -216,14 +216,14 @@ mod tests {
             // On efface la lecture en la remplaçant par un NaN plus récent.
             let t1 = Instant::from_micros(2);
             match missing {
-                ControlSensor::ChamberTemp => {
-                    h.temps[CHAMBER_TEMP_IDX].push(Measurement::new(t1, Celsius(f32::NAN)))
+                ControlSensor::PlateMid => {
+                    h.temps[PLATE_MID_IDX].push(Measurement::new(t1, Celsius(f32::NAN)))
                 }
-                ControlSensor::CompressorOut => {
-                    h.temps[COMPRESSOR_OUT_IDX].push(Measurement::new(t1, Celsius(f32::NAN)))
+                ControlSensor::Compressor => {
+                    h.temps[COMPRESSOR_IDX].push(Measurement::new(t1, Celsius(f32::NAN)))
                 }
-                ControlSensor::IsoTemp => {
-                    h.temps[ISO_TEMP_IDX].push(Measurement::new(t1, Celsius(f32::NAN)))
+                ControlSensor::IsoHeater => {
+                    h.temps[ISO_HEATER_IDX].push(Measurement::new(t1, Celsius(f32::NAN)))
                 }
                 ControlSensor::ChamberPressure => unreachable!("non exigee au demarrage"),
             }

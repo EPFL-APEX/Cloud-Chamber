@@ -32,7 +32,7 @@
 //! ```text
 //! D/G ou flèches       tourner l'encodeur (droite / gauche)
 //! Entrée (ou E)        clic
-//! P                    panne de la sonde sortie-compresseur
+//! P                    panne de la sonde compresseur
 //! S                    surchauffe compresseur (130 °C)
 //! Espace               pause / reprise du temps virtuel
 //! + / -                vitesse d'écoulement du temps
@@ -44,7 +44,7 @@
 //! sont du temps virtuel.
 
 use cloud_chamber_firmware::cloud_chamber_hal::actuators::Actuators;
-use cloud_chamber_firmware::cloud_chamber_hal::config::{CHAMBER_TEMP_IDX, COMPRESSOR_OUT_IDX};
+use cloud_chamber_firmware::cloud_chamber_hal::config::{PLATE_MID_IDX, COMPRESSOR_IDX};
 use cloud_chamber_firmware::cloud_chamber_hal::sensors::Sensors;
 use cloud_chamber_firmware::cloud_chamber_hal::timer::{Instant, MonotonicTimer};
 use cloud_chamber_firmware::drivers::encoder::EncoderEvent;
@@ -167,7 +167,7 @@ fn main() {
                     Keycode::P => {
                         probe_failed = !probe_failed;
                         eprintln!(
-                            ">>> sonde sortie-compresseur : {}",
+                            ">>> sonde compresseur : {}",
                             if probe_failed { "MUETTE" } else { "reparee" }
                         );
                         continue;
@@ -342,12 +342,12 @@ fn render(
     );
 
     // ─── Températures : réelles (physique) et lues (avec bruit) ────
-    // La plaque et la sortie compresseur : les deux grandeurs pilotes.
+    // La plaque et la corps compresseur : les deux grandeurs pilotes.
     let (plate_real, comp_real) = {
         let p = physics.borrow();
-        (p.real_temp(CHAMBER_TEMP_IDX), p.real_temp(COMPRESSOR_OUT_IDX))
+        (p.real_temp(PLATE_MID_IDX), p.real_temp(COMPRESSOR_IDX))
     };
-    let plate_read = history.newest_valid(CHAMBER_TEMP_IDX).map(|c| c.0);
+    let plate_read = history.newest_valid(PLATE_MID_IDX).map(|c| c.0);
     println!("  plaque   réelle {:6.1} °C   lue {}", plate_real,
         match plate_read { Some(t) => format!("{:6.1} °C", t), None => "  ---".into() });
     println!("  comp.out réelle {:6.1} °C", comp_real);
@@ -359,7 +359,7 @@ fn render(
     let mut temps = [f32::NAN; 60];
     let mut count = 0usize;
     for i in 0..60 {
-        if let Ok(m) = history.temps[CHAMBER_TEMP_IDX].get(i) {
+        if let Ok(m) = history.temps[PLATE_MID_IDX].get(i) {
             if !m.value.is_nan() {
                 temps[count] = m.value.0;
                 count += 1;

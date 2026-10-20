@@ -3,7 +3,7 @@
 //! des actionneurs.
 
 use crate::cloud_chamber_hal::config::{
-    CHAMBER_TEMP_IDX, COMPRESSOR_OUT_IDX, ISO_TEMP_IDX, NUMBER_OF_TEMP_SENSOR,
+    PLATE_MID_IDX, COMPRESSOR_IDX, ISO_HEATER_IDX, NUMBER_OF_TEMP_SENSOR,
 };
 
 /// État des sorties que la boucle de contrôle a appliquées — ce que la
@@ -141,7 +141,7 @@ impl ChamberPhysics {
 
             // Échange avec l'ambiance — tout le monde y revient. La
             // plaque a sa propre fuite, plus lente : cf. `plate_leak`.
-            let leak = if i == CHAMBER_TEMP_IDX { p.plate_leak } else { p.leak };
+            let leak = if i == PLATE_MID_IDX { p.plate_leak } else { p.leak };
             rate += leak * (p.ambient - t);
 
             // Conduction : la plaque est le pivot thermique du montage
@@ -149,13 +149,13 @@ impl ChamberPhysics {
             // elle, ne reçoit que la source froide du compresseur
             // (l'échange avec les voisines est du second ordre, la
             // plaque a une masse bien plus grande que les sondes).
-            if i == CHAMBER_TEMP_IDX {
+            if i == PLATE_MID_IDX {
                 if self.power.cooling {
                     let pull = (p.cooling_floor - t) * p.cooling_rate.abs();
                     rate += pull;
                 }
             } else {
-                rate += p.conduction * (before[CHAMBER_TEMP_IDX] - t);
+                rate += p.conduction * (before[PLATE_MID_IDX] - t);
                 // Fuite inter-sondes vers l'ambiant : sans elle, une
                 // sonde refroidie par conduction ne remonte jamais —
                 // le test `everything_relaxes_to_ambient` l'a montré :
@@ -164,14 +164,14 @@ impl ChamberPhysics {
             }
 
             // Le bain d'isopropanol : chauffage vers son plafond.
-            if i == ISO_TEMP_IDX && self.power.iso_heater {
+            if i == ISO_HEATER_IDX && self.power.iso_heater {
                 let pull = (p.ipa_ceiling - t) * p.ipa_heating_rate.abs();
                 rate += pull;
             }
 
             // La sortie compresseur : monte sous charge, retombe à
             // l'arrêt — bien plus vite qu'elle ne refroidit.
-            if i == COMPRESSOR_OUT_IDX {
+            if i == COMPRESSOR_IDX {
                 if self.power.cooling {
                     let pull = (p.compressor_ceiling - t) * p.compressor_load_rate.abs();
                     rate += pull;
@@ -192,7 +192,7 @@ impl ChamberPhysics {
     /// Température **rapportée** par la sonde `idx` : réelle + bruit,
     /// ou rien du tout si la panne est injectée.
     pub fn read_temp(&mut self, idx: usize) -> Option<f32> {
-        if idx == COMPRESSOR_OUT_IDX && self.power.compressor_probe_failed {
+        if idx == COMPRESSOR_IDX && self.power.compressor_probe_failed {
             return None;
         }
         Some(self.temps[idx] + self.noise())
@@ -213,7 +213,7 @@ impl ChamberPhysics {
     /// sortie saute au-dessus du seuil d'alarme — pour voir la sécurité
     /// déclencher avec la physique pour cause, pas par décret.
     pub fn overheat_compressor(&mut self) {
-        self.temps[COMPRESSOR_OUT_IDX] = 130.0;
+        self.temps[COMPRESSOR_IDX] = 130.0;
     }
 }
 
@@ -230,8 +230,8 @@ mod tests {
         for _ in 0..600 {
             ch.step(1.0);
         }
-        assert!(ch.real_temp(CHAMBER_TEMP_IDX) < 0.0, "la plaque doit refroidir");
-        assert!(ch.real_temp(CHAMBER_TEMP_IDX) > -45.0, "sans traverser le plancher");
+        assert!(ch.real_temp(PLATE_MID_IDX) < 0.0, "la plaque doit refroidir");
+        assert!(ch.real_temp(PLATE_MID_IDX) > -45.0, "sans traverser le plancher");
     }
 
     #[test]
@@ -249,9 +249,9 @@ mod tests {
             ch.step(1.0);
         }
         assert!(
-            ch.real_temp(CHAMBER_TEMP_IDX) < -5.0,
+            ch.real_temp(PLATE_MID_IDX) < -5.0,
             "la plaque doit encore garder son froid, pas {}",
-            ch.real_temp(CHAMBER_TEMP_IDX)
+            ch.real_temp(PLATE_MID_IDX)
         );
         // Huit heures plus tard : tout est revenu près de l'ambiant.
         for _ in 0..(8 * 720) {
@@ -273,7 +273,7 @@ mod tests {
         for _ in 0..300 {
             ch.step(1.0);
         }
-        let hot = ch.real_temp(COMPRESSOR_OUT_IDX);
+        let hot = ch.real_temp(COMPRESSOR_IDX);
         assert!(hot > 40.0, "la sortie compresseur chauffe sous charge");
         assert!(hot < 95.0, "sans depasser son plafond de charge");
 
@@ -282,7 +282,7 @@ mod tests {
             ch.step(1.0);
         }
         assert!(
-            ch.real_temp(COMPRESSOR_OUT_IDX) < 30.0,
+            ch.real_temp(COMPRESSOR_IDX) < 30.0,
             "et refroidit a l'arret"
         );
     }
@@ -294,9 +294,9 @@ mod tests {
         for _ in 0..60 {
             ch.step(1.0);
         }
-        assert_eq!(ch.read_temp(COMPRESSOR_OUT_IDX), None, "la sonde muette ne lit rien");
+        assert_eq!(ch.read_temp(COMPRESSOR_IDX), None, "la sonde muette ne lit rien");
         assert!(
-            ch.real_temp(COMPRESSOR_OUT_IDX) > 20.0,
+            ch.real_temp(COMPRESSOR_IDX) > 20.0,
             "mais la physique continue de calculer la vraie temperature"
         );
     }
@@ -307,7 +307,7 @@ mod tests {
     fn noise_stays_within_bounds() {
         let mut ch = ChamberPhysics::new(ChamberParams::default());
         for _ in 0..1000 {
-            let reading = ch.read_temp(CHAMBER_TEMP_IDX).unwrap();
+            let reading = ch.read_temp(PLATE_MID_IDX).unwrap();
             assert!(
                 (reading - 20.0).abs() <= 0.2,
                 "bruit hors bornes : {reading}"

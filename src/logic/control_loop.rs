@@ -1,7 +1,7 @@
 //! Point d'entrée Core0 : boucle de sondage + machine à états + actionneurs.
 
 use crate::{cloud_chamber_hal::{
-    actuators::{ActuatorPlan, Actuators, BinaryActuator, TargetActuator}, config::{CHAMBER_TEMP_IDX, ISO_TEMP_IDX, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR}, sensors::{BatchSensor, DeferredBatchSensor, Sensors}, timer::MonotonicTimer, units::{Celsius, HectoPascal},
+    actuators::{ActuatorPlan, Actuators, BinaryActuator, TargetActuator}, config::{PLATE_MID_IDX, ISO_HEATER_IDX, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR}, sensors::{BatchSensor, DeferredBatchSensor, Sensors}, timer::MonotonicTimer, units::{Celsius, HectoPascal},
 }};
 use crate::logic::timing::CONTROL_LOOP_HISTORY_SIZE;
 use crate::logic::phase_clock::{PhaseClock, advance};
@@ -159,7 +159,7 @@ where
     } else {
         advance(
             phase.current(), measurement_history,
-            phase.elapsed(), measurement_history.chamber_stale_duration(phase.now()),
+            phase.elapsed(), measurement_history.plate_stale_duration(phase.now()),
         )
     };
     actuators.apply(plan, measurement_history);
@@ -302,8 +302,8 @@ where
     Glass: BinaryActuator,
 {
     pub fn apply(&mut self, plan: ActuatorPlan, hist: &MeasurementHistory) {
-        let cooling_hist = &hist.temps[CHAMBER_TEMP_IDX];
-        let iso_temp_hist = &hist.temps[ISO_TEMP_IDX];
+        let cooling_hist = &hist.temps[PLATE_MID_IDX];
+        let iso_temp_hist = &hist.temps[ISO_HEATER_IDX];
 
         let _ = self.cooling.regulate(cooling_hist, plan.cooling);
         let _ = self.iso_heater.regulate(iso_temp_hist, plan.iso_heater);
@@ -338,7 +338,7 @@ fn set_binary<A: BinaryActuator>(actuator: &mut A, on: bool) {
 mod tests {
     use super::*;
     use crate::cloud_chamber_hal::config::{
-        CHAMBER_PRESSURE_IDX, CHAMBER_TEMP_IDX, COMPRESSOR_OUT_IDX, ISO_TEMP_IDX,
+        CHAMBER_PRESSURE_IDX, PLATE_MID_IDX, COMPRESSOR_IDX, ISO_HEATER_IDX,
     };
     use crate::cloud_chamber_hal::measurement::Measurement;
     use crate::cloud_chamber_hal::timer::{Duration, Instant};
@@ -413,7 +413,7 @@ mod tests {
                 MockTempSensor::new(f32::NAN),
                 MockPressureSensor::new(f32::NAN),
             );
-            // Température sortie-compresseur valide par défaut (loin des
+            // Température corps compresseur valide par défaut (loin des
             // seuils d'alarme), horodatée avant tout instant utilisable par
             // un test (`Instant::from_micros(1)` : après le t0 par défaut
             // de `MeasurementHistory`, mais avant toute horloge de test qui
@@ -424,7 +424,7 @@ mod tests {
             // temps simulé. Les tests qui exercent spécifiquement ce chemin
             // (sécurité) l'écrasent explicitement via `set_compressor_temp`.
             sensors.temperature_source.set(
-                COMPRESSOR_OUT_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
+                COMPRESSOR_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
             );
             // Même raison pour la sonde du thermostat IPA : depuis que
             // `SensorCheck` vérifie tous les capteurs dont dépend la
@@ -433,7 +433,7 @@ mod tests {
             // représente une machine dont les capteurs sont vivants ; les
             // tests qui veulent en perdre un l'écrasent explicitement.
             sensors.temperature_source.set(
-                ISO_TEMP_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
+                ISO_HEATER_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
             );
 
             let actuators = Actuators {
@@ -469,19 +469,19 @@ mod tests {
         }
 
         fn set_chamber_temp(&mut self, value: Celsius) {
-            self.set_temp(CHAMBER_TEMP_IDX, value);
+            self.set_temp(PLATE_MID_IDX, value);
         }
 
         fn set_iso_temp(&mut self, value: Celsius) {
-            self.set_temp(ISO_TEMP_IDX, value);
+            self.set_temp(ISO_HEATER_IDX, value);
         }
 
         fn set_compressor_temp(&mut self, value: Celsius) {
-            self.set_temp(COMPRESSOR_OUT_IDX, value);
+            self.set_temp(COMPRESSOR_IDX, value);
         }
 
         fn lose_chamber_temp(&mut self) {
-            self.sensors.temperature_source.set(CHAMBER_TEMP_IDX, Err(MockSensorError));
+            self.sensors.temperature_source.set(PLATE_MID_IDX, Err(MockSensorError));
         }
 
         fn set_pressure(&mut self, idx: usize, value: f32) {
@@ -977,7 +977,7 @@ mod tests {
                 MockTempSensor::new(-20.0), MockPressureSensor::new(f32::NAN),
             );
             sensors.temperature_source.set(
-                COMPRESSOR_OUT_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
+                COMPRESSOR_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
             );
             // Chambre déjà sous PRECOOL_TARGET_C : `advance()` va vouloir
             // avancer de PreCoolingThePlate vers StartingIpaCirculation ce
@@ -1029,7 +1029,7 @@ mod tests {
             let mut h = Harness::new(&clock);
             h.set_chamber_temp(Celsius(-10.0));
             h.tick_after(Duration::from_millis(1_000));
-            let before = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[CHAMBER_TEMP_IDX]);
+            let before = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[PLATE_MID_IDX]);
             assert_eq!(before.unwrap().value.0, -10.0);
 
             // La sonde chambre tombe en erreur ce tour ; une autre catégorie
@@ -1039,7 +1039,7 @@ mod tests {
             h.set_pressure(CHAMBER_PRESSURE_IDX, 0.5);
             h.tick_after(Duration::from_millis(1_000));
 
-            let kept = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[CHAMBER_TEMP_IDX]);
+            let kept = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[PLATE_MID_IDX]);
             assert_eq!(kept.unwrap().value.0, -10.0);
         });
     }
@@ -1060,7 +1060,7 @@ mod tests {
             }
             h.tick_after(Duration::from_millis(1_000));
 
-            let after = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[CHAMBER_TEMP_IDX]);
+            let after = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[PLATE_MID_IDX]);
             assert_eq!(after.unwrap().value.0, -10.0);
         });
     }
@@ -1088,7 +1088,7 @@ mod tests {
     #[cfg(feature = "sim")]
     #[test]
     fn cooling_sequence_completes_through_simulated_physics() {
-        use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
+        use crate::cloud_chamber_hal::config::PLATE_MID_IDX;
         use crate::cloud_chamber_hal::sensors::IndependentSensors;
         use crate::cloud_chamber_hal::timer::MonotonicTimer;
         use crate::simulator::actuators::SimActuators;
@@ -1159,7 +1159,7 @@ mod tests {
                 let task = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).task);
                 if task != last_task {
                     last_task = task;
-                    let plate = history.temps[CHAMBER_TEMP_IDX]
+                    let plate = history.temps[PLATE_MID_IDX]
                         .get(0)
                         .map(|m| m.value.0)
                         .unwrap_or(f32::NAN);

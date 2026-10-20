@@ -37,7 +37,7 @@ pub const HV_STABILISE_TIMEOUT: Duration = Duration::from_millis(15 * 60_000);
 pub const FINAL_CHECK_TIMEOUT: Duration = Duration::from_millis(30_000);
 
 /// Perte de capteur pendant un cycle : au-delà de ce délai sans lecture
-/// valide de la base chambre, la phase est abandonnée (plutôt que d'attendre
+/// valide de la milieu de plaque, la phase est abandonnée (plutôt que d'attendre
 /// le timeout long de la phase, aveugle).
 pub const SENSOR_LOSS: Duration = Duration::from_millis(10_000);
 

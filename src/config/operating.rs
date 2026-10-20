@@ -37,7 +37,7 @@ pub const STABLE_TOLERANCE_C: Celsius = Celsius::new(1.0);
 pub const REGULATION_BAND_C: Celsius = Celsius::new(1.0);
 
 /// TODO CALIBRAGE : cible du thermostat chauffage isopropanol (ds3, cf.
-/// `cloud_chamber_hal::config::ISO_TEMP_IDX`) — aucune valeur physique de
+/// `cloud_chamber_hal::config::ISO_HEATER_IDX`) — aucune valeur physique de
 /// référence disponible pour l'instant. Valeur volontairement haute plutôt
 /// qu'un chiffre qui aurait l'air raisonnable sans l'être — à vérifier sur
 /// le montage réel avant tout bring-up.

@@ -2,7 +2,7 @@
 //! capteur/actionneur est branché sur cette installation précise.
 //!
 //! Les compteurs (`NUMBER_OF_TEMP_SENSOR`...) et les index de rôle
-//! (`CHAMBER_TEMP_IDX`...) restent dans
+//! (`PLATE_MID_IDX`...) restent dans
 //! [`crate::cloud_chamber_hal::config`] plutôt qu'ici : le code générique du
 //! HAL (`Sensors<Tmp, Prs>`, `RingBuffer<T, N>`...) en a besoin comme
 //! paramètres de type, et le HAL ne doit pas dépendre de `crate::config`
@@ -120,12 +120,12 @@ pub const CHAMBER_PRESSURE_MAX: f32 = 1.0;
 // ─── Labels des capteurs de température ──────────────────────────────────────
 
 pub const TEMP_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
-    "sortie_compresseur",
-    "sortie_condenseur",
-    "entree_evaporateur",
-    "sortie_evaporateur",
-    "base_chambre",
-    "",
-    "",
-    "",
+    "compresseur",
+    "entree radiateur",
+    "sortie radiateur",
+    "entree plaque",
+    "milieu plaque",
+    "sortie plaque",
+    "chauffage ipa",
+    "entree compresseur",
 ];

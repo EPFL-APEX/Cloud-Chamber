@@ -8,7 +8,7 @@
 use embedded_graphics::{draw_target::DrawTarget, geometry::OriginDimensions, pixelcolor::Rgb565};
 
 use crate::cloud_chamber_hal::timer::Duration;
-use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
+use crate::cloud_chamber_hal::config::PLATE_MID_IDX;
 use crate::config::settings::Settings;
 use crate::logic::cooling::CoolingPhase;
 use crate::logic::stopping::StoppingPhase;
@@ -308,7 +308,7 @@ impl Screens {
     /// Alimente le graphe de veille, quel que soit l'écran affiché. Sinon
     /// elle s'ouvrirait sur un cadre vide.
     pub fn sample(&mut self, state: &SharedState) {
-        if let Some(m) = state.snapshot.temps[CHAMBER_TEMP_IDX] {
+        if let Some(m) = state.snapshot.temps[PLATE_MID_IDX] {
             self.temp_graph.sample(m);
         }
     }

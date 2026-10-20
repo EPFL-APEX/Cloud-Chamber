@@ -31,7 +31,7 @@ use embedded_graphics::{
 
 use crate::{
     cloud_chamber_hal::config::{
-        CHAMBER_PRESSURE_IDX, CHAMBER_TEMP_IDX, NUMBER_OF_TEMP_SENSOR,
+        CHAMBER_PRESSURE_IDX, PLATE_MID_IDX, NUMBER_OF_TEMP_SENSOR,
     },
     logic::{cooling::CoolingPhase, security::SafetyCause, stopping::StoppingPhase},
     shared::data::{SharedState, SystemTask},
@@ -122,13 +122,13 @@ pub(super) fn expected_outputs(task: SystemTask) -> ExpectedOutputs {
 /// PHASE                        SORTIES
 /// HAUTE TENSION                ▪ COMP    ▪ HV
 /// ─────────────────────────────────────────────  y=56
-/// BASE CHAMBRE    |  CIBLE -40.0 C    CHAMBRE
+/// MILIEU PLAQUE   |  CIBLE -40.0 C    CHAMBRE
 /// -35.2 C        |  1013 hPa         FERMEE
 /// ─────────────────────────────────────────────  y=128
-/// SORTIE COMPRESSION  +42.3 │ SORTIE CONDENSEUR  +38.9
-/// ENTREE EVAPOR.      -12.4 │ SORTIE EVAPOR.    -18.7
-/// SONDE 5              +21.7 │ SONDE 6            +21.2
-/// SONDE 7              +20.9 │
+/// COMPRESSEUR         +42.3 │ ENTREE RADIAT.     +38.9
+/// SORTIE RADIAT.      -12.4 │ ENTREE PLAQUE      -18.7
+/// SORTIE PLAQUE       +21.7 │ CHAUFFAGE IPA      +21.2
+/// ENTREE COMP.        +20.9 │
 /// ```
 ///
 /// La grille et les alignements font le travail : libellés en petit
@@ -144,15 +144,20 @@ pub struct StatsScreen<'a> {
 /// n'ont pas de É. La sonde pilote (index 4) y a sa place pour garder
 /// l'alignement des index, mais elle est rendue en zone héroïne, pas
 /// dans la table.
+/// Libellés d'affichage des sondes, dans l'ordre du bus
+/// (`config::wiring::TEMP_LABELS`). Sans accents : les fontes `ascii`
+/// n'ont pas de É. La sonde pilote (milieu de plaque) y a sa place pour
+/// garder l'alignement des index, mais elle est rendue en zone héroïne,
+/// pas dans la table.
 const DISPLAY_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
-    "SORTIE COMPRESSION",
-    "SORTIE CONDENSEUR",
-    "ENTREE EVAPOR.",
-    "SORTIE EVAPOR.",
-    "BASE CHAMBRE",
-    "SONDE 5",
-    "SONDE 6",
-    "SONDE 7",
+    "COMPRESSEUR",
+    "ENTREE RADIAT.",
+    "SORTIE RADIAT.",
+    "ENTREE PLAQUE",
+    "MILIEU PLAQUE",
+    "SORTIE PLAQUE",
+    "CHAUFFAGE IPA",
+    "ENTREE COMP.",
 ];
 
 /// Ordonnées des deux filets qui découpent l'écran.
@@ -254,7 +259,7 @@ impl<'a> StatsScreen<'a> {
 
         // ─── Héroïne : sonde pilote + métadonnées ────────────────────────────
         let mut val: String<12> = String::new();
-        match snap.temps[CHAMBER_TEMP_IDX] {
+        match snap.temps[PLATE_MID_IDX] {
             Some(m) if !m.value.is_nan() => {
                 let _ = write!(val, "{:+.1}", m.value.0);
                 let width = val.len() as i32 * 10;
@@ -367,7 +372,7 @@ impl<'a> StatsScreen<'a> {
         // droite de leur colonne.
         let mut cell = 0usize;
         for i in 0..NUMBER_OF_TEMP_SENSOR {
-            if i == CHAMBER_TEMP_IDX {
+            if i == PLATE_MID_IDX {
                 continue;
             }
             let col = (cell % 2) as i32;
