@@ -21,10 +21,10 @@ use core::fmt::Write;
 use embedded_graphics::{
     Drawable,
     draw_target::DrawTarget,
-    geometry::{OriginDimensions, Point, Size},
-    mono_font::{ascii::FONT_6X13, MonoTextStyle},
+    geometry::{OriginDimensions, Point},
+    mono_font::{ascii::FONT_9X18_BOLD, MonoTextStyle},
     pixelcolor::Rgb565,
-    primitives::{Primitive, PrimitiveStyle, Rectangle},
+    primitives::{Line, Primitive, PrimitiveStyle},
     text::{Baseline, Text, TextStyleBuilder},
 };
 use heapless::String;
@@ -76,8 +76,7 @@ const SETTINGS: [SettingSpec; 4] = [
 ];
 
 const SCREEN_WIDTH: u32 = 320;
-const TOP_BAND_HEIGHT: u32 = 29;
-const LIST_TOP: i32 = 34;
+const LIST_TOP: i32 = 48;
 
 /// Les deux lignes d'action, à la suite des réglages.
 const SAVE_ROW: usize = SETTINGS.len();
@@ -186,18 +185,19 @@ impl SettingsScreen {
     {
         display.clear(theme::BACKGROUND_COLOR)?;
 
-        Rectangle::new(Point::new(0, 0), Size::new(SCREEN_WIDTH, TOP_BAND_HEIGHT))
-            .into_styled(PrimitiveStyle::with_fill(theme::BACKGROUND_COLOR_DARKER))
-            .draw(display)?;
-
+        // Bandeau de titre, la même facture que les autres écrans : un
+        // mot en 9×18 gras, un filet — pas de bande de fond séparée.
         let title_style = TextStyleBuilder::new().baseline(Baseline::Top).build();
         Text::with_text_style(
-            "Settings",
-            Point::new(10, 8),
-            MonoTextStyle::new(&FONT_6X13, theme::HIGHLIGHT_COLOR),
+            "SETTINGS",
+            Point::new(12, 8),
+            MonoTextStyle::new(&FONT_9X18_BOLD, theme::HIGHLIGHT_COLOR),
             title_style,
         )
         .draw(display)?;
+        Line::new(Point::new(0, 36), Point::new(SCREEN_WIDTH as i32, 36))
+            .into_styled(PrimitiveStyle::with_stroke(theme::DIM_COLOR, 1))
+            .draw(display)?;
 
         // Les valeurs sont formatées ici et empruntées par le widget : les
         // tampons doivent donc vivre jusqu'à la fin de la fonction.
@@ -284,6 +284,7 @@ impl Click for SettingsScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use embedded_graphics::geometry::Size;
     use embedded_graphics_simulator::{SimulatorDisplay, OutputSettingsBuilder};
     use crate::shared::settings::with_isolated_settings;
 

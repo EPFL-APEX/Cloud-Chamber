@@ -250,13 +250,22 @@ impl SystemTask {
                 ActuatorPlan::all_off(),
             ),
             Cooling(phase) => phase.react_to(history),
-            // Régime permanent après la séquence de refroidissement : les
-            // cibles restent celles de fin de FinalCheckBeforeStabilising,
-            // désormais réellement régulées (cycle on/off autour de la
-            // cible) plutôt que "tout allumé en continu" — plus réaliste
-            // pour un compresseur en régime permanent. Pas de sortie
-            // automatique — seul un arrêt opérateur explicite (signal UI,
-            // pas câblé ici) fait sortir de cet état.
+            // Régime permanent après la séquence de refroidissement : on
+            // maintient les sorties de fin de FinalCheckBeforeStabilising,
+            // cibles désormais réellement régulées (cycle on/off autour
+            // de la cible) plutôt que "tout allumé en continu" — plus
+            // réaliste pour un compresseur en régime permanent. Pas de
+            // sortie automatique — seul un arrêt opérateur explicite
+            // (signal UI, pas câblé ici) fait sortir de cet état.
+            //
+            // TOUTES les sorties de fin de séquence, pas seulement les
+            // cibles : pompe IPA, éclairage chambre et anti-buée vitre
+            // restent en marche — c'est le régime d'observation, celui
+            // où l'on regarde les traces. Une première implémentation
+            // ne reportait que les cibles régulées et le HV, et coupait
+            // silencieusement éclairage et vitre au moment précis où ils
+            // servent (vu sur l'écran de stats : les carrés IPA/VITRE
+            // retombaient en entrant dans STABILISE).
             Stabilising => {
                 let settings = settings::get();
                 (
@@ -264,7 +273,10 @@ impl SystemTask {
                     ActuatorPlan::all_off()
                         .with_cooling(settings.saturation_target)
                         .with_iso_heater(settings.ipa_heater_target)
-                        .with_high_voltage(),
+                        .with_high_voltage()
+                        .with_iso_pump()
+                        .with_lights(true)
+                        .with_glass_heater(),
                 )
             }
             Stopping(phase) => phase.react_to(history),

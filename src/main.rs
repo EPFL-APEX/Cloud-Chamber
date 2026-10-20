@@ -397,6 +397,10 @@ fn main() -> ! {
 
         // Applique les événements empilés par l'interruption, journalise
         // les pertes, et dit si l'opérateur vient de se manifester.
+        // L'uptime, lu sur le timer du cœur 0 : la boucle est seule à le
+        // connaître, l'écran Info seule à l'afficher.
+        app.set_uptime(Duration::from_micros(board.timer.get_counter().ticks()));
+
         if console.pump(&mut app) {
             last_activity = board.timer.get_counter();
         }

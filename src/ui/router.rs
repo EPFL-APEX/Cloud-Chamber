@@ -7,6 +7,7 @@
 
 use embedded_graphics::{draw_target::DrawTarget, geometry::OriginDimensions, pixelcolor::Rgb565};
 
+use crate::cloud_chamber_hal::timer::Duration;
 use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
 use crate::config::settings::Settings;
 use crate::logic::cooling::CoolingPhase;
@@ -16,7 +17,7 @@ use crate::shared::data::{SharedState, SystemTask};
 use super::interactions::{Click, NavAction, Rotary};
 use super::navigator::{Navigator, Screen};
 use super::screens::menu::MainMenuScreen;
-use super::screens::data::DataScreen;
+
 use super::screens::info::InfoScreen;
 use super::screens::lights::LightsScreen;
 use super::screens::running::{RunningButton, RunningScreen};
@@ -37,6 +38,9 @@ pub struct Screens {
     settings: SettingsScreen,
     lights: LightsScreen,
     temp_graph: TempGraphScreen,
+    /// Uptime de la machine, rafraîchi par la boucle du cœur 0 à chaque
+    /// tour (elle seule lit le timer) et affiché par l'écran Info.
+    uptime: Duration,
     /// Un clic a eu lieu sur l'écran de suivi. Devient un acquittement de
     /// sécurité, ou rien du tout, selon l'état de la machine au moment où
     /// [`Screens::take_task_request`] le relit — cf. sa doc.
@@ -61,6 +65,7 @@ impl Screens {
             settings: SettingsScreen::new(),
             lights: LightsScreen::new(),
             temp_graph: TempGraphScreen::new(),
+            uptime: Duration::ZERO,
             acknowledge_requested: false,
             stop_requested: false,
             start_requested: false,
@@ -86,7 +91,7 @@ impl Screens {
             // rotation est le bon comportement — `todo!()` faisait paniquer
             // la machine sur un simple geste. La veille est du même genre,
             // `UiApp` consommant le geste de réveil avant d'arriver ici.
-            Stats | Idle | Data | Info => {}
+            Stats | Idle | Graph | Info => {}
         }
     }
 
@@ -100,7 +105,7 @@ impl Screens {
             // La rotation va à l'autre bouton, quel que soit le sens —
             // un toggle : depuis BACK, tourner revient sur l'action.
             CurrentTask => self.running_selected = self.running_selected.other(),
-            Stats | Idle | Data | Info => {}
+            Stats | Idle | Graph | Info => {}
         }
     }
 
@@ -143,7 +148,7 @@ impl Screens {
             },
             // Affichage seul : le clic ne peut que ressortir. Sans ça,
             // l'opérateur resterait coincé sur l'écran.
-            Stats | Data | Info => Some(NavAction::Back),
+            Stats | Graph | Info => Some(NavAction::Back),
             // Commande : l'écran décide (bascule ou sortie) — cf.
             // `screens::lights`.
             Lights => self.lights.click(),
@@ -280,6 +285,13 @@ impl Screens {
         self.stop_requested = true;
     }
 
+    /// Uptime de la machine, lu par la boucle du cœur 0 sur son timer —
+    /// la boucle est seule à le connaître, l'écran Info seule à
+    /// l'afficher, ce setter est le seul chemin entre les deux.
+    pub fn set_uptime(&mut self, uptime: Duration) {
+        self.uptime = uptime;
+    }
+
     /// Transmet à l'écran de réglages l'état d'une sauvegarde demandée
     /// mais pas encore écrite — cf. `SettingsScreen::set_save_pending`.
     pub fn set_save_pending(&mut self, pending: bool) {
@@ -336,8 +348,8 @@ impl Screens {
             }
             Screen::Idle => self.temp_graph.draw(display, state),
             Screen::Lights => self.lights.draw(display),
-            Screen::Data => DataScreen { state }.draw(display),
-            Screen::Info => InfoScreen.draw(display),
+            Screen::Graph => self.temp_graph.draw(display, state),
+            Screen::Info => InfoScreen { uptime: self.uptime }.draw(display),
         }
     }
 }
@@ -608,7 +620,8 @@ mod tests {
 
         for (item, screen) in [
             (MainMenuItem::Stats, Screen::Stats),
-            (MainMenuItem::Data, Screen::Data),
+            (MainMenuItem::Courbe, Screen::Graph),
+            (MainMenuItem::Infos, Screen::Info),
         ] {
             let mut screens = Screens::new();
             for _ in 0..item as u8 {
@@ -631,7 +644,7 @@ mod tests {
         }
     }
 
-    /// `Lights` n'a d'entrée de menu que depuis l'item 5, mais reste
+    /// `Lights` a son entrée de menu à l.item 4, mais reste
     /// atteignable par la pile de navigation — son rendu ne doit pas plus
     /// paniquer que les autres.
     #[test]

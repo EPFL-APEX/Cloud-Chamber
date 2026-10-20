@@ -23,7 +23,7 @@ use embedded_graphics::{
     Drawable,
     draw_target::DrawTarget,
     geometry::{OriginDimensions, Point, Size},
-    mono_font::{MonoTextStyle, ascii::{FONT_6X10, FONT_6X13}},
+    mono_font::{MonoTextStyle, ascii::{FONT_6X10, FONT_6X13, FONT_9X18_BOLD}},
     pixelcolor::Rgb565,
     primitives::{Line, Primitive, PrimitiveStyle, Rectangle},
     text::{Alignment, Baseline, Text, TextStyleBuilder},
@@ -39,13 +39,13 @@ use crate::cloud_chamber_hal::{
 use crate::shared::data::SharedState;
 use crate::ui::theme;
 
-use super::stats::phase_label;
 
 const TEMP_GRAPH_BUFFER_LENGTH: usize = 100;
 
 const SCREEN_WIDTH: u32 = 320;
-const TOP_BAND_HEIGHT: u32 = 29;
-const PLOT: Rectangle = Rectangle::new(Point::new(10, 40), Size::new(300, 160));
+/// Zone du tracé. La marge de gauche laisse la place aux étiquettes de
+/// température, alignées à droite du cadre.
+const PLOT: Rectangle = Rectangle::new(Point::new(42, 44), Size::new(268, 160));
 
 /// Intervalle minimal entre deux points retenus. En durée plutôt qu'en
 /// nombre d'appels, la cadence de sondage suivant le nombre de sondes.
@@ -111,28 +111,29 @@ impl TempGraphScreen {
             .alignment(Alignment::Right)
             .build();
 
-        // ─── Bande de titre, phase courante et valeur du moment ──────────────
-        Rectangle::new(Point::zero(), Size::new(SCREEN_WIDTH, TOP_BAND_HEIGHT))
-            .into_styled(PrimitiveStyle::with_fill(theme::BACKGROUND_COLOR_DARKER))
-            .draw(display)?;
-
+        // ─── Bandeau : le mot de l'écran, la sonde pilote à droite ───────────
+        // Même écran pour la veille et pour l'entrée COURBE du menu — le
+        // tampon se remplit en continu, l'entrée ne fait que l'afficher.
         Text::with_text_style(
-            phase_label(state.task),
-            Point::new(10, 8),
-            MonoTextStyle::new(&FONT_6X13, theme::HIGHLIGHT_COLOR),
+            "COURBE",
+            Point::new(12, 8),
+            MonoTextStyle::new(&FONT_9X18_BOLD, theme::HIGHLIGHT_COLOR),
             top_style,
         )
         .draw(display)?;
+        Line::new(Point::new(0, 36), Point::new(SCREEN_WIDTH as i32, 36))
+            .into_styled(PrimitiveStyle::with_stroke(theme::DIM_COLOR, 1))
+            .draw(display)?;
 
         match state.snapshot.temps[CHAMBER_TEMP_IDX] {
             Some(m) if !m.value.is_nan() => {
-                // Nommee, sinon rien ne dit de quelle sonde vient la
-                // courbe. Meme vocabulaire que `running.rs`.
+                // Nommée, sinon rien ne dit de quelle sonde vient la
+                // courbe. Même vocabulaire que `running.rs`.
                 let mut s: String<20> = String::new();
-                let _ = write!(s, "Chambre {:+.1} C", m.value.0);
+                let _ = write!(s, "CHAMBRE {:+.1} C", m.value.0);
                 Text::with_text_style(
                     s.as_str(),
-                    Point::new(SCREEN_WIDTH as i32 - 10, 8),
+                    Point::new(SCREEN_WIDTH as i32 - 12, 20),
                     MonoTextStyle::new(&FONT_6X13, theme::TEXT_COLOR),
                     right_style,
                 )
@@ -156,7 +157,7 @@ impl TempGraphScreen {
         if count < 2 {
             Text::with_text_style(
                 "Acquisition en cours",
-                Point::new(10, 110),
+                Point::new(42, 110),
                 MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
                 top_style,
             )
@@ -169,14 +170,66 @@ impl TempGraphScreen {
         // s'applique, un palier se collerait sinon en haut, `max - value`
         // valant zéro partout.
         let top = (min + max + span) / 2.0;
+        let bottom = top - span;
 
-        // `get(0)` est la plus récente, le tracé va donc de droite à gauche.
-        let x_of = |i: usize| {
-            PLOT.top_left.x + PLOT.size.width as i32
-                - (i as i32 * PLOT.size.width as i32) / (count as i32 - 1)
-        };
         let y_of = |value: f32| {
             PLOT.top_left.y + ((top - value) / span * PLOT.size.height as f32) as i32
+        };
+
+        // ─── Cadre et grille : filets, rien de plus ────────────────────────
+        let hairline = PrimitiveStyle::with_stroke(theme::DIM_COLOR, 1);
+        PLOT.into_styled(hairline).draw(display)?;
+        let mid_y = PLOT.top_left.y + PLOT.size.height as i32 / 2;
+        Line::new(
+            Point::new(PLOT.top_left.x, mid_y),
+            Point::new(PLOT.top_left.x + PLOT.size.width as i32, mid_y),
+        )
+        .into_styled(hairline)
+        .draw(display)?;
+        let mid_x = PLOT.top_left.x + PLOT.size.width as i32 / 2;
+        Line::new(
+            Point::new(mid_x, PLOT.top_left.y),
+            Point::new(mid_x, PLOT.top_left.y + PLOT.size.height as i32),
+        )
+        .into_styled(hairline)
+        .draw(display)?;
+
+        // ─── Échelle Y : haut, milieu, bas du cadre ─────────────────────────
+        for (label_c, at) in [(top, PLOT.top_left.y), (bottom, PLOT.top_left.y + PLOT.size.height as i32)] {
+            let mut s: String<12> = String::new();
+            let _ = write!(s, "{:+.1}", label_c);
+            Text::with_text_style(
+                s.as_str(),
+                Point::new(PLOT.top_left.x - 4 - s.len() as i32 * 6, at - 5),
+                MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
+                top_style,
+            )
+            .draw(display)?;
+        }
+        {
+            let mut s: String<12> = String::new();
+            let _ = write!(s, "{:+.1}", bottom + span / 2.0);
+            Text::with_text_style(
+                s.as_str(),
+                Point::new(PLOT.top_left.x - 4 - s.len() as i32 * 6, mid_y - 5),
+                MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
+                top_style,
+            )
+            .draw(display)?;
+        }
+
+        // ─── Échelle X : l'âge des points, pas leur rang ────────────────────
+        // Chaque mesure porte son horodatage : la position horizontale est
+        // son âge réel à la fenêtre près, pas un étirement du buffer sur
+        // toute la largeur — un buffer de trois minutes ne doit pas se
+        // faire passer pour trente.
+        let Some(newest) = self.temps_buffer.get(0).ok() else { return Ok(()) };
+        let window_us = SAMPLE_INTERVAL.as_micros() * TEMP_GRAPH_BUFFER_LENGTH as u64;
+        let x_of_age = |m: Measurement<Celsius>| {
+            let age_us = newest.time.since(m.time).as_micros();
+            let ratio = (age_us as f32 / window_us as f32).clamp(0.0, 1.0);
+            PLOT.top_left.x + PLOT.size.width as i32
+                - (ratio * PLOT.size.width as f32) as i32
         };
 
         // ─── Courbe ─────────────────────────────────────────────────────────
@@ -184,19 +237,34 @@ impl TempGraphScreen {
         let mut previous = None;
         for i in 0..count {
             let Ok(m) = self.temps_buffer.get(i) else { break };
-            let point = Point::new(x_of(i), y_of(m.value.0));
+            let point = Point::new(x_of_age(m), y_of(m.value.0));
             if let Some(from) = previous {
                 Line::new(from, point).into_styled(line_style).draw(display)?;
             }
             previous = Some(point);
         }
 
-        // ─── Pied, bornes de l'échelle ──────────────────────────────────────
-        let mut s: String<40> = String::new();
-        let _ = write!(s, "{:+.1} a {:+.1} C sur {} min", min, max, WINDOW_MIN);
+        // ─── Étiquettes X : la fenêtre en clair ─────────────────────────────
         Text::with_text_style(
-            s.as_str(),
-            Point::new(10, 208),
+            "-30 MIN",
+            Point::new(PLOT.top_left.x, PLOT.top_left.y + PLOT.size.height as i32 + 6),
+            MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
+            top_style,
+        )
+        .draw(display)?;
+        Text::with_text_style(
+            "-15 MIN",
+            Point::new(mid_x - 7 * 3, PLOT.top_left.y + PLOT.size.height as i32 + 6),
+            MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
+            top_style,
+        )
+        .draw(display)?;
+        Text::with_text_style(
+            "MAINTENANT",
+            Point::new(
+                PLOT.top_left.x + PLOT.size.width as i32 - 10 * 6,
+                PLOT.top_left.y + PLOT.size.height as i32 + 6,
+            ),
             MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
             top_style,
         )
@@ -329,5 +397,70 @@ mod tests {
             .expect("failed to save screenshot");
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod axis_tests {
+    use super::*;
+    use crate::shared::data::{SensorSnapshot, SystemTask};
+    use embedded_graphics_simulator::SimulatorDisplay;
+
+    fn make_display() -> SimulatorDisplay<Rgb565> {
+        SimulatorDisplay::new(Size::new(320, 240))
+    }
+
+    fn state() -> SharedState {
+        SharedState {
+            snapshot: SensorSnapshot::default(),
+            task: SystemTask::Idle,
+            new_data: false,
+            core1_panicked: false,
+        }
+    }
+
+    fn at(us: u64, v: f32) -> Measurement<Celsius> {
+        Measurement::new(Instant::from_micros(us), Celsius(v))
+    }
+
+    /// L'axe X est l'âge réel des points : une fenêtre pleine touche
+    /// les deux bords, une fenêtre fraîche reste à droite.
+    #[test]
+    fn the_x_axis_is_the_age_of_the_samples() {
+        let now_us = 2_000_000_000u64;
+        for (full_window, ages) in [
+            (true, [0u64, 900_000_000, 1_800_000_000]),
+            (false, [0u64, 150_000_000, 300_000_000]),
+        ] {
+            let mut screen = TempGraphScreen::new();
+            for (i, age) in ages.iter().rev().enumerate() {
+                screen.sample(at(now_us - age, -35.0 + i as f32));
+            }
+
+            let mut d = make_display();
+            screen.draw(&mut d, &state()).unwrap();
+
+            let hl = theme::HIGHLIGHT_COLOR;
+            let (mut minx, _) = (999i32, -1i32);
+            for y in PLOT.top_left.y..PLOT.top_left.y + PLOT.size.height as i32 {
+                for x in PLOT.top_left.x..PLOT.top_left.x + PLOT.size.width as i32 {
+                    if d.get_pixel(Point::new(x, y)) == hl {
+                        minx = minx.min(x);
+                    }
+                }
+            }
+            let right = PLOT.top_left.x + PLOT.size.width as i32;
+            if full_window {
+                assert!(
+                    minx <= PLOT.top_left.x + 4,
+                    "fenetre pleine : la courbe doit toucher la gauche (min x = {minx})"
+                );
+            } else {
+                assert!(
+                    minx > right - PLOT.size.width as i32 / 3,
+                    "fenetre fraiche : la courbe doit rester a droite (min x = {minx})"
+                );
+            }
+        }
     }
 }

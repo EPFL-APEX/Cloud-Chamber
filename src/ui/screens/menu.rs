@@ -46,13 +46,18 @@ pub enum MainMenuItem {
     Start,
     Stats,
     Settings,
-    /// Même écran que `Start`, sans rien démarrer : consultation du cycle
-    /// en cours, ou de son absence.
-    Cooldown,
-    Data,
-    /// Commande manuelle de la bande LED du compartiment machine —
-    /// remplace l'entrée « Info » depuis l'ajout de la bande.
+    /// La courbe de température des trente dernières minutes, sur
+    /// demande — le tampon se remplit en continu, l'entrée ne fait que
+    /// l'afficher. Remplace « Cooldown », doublon de Start : ouvrir le
+    /// suivi de cycle sans rien démarrer, c'est déjà ce que fait Start.
+    Courbe,
+    /// Commande manuelle de la bande LED du compartiment machine.
     Lights,
+    /// Plaque signalétique de la machine. Remplace « Data », doublon
+    /// de Stats depuis que celui-ci affiche les huit sondes. En fin de
+    /// menu : c'est la référence, pas un outil — les commandes
+    /// d'abord, la fiche à la fin.
+    Infos,
 }
 
 const MAIN_MENU_SIZE: u8 = 6; // core::mem::variant_count::<MainMenuItem>() as u8;
@@ -73,7 +78,8 @@ const FIRST_COOLING_PHASE: SystemTask = SystemTask::Cooling(CoolingPhase::Sensor
 /// FONT_6X10 : une valeur plus longue est tronquée plutôt que de déborder
 /// sur la case voisine.
 fn bottom_value(slot: usize, state: &SharedState, out: &mut String<8>) {
-    let (compressor, high_voltage) = expected_outputs(state.task);
+    let outputs = expected_outputs(state.task);
+    let (compressor, high_voltage) = (outputs.compressor, outputs.high_voltage);
     match slot {
         0 => write_state(compressor, out),
         1 => write_temp(state.snapshot.temps[CHAMBER_TEMP_IDX], out),
@@ -135,10 +141,8 @@ impl Click for MainMenuScreen {
             }
             MainMenuItem::Stats => Screen::Stats,
             MainMenuItem::Settings => Screen::Settings,
-            // Même écran que START, mais sans rien démarrer : consultation
-            // du cycle en cours (ou de son absence).
-            MainMenuItem::Cooldown => Screen::CurrentTask,
-            MainMenuItem::Data => Screen::Data,
+            MainMenuItem::Courbe => Screen::Graph,
+            MainMenuItem::Infos => Screen::Info,
             MainMenuItem::Lights => Screen::Lights,
         };
         Some(NavAction::Push(screen))
@@ -430,15 +434,16 @@ mod tests {
         assert_eq!(menu.take_task_request(), None);
     }
 
-    /// Ouvrir l'écran de suivi depuis l'item COOLDOWN ne doit rien démarrer :
-    /// c'est une consultation, pas une commande.
+    /// Ouvrir la courbe depuis le menu ne démarre rien : c'est une
+    /// consultation, pas une commande — même gestuelle que Start, mais
+    /// aucun état machine ne bouge.
     #[test]
-    fn click_on_cooldown_opens_the_same_screen_without_starting_anything() {
+    fn click_on_courbe_opens_the_graph_without_starting_anything() {
         let mut menu = MainMenuScreen::new();
-        for _ in 0..MainMenuItem::Cooldown as u8 {
+        for _ in 0..MainMenuItem::Courbe as u8 {
             menu.right_turn();
         }
-        assert_eq!(menu.click(), Some(NavAction::Push(Screen::CurrentTask)));
+        assert_eq!(menu.click(), Some(NavAction::Push(Screen::Graph)));
         assert_eq!(menu.take_task_request(), None);
     }
 
@@ -450,12 +455,12 @@ mod tests {
     }
 
     #[test]
-    fn click_on_last_item_pushes_lights() {
+    fn click_on_last_item_pushes_infos() {
         let mut menu = MainMenuScreen::new();
         for _ in 0..MAIN_MENU_SIZE {
             menu.right_turn();
         }
-        assert_eq!(menu.click(), Some(NavAction::Push(Screen::Lights)));
+        assert_eq!(menu.click(), Some(NavAction::Push(Screen::Info)));
     }
 
     // Le harnais interactif SDL2 vit maintenant dans `ui::router` : il

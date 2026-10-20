@@ -1,4 +1,13 @@
-//! Palette de couleurs et styles graphiques inspirés du style Prusa.
+//! Palette de couleurs et styles graphiques de l'interface.
+//!
+//! # Où viennent les couleurs
+//!
+//! De la planche d'icônes elle-même (`src/ui/images/menu_icons.bmp`,
+//! `stats_icons.bmp`) : une famille de bleus — azur vif, bleu moyen,
+//! glacier — posés sur le même bleu-nuit que le fond de la planche. La
+//! palette ci-dessous reprend ces teintes-là, pour que texte, filets et
+//! carrés d'état vivent dans le même monde que les icônes. Les valeurs
+//! exactes ont été relevées dans le BMP (sonde jetable), pas inventées.
 //!
 //! # Encodage Rgb565 — le piège qui cassait tout
 //!
@@ -19,28 +28,30 @@ use embedded_graphics::pixelcolor::{Rgb565, RgbColor};
 
 // ─── Couleurs principales ─────────────────────────────────────────────────────
 
-/// Fond d'écran : bleu-nuit profond (pas du noir pur — l'écran OLED/IPS
-/// d'une chambre à brouillard est regardé dans le noir, un noir pur
-/// rend les bords de l'écran indiscernables du cadre).
-pub const BACKGROUND_COLOR: Rgb565 = Rgb565::new(2, 8, 6);
+/// Fond d'écran : le bleu-nuit de la planche d'icônes (pas du noir pur —
+/// l'écran d'une chambre à brouillard est regardé dans le noir, un noir
+/// pur rend les bords indiscernables du cadre). Et les icônes, dont le
+/// fond propre est exactement celui-ci, s'y fondent sans raccord.
+pub const BACKGROUND_COLOR: Rgb565 = Rgb565::new(0, 5, 4);
 /// Bandes (titre, pied de menu) : un cran sous le fond, pour découper
 /// sans créer de front dur.
-pub const BACKGROUND_COLOR_DARKER: Rgb565 = Rgb565::new(1, 5, 4);
-/// Bleu d'accentuation : bordures, séparateurs, icônes.
-pub const ACCENT_COLOR: Rgb565 = Rgb565::new(8, 26, 18);
-/// Couleur vive de sélection et de mise en avant (cyan clair).
-pub const HIGHLIGHT_COLOR: Rgb565 = Rgb565::new(16, 47, 31);
+pub const BACKGROUND_COLOR_DARKER: Rgb565 = Rgb565::new(0, 3, 2);
+/// Bleu moyen : bordures, séparateurs, sélection.
+pub const ACCENT_COLOR: Rgb565 = Rgb565::new(1, 26, 21);
+/// Azur vif — l'icône dominante de la planche : sélection, mise en
+/// avant, carrés d'état actif.
+pub const HIGHLIGHT_COLOR: Rgb565 = Rgb565::new(1, 32, 26);
 
 // ─── Couleurs d'état (écrans de mesures) ───────────────────────────────────────
 
 pub const TEXT_COLOR: Rgb565 = Rgb565::WHITE;
-/// Texte secondaire : gris-vert nettement plus sombre que le texte
+/// Texte secondaire : gris-bleu nettement plus sombre que le texte
 /// principal, mais au-dessus du fond (lisible, juste discret).
-pub const DIM_COLOR: Rgb565 = Rgb565::new(14, 28, 14);
+pub const DIM_COLOR: Rgb565 = Rgb565::new(13, 33, 19);
 pub const SUCCESS_COLOR: Rgb565 = Rgb565::new(0, 63, 0);
 pub const WARNING_COLOR: Rgb565 = Rgb565::new(31, 63, 0);
-/// Rouge vif : un déclenchement sécurité doit se voir depuis l'autre
-/// bout de la pièce.
+/// Rouge vif : réservé au déclenchement sécurité — un état qui doit se
+/// voir depuis l'autre bout de la pièce, pas un ornement.
 pub const DANGER_COLOR: Rgb565 = Rgb565::new(31, 10, 0);
 
 /// Luminosité perçue approximative (0-255) d'une couleur Rgb565,
@@ -110,3 +121,4 @@ mod tests {
         );
     }
 }
+

@@ -21,7 +21,10 @@ pub enum Screen {
     /// Commande manuelle de la bande LED du compartiment machine.
     Lights,
     CurrentTask,
-    Data,
+    /// Courbe de température sur demande — même rendu que la veille :
+    /// le tampon derrière se remplit en continu, qu'il soit affiché
+    /// ou non.
+    Graph,
     Info,
 }
 

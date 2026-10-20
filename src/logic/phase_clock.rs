@@ -293,13 +293,16 @@ mod tests {
             let history = MeasurementHistory::new();
             let (next, plan) = advance(SystemTask::Stabilising, &history, Duration::from_millis(10 * 60 * 60 * 1000), Duration::ZERO); // 10h
             assert_eq!(next, SystemTask::Stabilising);
+            // Toutes les sorties de fin de `FinalCheckBeforeStabilising`,
+            // pompe, éclairage et vitre compris — cf. le bras
+            // `Stabilising` de `SystemTask::react_to`.
             assert_eq!(
                 plan,
                 ActuatorPlan {
                     cooling: Some(SATURATION_TARGET_C),
                     iso_heater: Some(IPA_HEATER_TARGET_C),
                     high_voltage: true,
-                    iso_pump: false, lights: None, glass_heater: false,
+                    iso_pump: true, lights: Some(true), glass_heater: true,
                 }
             );
         });
