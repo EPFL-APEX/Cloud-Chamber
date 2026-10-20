@@ -113,7 +113,7 @@ use crate::ui::event_queue::EventQueue;
 /// **Symptôme d'un réglage trop haut** : bruit visuel — pixels aléatoires,
 /// lignes corrompues. Baisser ici, et `screen_test` en hérite : c'est
 /// précisément pour ça que la valeur est unique.
-pub const SCREEN_SPI_HZ: u32 = 32_000_000;
+pub const SCREEN_SPI_HZ: u32 = 16_000_000;
 
 /// Période de scrutation de l'encodeur.
 ///

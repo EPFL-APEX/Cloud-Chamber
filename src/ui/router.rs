@@ -18,7 +18,7 @@ use super::navigator::{Navigator, Screen};
 use super::screens::menu::MainMenuScreen;
 use super::screens::data::DataScreen;
 use super::screens::info::InfoScreen;
-use super::screens::placeholder::PlaceholderScreen;
+use super::screens::lights::LightsScreen;
 use super::screens::running::{RunningButton, RunningScreen};
 use super::screens::settings::SettingsScreen;
 use super::screens::stats::StatsScreen;
@@ -35,6 +35,7 @@ pub struct Screens {
     navigator: Navigator<NAV_DEPTH>,
     main_menu: MainMenuScreen,
     settings: SettingsScreen,
+    lights: LightsScreen,
     temp_graph: TempGraphScreen,
     /// Un clic a eu lieu sur l'écran de suivi. Devient un acquittement de
     /// sécurité, ou rien du tout, selon l'état de la machine au moment où
@@ -58,6 +59,7 @@ impl Screens {
             navigator: Navigator::new(Screen::MainMenu),
             main_menu: MainMenuScreen::new(),
             settings: SettingsScreen::new(),
+            lights: LightsScreen::new(),
             temp_graph: TempGraphScreen::new(),
             acknowledge_requested: false,
             stop_requested: false,
@@ -72,6 +74,7 @@ impl Screens {
         match self.navigator.current() {
             MainMenu => self.main_menu.right_turn(),
             Settings => self.settings.right_turn(),
+            Lights => self.lights.right_turn(),
             // Sur l'écran de suivi, la rotation déplace la sélection
             // entre le bouton d'action et BACK — deux boutons, un seul
             // bouton physique : le pattern encodeur. La validation est le
@@ -83,9 +86,7 @@ impl Screens {
             // rotation est le bon comportement — `todo!()` faisait paniquer
             // la machine sur un simple geste. La veille est du même genre,
             // `UiApp` consommant le geste de réveil avant d'arriver ici.
-            // Les écrans encore absents (cf. `PlaceholderScreen`) sont dans
-            // le même cas : rien à faire défiler sur un carton d'attente.
-            Stats | Idle | ManualControl | Data | Info => {}
+            Stats | Idle | Data | Info => {}
         }
     }
 
@@ -95,10 +96,11 @@ impl Screens {
         match self.navigator.current() {
             MainMenu => self.main_menu.left_turn(),
             Settings => self.settings.left_turn(),
+            Lights => self.lights.left_turn(),
             // La rotation va à l'autre bouton, quel que soit le sens —
             // un toggle : depuis BACK, tourner revient sur l'action.
             CurrentTask => self.running_selected = self.running_selected.other(),
-            Stats | Idle | ManualControl | Data | Info => {}
+            Stats | Idle | Data | Info => {}
         }
     }
 
@@ -140,10 +142,11 @@ impl Screens {
                 }
             },
             // Affichage seul : le clic ne peut que ressortir. Sans ça,
-            // l'opérateur resterait coincé sur l'écran. Les écrans encore
-            // absents en font partie — c'est même leur seule sortie, et ce
-            // que leur carton d'attente annonce à l'opérateur.
-            Stats | ManualControl | Data | Info => Some(NavAction::Back),
+            // l'opérateur resterait coincé sur l'écran.
+            Stats | Data | Info => Some(NavAction::Back),
+            // Commande : l'écran décide (bascule ou sortie) — cf.
+            // `screens::lights`.
+            Lights => self.lights.click(),
             // La veille se quitte par `Screens::leave_idle`, pas par la
             // pile. Un `Back` ici dépilerait deux fois.
             Idle => None,
@@ -177,6 +180,16 @@ impl Screens {
     /// encore de point d'entrée matériel/`main.rs`, cf. `SettingsStore`).
     pub fn take_save_request(&mut self) -> Option<Settings> {
         self.settings.take_save_request()
+    }
+
+    /// Récupère un changement d'état demandé pour la bande LED du
+    /// compartiment machine, et le consomme — cf.
+    /// [`super::screens::lights::LightsScreen::take_strip_request`].
+    ///
+    /// À consommer depuis la boucle du cœur 0, seule propriétaire du
+    /// GPIO (`drivers::led_strip::LedStrip`).
+    pub fn take_strip_request(&mut self) -> Option<bool> {
+        self.lights.take_strip_request()
     }
 
     /// Récupère un changement d'état demandé par l'opérateur (démarrage de
@@ -322,27 +335,7 @@ impl Screens {
                 RunningScreen { state, selected: self.running_selected }.draw(display)
             }
             Screen::Idle => self.temp_graph.draw(display, state),
-            // Pas encore construits : un carton d'attente plutôt qu'une
-            // panique, cf. `screens::placeholder`.
-            //
-            // Variantes listées explicitement, pas de `_ =>` : on garde le
-            // contrôle d'exhaustivité sur `Screen`, pour qu'un écran ajouté
-            // plus tard fasse échouer la compilation ici au lieu de se
-            // retrouver silencieusement sans rendu.
-            //
-            // `for_screen` ne peut pas rendre `None` sur ces trois-là, mais
-            // on reste sur `if let` plutôt que `.unwrap()` : rien ne
-            // justifie de réintroduire une panique dans la fonction dont on
-            // vient tout juste de la retirer.
-            // `ManualControl` reste un carton d'attente : le mode manuel
-            // n'existe pas encore, et un écran de commande fictif serait
-            // pire qu'un carton honnête.
-            screen @ Screen::ManualControl => {
-                if let Some(placeholder) = PlaceholderScreen::for_screen(screen) {
-                    placeholder.draw(display)?;
-                }
-                Ok(())
-            }
+            Screen::Lights => self.lights.draw(display),
             Screen::Data => DataScreen { state }.draw(display),
             Screen::Info => InfoScreen.draw(display),
         }
@@ -601,20 +594,21 @@ mod tests {
         );
     }
 
-    /// Le chemin qui faisait tomber le cœur 0 : deux des six entrées du
-    /// menu (Données, Info) poussaient un écran dont `draw` répondait
-    /// `todo!()`. On le parcourt ici depuis le menu, comme l'opérateur, et
-    /// on vérifie que l'écran se dessine, encaisse les rotations, et rend
-    /// la main au clic.
+    /// Le chemin qui faisait tomber le cœur 0 : des entrées du menu
+    /// poussaient un écran dont `draw` répondait `todo!()`. On le
+    /// parcourt ici depuis le menu, comme l'opérateur, pour les écrans
+    /// d'affichage seul : l'écran se dessine, encaisse les rotations, et
+    /// rend la main au clic. (`Lights`, lui, se commande : couvert par
+    /// son propre test ci-dessous.)
     #[test]
-    fn unbuilt_menu_entries_show_a_placeholder_instead_of_panicking() {
+    fn display_only_menu_entries_draw_and_exit_without_panicking() {
         use crate::ui::screens::menu::MainMenuItem;
 
         let state = state_with(SystemTask::Idle);
 
         for (item, screen) in [
+            (MainMenuItem::Stats, Screen::Stats),
             (MainMenuItem::Data, Screen::Data),
-            (MainMenuItem::Info, Screen::Info),
         ] {
             let mut screens = Screens::new();
             for _ in 0..item as u8 {
@@ -631,22 +625,30 @@ mod tests {
             screens.left_turn();
             screens.draw(&mut d, &state).unwrap();
 
-            // Seule sortie, celle que le carton d'attente annonce.
+            // Seule sortie, le clic.
             screens.click();
             assert_eq!(screens.current(), Screen::MainMenu);
         }
     }
 
-    /// `ManualControl` n'a pas d'entrée de menu aujourd'hui, mais reste
+    /// `Lights` n'a d'entrée de menu que depuis l'item 5, mais reste
     /// atteignable par la pile de navigation — son rendu ne doit pas plus
     /// paniquer que les autres.
     #[test]
-    fn manual_control_also_draws_without_panicking() {
+    fn lights_draws_and_toggles_through_the_router() {
         let mut screens = Screens::new();
-        let _ = screens.navigator.push(Screen::ManualControl);
+        let _ = screens.navigator.push(Screen::Lights);
 
         let mut d = make_display();
         screens.draw(&mut d, &state_with(SystemTask::Idle)).unwrap();
+
+        // Clic sur la ligne de bascule : la demande doit remonter.
+        screens.click();
+        assert_eq!(screens.take_strip_request(), Some(true));
+        // Sélection sur Back, clic : retour.
+        screens.right_turn();
+        screens.click();
+        assert_eq!(screens.current(), Screen::MainMenu);
     }
 
     /// Une fois sur l'écran de suivi, tourner ne doit rien casser (c'est un

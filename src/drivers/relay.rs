@@ -65,6 +65,20 @@ where
     pub fn is_on(&self) -> bool {
         self.is_on
     }
+
+    /// Applique l'état demandé en un seul geste — pour les propriétaires
+    /// hors boucle de contrôle (la bande LED du compartiment, pilotée par
+    /// le cœur 0), qui n'ont pas de raison de passer par le trait.
+    ///
+    /// Le trait reste la voie de la boucle de contrôle : `turn_on`/
+    /// `turn_off` sont ce que `ActuatorPlan`applique via `Actuators`.
+    pub fn set(&mut self, on: bool) -> Result<(), P::Error> {
+        if on {
+            self.turn_on()
+        } else {
+            self.turn_off()
+        }
+    }
 }
 
 impl<P, Role> BinaryActuator for Relay<P, Role>

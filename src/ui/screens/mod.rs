@@ -9,8 +9,8 @@
 // déjà hors jeu à ce point (plus personne ne navigue).
 pub mod error;
 pub(super) mod data;
+pub(super) mod lights;
 pub(super) mod menu;
-pub(super) mod placeholder;
 pub(super) mod running;
 pub(super) mod settings;
 pub(super) mod temp;

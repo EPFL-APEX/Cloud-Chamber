@@ -50,7 +50,9 @@ pub enum MainMenuItem {
     /// en cours, ou de son absence.
     Cooldown,
     Data,
-    Info,
+    /// Commande manuelle de la bande LED du compartiment machine —
+    /// remplace l'entrée « Info » depuis l'ajout de la bande.
+    Lights,
 }
 
 const MAIN_MENU_SIZE: u8 = 6; // core::mem::variant_count::<MainMenuItem>() as u8;
@@ -137,7 +139,7 @@ impl Click for MainMenuScreen {
             // du cycle en cours (ou de son absence).
             MainMenuItem::Cooldown => Screen::CurrentTask,
             MainMenuItem::Data => Screen::Data,
-            MainMenuItem::Info => Screen::Info,
+            MainMenuItem::Lights => Screen::Lights,
         };
         Some(NavAction::Push(screen))
     }
@@ -448,12 +450,12 @@ mod tests {
     }
 
     #[test]
-    fn click_on_last_item_pushes_info() {
+    fn click_on_last_item_pushes_lights() {
         let mut menu = MainMenuScreen::new();
         for _ in 0..MAIN_MENU_SIZE {
             menu.right_turn();
         }
-        assert_eq!(menu.click(), Some(NavAction::Push(Screen::Info)));
+        assert_eq!(menu.click(), Some(NavAction::Push(Screen::Lights)));
     }
 
     // Le harnais interactif SDL2 vit maintenant dans `ui::router` : il

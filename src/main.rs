@@ -86,10 +86,11 @@ use cloud_chamber_firmware::cloud_chamber_hal::sensors::{IndependentSensors, Sen
 use cloud_chamber_firmware::config::operating::REGULATION_BAND_C;
 use cloud_chamber_firmware::config::wiring::{
     PIN_COMPRESSOR_RELAY, PIN_HV_RELAY, PIN_I2C_SCL, PIN_I2C_SDA, PIN_ISO_HEATER_RELAY,
-    PIN_LIGHTS_RELAY, PIN_ONEWIRE, PIN_PUMP_RELAY, PIN_WINDOW_HEATER_RELAY,
+    PIN_LED_STRIP, PIN_LIGHTS_RELAY, PIN_ONEWIRE, PIN_PUMP_RELAY, PIN_WINDOW_HEATER_RELAY,
 };
 use cloud_chamber_firmware::drivers::bme280::{Bme280Driver, Bme280Sensor};
 use cloud_chamber_firmware::drivers::breaker::GpioBreaker;
+use cloud_chamber_firmware::drivers::led_strip;
 use cloud_chamber_firmware::drivers::compressor::Compressor;
 use cloud_chamber_firmware::drivers::ds18b20::{
     Ds18b20Bus, Ds18b20Sensors, Resolution, rp2040_adapter::Rp2040OpenDrain,
@@ -195,6 +196,14 @@ fn main() -> ! {
     // boucle du cœur 0, seule à le toucher. L'interruption ne communique
     // avec lui que par la file d'événements de `console`.
     let mut app = UiApp::new();
+
+    // ─── Bande LED du compartiment machine ────────────────────────────────
+    //
+    // Commande opérateur uniquement, depuis l'entrée de menu dédiée :
+    // pas dans les `Actuators` du cœur 1, pas dans les plans de phase.
+    // Le cœur 0 en est seul propriétaire — cf. `drivers::led_strip` pour
+    // le pourquoi de cette séparation d'avec l'éclairage de chambre.
+    let mut bay_lights = led_strip::LedStrip::new(board::configure_output_pin(PIN_LED_STRIP));
 
     // Premier rendu : l'opérateur voit le menu pendant la découverte des
     // capteurs, qui prend un instant.
@@ -488,6 +497,14 @@ fn main() -> ! {
             }
         }
         app.set_save_pending(pending_save.is_some());
+
+        // Bande LED du compartiment : la demande vient de l'écran dédié,
+        // consommée ici — le cœur 0 est seul à toucher la broche. L'erreur
+        // d'écriture suit la politique du driver : ignorée, la broche se
+        // signalera si elle refuse (cf. `drivers::relay::Relay::new`).
+        if let Some(on) = app.take_strip_request() {
+            let _ = bay_lights.set(on);
+        }
 
         if error_pending {
             defmt::error!("coeur 1 arrete : affichage de l'ecran d'erreur");

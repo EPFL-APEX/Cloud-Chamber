@@ -1,199 +1,78 @@
 //! Driver compresseur : relais GPIO régulé par hystérésis autour d'une
 //! température cible.
+//!
+//! Le corps est celui de [`crate::drivers::regulated_relay::RegulatedRelay`]
+//! — cf. sa doc pour le pourquoi du marqueur de rôle et du sens porté par
+//! le type.
 
-use crate::cloud_chamber_hal::{
-    actuators::{BinaryActuator, TargetActuator},
-    measurement::Measurement,
-    ring_buffer::RingBuffer,
-    units::Celsius,
-};
-use crate::drivers::regulate_method::{hysteresis, RegulationDirection};
+use crate::drivers::regulate_method::RegulationDirection;
+use crate::drivers::regulated_relay::{RegulatedRelay, RegulationRole};
 
-use embedded_hal::digital::OutputPin;
+/// Marqueur de rôle : le compresseur **refroidit** — actif quand la
+/// lecture est AU-DESSUS de la cible.
+pub struct CompressorRole;
+
+impl RegulationRole for CompressorRole {
+    const DIRECTION: RegulationDirection = RegulationDirection::Upward;
+}
 
 /// Compresseur de la boucle de refroidissement, piloté par un relais GPIO.
 ///
-/// Implémente [`BinaryActuator`] pour le pilotage direct (on/off) et
-/// [`TargetActuator<Celsius, N>`] pour la régulation par hystérésis autour
-/// d'une température cible.
-pub struct Compressor<P>
-where
-    P: OutputPin,
-{
-    relay_pin: P,
-    hysteresis_band: Celsius,
-    is_on: bool,
-}
-
-impl<P> Compressor<P>
-where
-    P: OutputPin,
-{
-    /// `hysteresis_band` est la demi-largeur (positive) de la bande morte
-    /// autour de la cible : le compresseur s'active au-delà de
-    /// `target + band` et se coupe en deçà de `target - band`.
-    pub fn new(mut relay_pin: P, hysteresis_band: Celsius) -> Self {
-        let _ = relay_pin.set_low();
-        Self { relay_pin, hysteresis_band, is_on: false }
-    }
-
-    /// État courant — diagnostic uniquement, pas dans `BinaryActuator`
-    /// (le trait générique ne porte pas de méthode de lecture d'état).
-    pub fn is_on(&self) -> bool {
-        self.is_on
-    }
-}
-
-impl<P> BinaryActuator for Compressor<P>
-where
-    P: OutputPin,
-{
-    type Error = P::Error;
-
-    fn turn_on(&mut self) -> Result<(), Self::Error> {
-        self.relay_pin.set_high()?;
-        self.is_on = true;
-        Ok(())
-    }
-
-    fn turn_off(&mut self) -> Result<(), Self::Error> {
-        self.relay_pin.set_low()?;
-        self.is_on = false;
-        Ok(())
-    }
-}
-
-impl<P, const N: usize> TargetActuator<Celsius, N> for Compressor<P>
-where
-    P: OutputPin,
-{
-    type Error = P::Error;
-
-    /// `target: None` coupe le compresseur sans consulter l'historique
-    /// (contrat de [`TargetActuator`]) ; idem si `hist` ne contient encore
-    /// aucune mesure (`get(0)` en erreur) — pas de régulation possible sans
-    /// lecture, mieux vaut couper que deviner.
-    fn regulate(
-        &mut self, hist: &RingBuffer<Measurement<Celsius>, N>, target: Option<Celsius>,
-    ) -> Result<(), Self::Error> {
-        let Some(target_value) = target else {
-            return self.turn_off();
-        };
-        let Ok(current) = hist.get(0) else {
-            return self.turn_off();
-        };
-
-        let should_turn_on = hysteresis(
-            current.value, target_value, self.hysteresis_band, self.is_on, RegulationDirection::Upward,
-        );
-
-        if should_turn_on { self.turn_on() } else { self.turn_off() }
-    }
-}
+/// Implémente [`BinaryActuator`](crate::cloud_chamber_hal::actuators::BinaryActuator)
+/// pour le pilotage direct (on/off) et
+/// [`TargetActuator`](crate::cloud_chamber_hal::actuators::TargetActuator)
+/// pour la régulation par hystérésis autour d'une température cible.
+pub type Compressor<P> = RegulatedRelay<P, CompressorRole>;
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
+    use crate::cloud_chamber_hal::{
+        measurement::Measurement, ring_buffer::RingBuffer, timer::Instant, units::Celsius,
+    };
+    use crate::cloud_chamber_hal::actuators::TargetActuator;
+    use crate::drivers::regulate_method::RegulationDirection;
+
     use super::*;
-    use crate::cloud_chamber_hal::timer::Instant;
 
-    struct MockPin {
-        state: bool,
-    }
-
-    impl MockPin {
-        fn new() -> Self { Self { state: false } }
-    }
+    /// Broche fictive, cf. `drivers::relay::tests` pour le même motif.
+    struct MockPin;
 
     impl embedded_hal::digital::ErrorType for MockPin {
         type Error = core::convert::Infallible;
     }
 
-    impl OutputPin for MockPin {
-        fn set_high(&mut self) -> Result<(), Self::Error> { self.state = true; Ok(()) }
-        fn set_low(&mut self) -> Result<(), Self::Error> { self.state = false; Ok(()) }
+    impl embedded_hal::digital::OutputPin for MockPin {
+        fn set_low(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn set_high(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
     }
 
-    /// Historique à une seule lecture récente valant `value_c`. Part de
-    /// `RingBuffer::filled` (pas `::new()` — `Measurement` n'implémente pas
-    /// `Default`) puis pousse une vraie valeur : `filled()` seul laisse le
-    /// buffer marqué vide (`get(0)` en erreur), cf. doc de `RingBuffer`.
-    fn history_of_one(value_c: f32) -> RingBuffer<Measurement<Celsius>, 4> {
-        let mut hist = RingBuffer::filled(Measurement::new(Instant::from_micros(0), Celsius(0.0)));
-        hist.push(Measurement::new(Instant::from_micros(1), Celsius(value_c)));
+    fn history_at(value: f32) -> RingBuffer<Measurement<Celsius>, 4> {
+        let mut hist =
+            RingBuffer::filled(Measurement::new(Instant::from_micros(0), Celsius(0.0)));
+        hist.push(Measurement::new(Instant::from_micros(1), Celsius(value)));
         hist
     }
 
+    /// Le sens qui distingue ce rôle de `HeaterRole` : trop chaud, donc
+    /// on refroidit. Avec `Downward` (celui du chauffage), ce test
+    /// échouerait — c'est précisément le bug qu'il garde.
     #[test]
-    fn turn_on_drives_pin_high_and_updates_state() {
-        let mut c = Compressor::new(MockPin::new(), Celsius(1.0));
-        c.turn_on().unwrap();
-        assert!(c.relay_pin.state);
-        assert!(c.is_on());
+    fn the_compressor_cools_when_it_is_too_hot() {
+        let mut c: Compressor<MockPin> = Compressor::new(MockPin, Celsius(1.0));
+        c.regulate(&history_at(6.5), Some(Celsius(5.0))).unwrap();
+        assert!(c.is_on(), "trop chaud : le compresseur doit s'allumer");
     }
 
+    /// Et le marqueur porte bien le sens déclaré : deux rôles distincts
+    /// devant la même lecture décident opposé.
     #[test]
-    fn turn_off_drives_pin_low_and_updates_state() {
-        let mut c = Compressor::new(MockPin::new(), Celsius(1.0));
-        c.turn_on().unwrap();
-        c.turn_off().unwrap();
-        assert!(!c.relay_pin.state);
-        assert!(!c.is_on());
-    }
-
-    #[test]
-    fn regulate_turns_on_when_above_target_plus_band() {
-        let mut c = Compressor::new(MockPin::new(), Celsius(1.0));
-        c.regulate(&history_of_one(10.0), Some(Celsius(5.0))).unwrap();
-        assert!(c.is_on());
-    }
-
-    #[test]
-    fn regulate_stays_off_inside_band_when_starting_off() {
-        let mut c = Compressor::new(MockPin::new(), Celsius(1.0));
-        c.regulate(&history_of_one(5.5), Some(Celsius(5.0))).unwrap();
-        assert!(!c.is_on());
-    }
-
-    #[test]
-    fn regulate_stays_on_inside_band_once_already_on() {
-        let mut c = Compressor::new(MockPin::new(), Celsius(1.0));
-        c.regulate(&history_of_one(10.0), Some(Celsius(5.0))).unwrap();
-        assert!(c.is_on());
-
-        // Toujours dans la bande [target-band, target+band] : l'hystérésis
-        // maintient l'état précédent plutôt que de re-décider sur un simple seuil.
-        c.regulate(&history_of_one(5.5), Some(Celsius(5.0))).unwrap();
-        assert!(c.is_on());
-    }
-
-    #[test]
-    fn regulate_turns_off_at_target_minus_band() {
-        let mut c = Compressor::new(MockPin::new(), Celsius(1.0));
-        c.regulate(&history_of_one(10.0), Some(Celsius(5.0))).unwrap();
-        assert!(c.is_on());
-
-        c.regulate(&history_of_one(4.0), Some(Celsius(5.0))).unwrap();
-        assert!(!c.is_on());
-    }
-
-    #[test]
-    fn regulate_turns_off_on_none_target() {
-        let mut c = Compressor::new(MockPin::new(), Celsius(1.0));
-        c.regulate(&history_of_one(10.0), Some(Celsius(5.0))).unwrap();
-        assert!(c.is_on());
-
-        c.regulate(&history_of_one(10.0), None).unwrap();
-        assert!(!c.is_on());
-    }
-
-    #[test]
-    fn regulate_turns_off_on_empty_history() {
-        let mut c = Compressor::new(MockPin::new(), Celsius(1.0));
-        let hist: RingBuffer<Measurement<Celsius>, 4> =
-            RingBuffer::filled(Measurement::new(Instant::from_micros(0), Celsius(0.0)));
-        c.regulate(&hist, Some(Celsius(5.0))).unwrap();
-        assert!(!c.is_on());
+    fn the_role_carries_the_upward_direction() {
+        assert_eq!(<CompressorRole as RegulationRole>::DIRECTION, RegulationDirection::Upward);
     }
 }

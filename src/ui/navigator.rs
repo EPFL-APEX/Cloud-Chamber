@@ -18,7 +18,8 @@ pub enum Screen {
     MainMenu,
     Settings,
     Stats,
-    ManualControl,
+    /// Commande manuelle de la bande LED du compartiment machine.
+    Lights,
     CurrentTask,
     Data,
     Info,

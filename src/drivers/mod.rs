@@ -44,22 +44,31 @@ pub mod regulate_method;
 pub mod zero_cross_pwm;
 
 /// Driver compresseur : relais GPIO régulé par hystérésis autour d'une
-/// température cible.
+/// température cible — refroidit quand il fait trop chaud.
 pub mod compressor;
 
 /// Driver chauffage résistif : relais GPIO régulé par hystérésis — jumeau
-/// de `compressor`, sens de régulation inversé.
+/// de `compressor`, chauffe quand il fait trop froid.
 pub mod heater;
 
 /// Relais GPIO tout-ou-rien, spécialisé par un marqueur de rôle — corps
-/// commun à `pump`, `lights` et `window_heater`.
+/// commun à `pump`, `lights`, `window_heater` et `led_strip`.
 pub mod relay;
+
+/// Relais GPIO à hystérésis, le sens de régulation porté par le type de
+/// rôle — corps commun à `compressor` et `heater`.
+pub mod regulated_relay;
 
 /// Driver pompe : relais GPIO tout-ou-rien (marche/arrêt).
 pub mod pump;
 
 /// Driver éclairage : relais GPIO tout-ou-rien (marche/arrêt).
 pub mod lights;
+
+/// Bande LED du compartiment machine : GPIO tout-ou-rien, commande
+/// opérateur uniquement — hors du cycle automatique, contrairement à
+/// `lights`.
+pub mod led_strip;
 
 /// Driver chauffage de la vitre supérieure : relais GPIO tout-ou-rien
 /// (marche/arrêt).
