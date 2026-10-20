@@ -125,10 +125,10 @@ pub(super) fn expected_outputs(task: SystemTask) -> ExpectedOutputs {
 /// MILIEU PLAQUE   |  CIBLE -40.0 C    CHAMBRE
 /// -35.2 C        |  1013 hPa         FERMEE
 /// ─────────────────────────────────────────────  y=128
-/// COMPRESSEUR         +42.3 │ ENTREE RADIAT.     +38.9
-/// SORTIE RADIAT.      -12.4 │ ENTREE PLAQUE      -18.7
-/// SORTIE PLAQUE       +21.7 │ CHAUFFAGE IPA      +21.2
-/// ENTREE COMP.        +20.9 │
+/// CHAUFFAGE IPA       +40.1 │ SORTIE RADIAT.     +38.9
+/// ENTREE RADIAT.      -12.4 │ COMPRESSEUR        +42.3
+/// SORTIE PLAQUE       +21.7 │ ENTREE COMP.       +20.9
+/// ENTREE PLAQUE       -18.7 │
 /// ```
 ///
 /// La grille et les alignements font le travail : libellés en petit
@@ -150,14 +150,14 @@ pub struct StatsScreen<'a> {
 /// garder l'alignement des index, mais elle est rendue en zone héroïne,
 /// pas dans la table.
 const DISPLAY_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
-    "COMPRESSEUR",
-    "ENTREE RADIAT.",
-    "SORTIE RADIAT.",
-    "ENTREE PLAQUE",
-    "MILIEU PLAQUE",
-    "SORTIE PLAQUE",
     "CHAUFFAGE IPA",
+    "SORTIE RADIAT.",
+    "ENTREE RADIAT.",
+    "MILIEU PLAQUE",
+    "COMPRESSEUR",
+    "SORTIE PLAQUE",
     "ENTREE COMP.",
+    "ENTREE PLAQUE",
 ];
 
 /// Ordonnées des deux filets qui découpent l'écran.
