@@ -10,7 +10,7 @@
 //! `SettingsScreen::take_save_request`) : l'écran bascule son état
 //! d'affichage **et** lève une demande, récupérée par la boucle du cœur 0
 //! via [`LightsScreen::take_strip_request`], qui seule possède le GPIO
-//! (`drivers::led_strip::LedStrip`). C'est ce qui rend l'écran testable
+//! (`drivers::relay::LedStrip`). C'est ce qui rend l'écran testable
 //! sans broche, et ce qui garantit qu'un clic pendant un rendu ne pilote
 //! jamais le matériel depuis deux endroits.
 //!
@@ -38,6 +38,8 @@ const LIST_TOP: i32 = 48;
 
 /// La ligne de bascule, avant celle de sortie.
 const TOGGLE_ROW: usize = 0;
+/// La ligne de sortie — utilisé par les tests pour viser le BACK.
+#[cfg(test)]
 const BACK_ROW: usize = 1;
 const N_ROWS: usize = 2;
 

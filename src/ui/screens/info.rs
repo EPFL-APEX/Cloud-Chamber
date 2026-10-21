@@ -100,12 +100,7 @@ impl InfoScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use embedded_graphics::geometry::Size;
-    use embedded_graphics_simulator::SimulatorDisplay;
-
-    fn make_display() -> SimulatorDisplay<Rgb565> {
-        SimulatorDisplay::new(Size::new(320, 240))
-    }
+    use crate::ui::test_support::make_display;
 
     #[test]
     fn draws_without_error() {

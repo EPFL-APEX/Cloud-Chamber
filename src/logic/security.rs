@@ -1,11 +1,8 @@
 //! Évaluation des seuils de sécurité.
 //!
-//! Sous-module de `logic/` plutôt que module à part avec sa propre boucle
-//! Core1 : le README décrit une boucle de sécurité indépendante à 100 Hz,
-//! mais cette architecture est abandonnée — la sécurité est maintenant une
+//! Sous-module de `logic/` plutôt que boucle séparée : la sécurité est une
 //! source de transition prioritaire pour `SystemTask`, au même titre que
-//! `sensor_loss_abort`/`timed_transition` dans `control_loop.rs`, pas une
-//! tâche séparée.
+//! `sensor_loss_abort`/`timed_transition` dans `control_loop.rs`.
 //!
 //! # Un danger, une variante
 //!
@@ -15,11 +12,6 @@
 //! [`SafetyMonitor::evaluate`] parcourt [`SafetyCause::ALL`] et garde la
 //! pire. Ajouter un danger, c'est ajouter une variante ; le reste suit ou
 //! ne compile pas.
-//!
-//! C'était le sujet d'un TODO : `evaluate` était une fonction libre qui ne
-//! traitait que la surchauffe, et `check` traitait la perte de capteur à la
-//! main juste en dessous, avec sa propre règle de priorité. Deux listes de
-//! dangers, dont une seule avait l'air d'en être une.
 //!
 //! # Seuils à deux niveaux
 //! - `warn`  : zone d'attention, signalement uniquement (pas de coupure).
@@ -80,9 +72,9 @@ pub enum SafetyCause {
 // Pas de sécurité pression, volontairement : la chambre n'est pas
 // pressurisée. Le capteur monté (BME280) mesure la pression atmosphérique
 // ambiante — une donnée d'expérience, pas un danger à surveiller. Le jour
-// où un circuit de la chambre serait pressurisé (ABP2, cf.
-// `config::wiring`), il faudra ajouter les variantes correspondantes — le
-// `match` exhaustif de `severity_of` imposera de dire comment les mesurer.
+// où un circuit serait pressurisé, il faudra ajouter les variantes
+// correspondantes — le `match` exhaustif de `severity_of` imposera de
+// dire comment les mesurer.
 
 impl SafetyCause {
     /// Tous les dangers, dans l'ordre où [`SafetyMonitor::evaluate`] les
@@ -217,11 +209,9 @@ impl SafetyMonitor {
         now: Instant,
     ) -> Severity {
         match cause {
-            // Lecture absente ou NaN : `Normal`, pas d'alarme. Le ring
-            // buffer s'initialise à NaN, donc au démarrage la sonde n'a
-            // simplement rien dit encore — une alarme ici serait un faux
-            // positif systématique. L'invalidité qui *dure* est le danger
-            // d'en dessous.
+            // Lecture absente ou NaN : `Normal`, pas d'alarme — au
+            // démarrage la sonde n'a simplement rien dit encore. La
+            // invalidité qui *dure* est le danger d'en dessous.
             SafetyCause::CompressorOverheat => match history.newest_valid(COMPRESSOR_IDX) {
                 Some(temp) => check_high(
                     temp,

@@ -320,9 +320,7 @@ mod tests {
 
     use embedded_graphics_simulator::{OutputSettingsBuilder, SimulatorDisplay};
 
-    fn make_display() -> SimulatorDisplay<Rgb565> {
-        SimulatorDisplay::new(Size::new(320, 240))
-    }
+    use crate::ui::test_support::make_display;
 
     #[test]
     fn initial_selection_is_first_item() {

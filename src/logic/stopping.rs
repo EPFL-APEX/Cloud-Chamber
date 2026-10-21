@@ -50,9 +50,6 @@ impl StoppingPhase {
     }
 }
 
-// `iso_pump`/`lights`/`glass_heater` : toujours `false` ci-dessous — aucune
-// politique par phase définie pour l'instant, cf. doc de `ActuatorPlan`.
-
 fn cut_high_voltage(_history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
     // Délai de décharge géré par l'appelant (STOP_HV_SETTLE) ; HT coupée
     // dès l'entrée en phase. Froid encore actif (l'IPA continue de

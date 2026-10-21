@@ -268,8 +268,8 @@ impl<'a> RunningScreen<'a> {
             _ => ("---", theme::DIM_COLOR),
         };
         Text::with_text_style(
-            "CHAMBRE",
-            Point::new(308 - 7 * 6, 6),
+            "MILIEU PLAQUE",
+            Point::new(308 - 13 * 6, 6),
             MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
             top_style,
         )
@@ -635,15 +635,9 @@ mod tests {
     use crate::cloud_chamber_hal::units::Celsius;
     use crate::logic::security::SafetyCause;
     use crate::logic::stopping::StoppingPhase;
-    use embedded_graphics_simulator::SimulatorDisplay;
+    use crate::ui::test_support::make_display;
 
-    fn make_display() -> SimulatorDisplay<Rgb565> {
-        SimulatorDisplay::new(Size::new(320, 240))
-    }
-
-    fn state_with(task: SystemTask) -> SharedState {
-        SharedState { snapshot: Default::default(), task, new_data: false, core1_panicked: false }
-    }
+    use crate::ui::test_support::state_with;
 
     /// Garde-fou : si une variante est ajoutée à `CoolingPhase` sans être
     /// placée dans `PHASES`, ce test échoue — sinon l'étape manquante

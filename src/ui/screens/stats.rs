@@ -143,11 +143,6 @@ pub struct StatsScreen<'a> {
 
 /// Libellés d'affichage des sondes, dans l'ordre du bus
 /// (`config::wiring::TEMP_LABELS`). Sans accents : les fontes `ascii`
-/// n'ont pas de É. La sonde pilote (index 4) y a sa place pour garder
-/// l'alignement des index, mais elle est rendue en zone héroïne, pas
-/// dans la table.
-/// Libellés d'affichage des sondes, dans l'ordre du bus
-/// (`config::wiring::TEMP_LABELS`). Sans accents : les fontes `ascii`
 /// n'ont pas de É. La sonde pilote (milieu de plaque) y a sa place pour
 /// garder l'alignement des index, mais elle est rendue en zone héroïne,
 /// pas dans la table.
@@ -440,11 +435,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use embedded_graphics_simulator::SimulatorDisplay;
-
-    fn make_display() -> SimulatorDisplay<Rgb565> {
-        SimulatorDisplay::new(Size::new(320, 240))
-    }
+    use crate::ui::test_support::make_display;
 
     #[test]
     fn draws_idle_without_error() {

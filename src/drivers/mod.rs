@@ -2,17 +2,11 @@
 //!
 //! # Relation avec `cloud_chamber_hal`
 //!
-//! Le module [`crate::cloud_chamber_hal`] définit les **traits** (interfaces).
-//! Ce module (`drivers`) fournit les **implémentations concrètes** de ces traits
-//! pour le matériel réel.
-//!
-//! Cette séparation suit le principe de l'**inversion de dépendance** :
-//! la logique métier (`security_loop`) dépend des traits abstraits,
-//! pas des drivers concrets. On peut donc remplacer un driver sans toucher
-//! à la logique de sécurité.
-
-/// Drivers ADC : capteurs de tension et de courant via l'ADC embarqué.
-pub mod adc;
+//! [`crate::cloud_chamber_hal`] définit les **traits** (interfaces),
+//! ce module fournit les **implémentations concrètes** pour le matériel
+//! réel. La logique (`logic/`) dépend des traits abstraits, pas des
+//! drivers concrets : on peut remplacer un driver sans toucher à la
+//! logique de contrôle.
 
 /// Gestionnaire de panique qui coupe les sorties de puissance avant tout.
 pub mod safe_panic;
@@ -22,17 +16,11 @@ pub mod breaker;
 /// Driver encodeur rotatif : lecture des impulsions et du bouton.
 pub mod encoder;
 
-/// Driver capteur de fermeture : détection d'un contact sec via GPIO.
-pub mod closure;
-
 /// Driver DS18B20 : capteur de température 1-Wire (authentique ou clone SKIP ROM).
 pub mod ds18b20;
 
 /// Driver BME280 : capteur de température, humidité et pression atmosphérique via I²C.
 pub mod bme280;
-
-/// Driver ABP2 : capteur de pression Honeywell via I²C.
-pub mod abp2;
 
 /// Driver écran ILI9341 (SPI) avec framebuffer RAM bandé pour un rendu
 /// rapide — cf. doc de module pour le détail.
@@ -40,8 +28,6 @@ pub mod display;
 
 /// Fonctions de régulation (hystérésis, PID)
 pub mod regulate_method;
-
-pub mod zero_cross_pwm;
 
 /// Driver compresseur : relais GPIO régulé par hystérésis autour d'une
 /// température cible — refroidit quand il fait trop chaud.
@@ -51,31 +37,14 @@ pub mod compressor;
 /// de `compressor`, chauffe quand il fait trop froid.
 pub mod heater;
 
-/// Relais GPIO tout-ou-rien, spécialisé par un marqueur de rôle — corps
-/// commun à `pump`, `lights`, `window_heater` et `led_strip`.
+/// Relais GPIO tout-ou-rien, spécialisé par un marqueur de rôle — le
+/// corps commun de toutes les sorties binaires (pompe, éclairage,
+/// ventilateurs, vitre, bande LED), rôles définis dans le module.
 pub mod relay;
 
 /// Relais GPIO à hystérésis, le sens de régulation porté par le type de
 /// rôle — corps commun à `compressor` et `heater`.
 pub mod regulated_relay;
-
-/// Driver pompe : relais GPIO tout-ou-rien (marche/arrêt).
-pub mod pump;
-
-/// Driver ventilateurs du radiateur : relais GPIO tout-ou-rien.
-pub mod fans;
-
-/// Driver éclairage : relais GPIO tout-ou-rien (marche/arrêt).
-pub mod lights;
-
-/// Bande LED du compartiment machine : GPIO tout-ou-rien, commande
-/// opérateur uniquement — hors du cycle automatique, contrairement à
-/// `lights`.
-pub mod led_strip;
-
-/// Driver chauffage de la vitre supérieure : relais GPIO tout-ou-rien
-/// (marche/arrêt).
-pub mod window_heater;
 
 /// Stockage persistant des réglages (`config::settings::Settings`) dans la
 /// flash interne, sans système de fichiers.

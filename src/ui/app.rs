@@ -216,17 +216,9 @@ mod tests {
     use crate::logic::cooling::CoolingPhase;
     use crate::logic::security::SafetyCause;
     use crate::logic::stopping::StoppingPhase;
-    use crate::shared::data::SensorSnapshot;
-    use embedded_graphics::geometry::Size;
-    use embedded_graphics_simulator::SimulatorDisplay;
+    use crate::ui::test_support::make_display;
 
-    fn make_display() -> SimulatorDisplay<Rgb565> {
-        SimulatorDisplay::new(Size::new(320, 240))
-    }
-
-    fn state_with(task: SystemTask) -> SharedState {
-        SharedState { snapshot: SensorSnapshot::default(), task, new_data: false, core1_panicked: false }
-    }
+    use crate::ui::test_support::state_with;
 
     // ─── Veille ─────────────────────────────────────────────────────────
 
@@ -639,7 +631,7 @@ mod tests {
         let mut state = state_with(SystemTask::Idle);
         let mut step = 0usize;
 
-        let mut sync_readings = |state: &mut SharedState| {
+        let sync_readings = |state: &mut SharedState| {
             let t = simulated_chamber_temp(state.task);
             state.snapshot.temps[PLATE_MID_IDX] =
                 Some(Measurement::new(Instant::from_micros(1), Celsius(t)));

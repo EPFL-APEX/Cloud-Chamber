@@ -15,11 +15,9 @@
 
 /// Nombre de sondes de température (DS18B20 sur le bus 1-Wire).
 pub const NUMBER_OF_TEMP_SENSOR: usize = 8;
-/// Nombre de capteurs de pression (1 ABP2, pression chambre — pas de mesure
-/// séparée basse/haute pression circuit réfrigérant).
+/// Nombre de capteurs de pression (1 BME280, pression atmosphérique —
+/// pas de mesure séparée basse/haute pression circuit réfrigérant).
 pub const NUMBER_OF_PRESSURE_SENSOR: usize = 1;
-/// Nombre d'ampèremètres.
-pub const NUMBER_OF_AMPMETER: usize = 0;
 
 // ─── Placement des huit sondes sur le bus 1-Wire ─────────────────────────────
 //
@@ -76,7 +74,7 @@ const _: () = {
     }
 };
 
-/// Index de l'unique capteur de pression (ABP2, dans la chambre) dans `press`.
+/// Index de l'unique capteur de pression (BME280) dans `press`.
 pub const CHAMBER_PRESSURE_IDX: usize = 0;
 
 // ─── Rôles dont la logique de contrôle dépend ────────────────────────────────
