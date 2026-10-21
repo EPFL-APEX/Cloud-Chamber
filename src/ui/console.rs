@@ -218,14 +218,23 @@ pub fn init_display(
     // Safety : seule construction de `Pin` pour ces broches. `Board::pins`
     // réserve bien un champ typé par numéro, mais aucun n'est lu ni écrit —
     // cf. la note de sûreté commune dans `board`.
-    let tx = unsafe { new_pin(DynPinId { bank: DynBankId::Bank0, num: PIN_SCREEN_MOSI }) }
+    //
+    // Force de commande 12 mA pour SCK/MOSI : à 32 MHz sur fils volants,
+    // les 4 mA par défaut laissent des fronts mous — un front lent près
+    // d'une commutation de relais, c'est un octet corrompu, et un octet
+    // corrompu côté ILI9341 peut se faire prendre pour une commande
+    // (l'écran blanc intermittent constaté au bench a ce profil-là :
+    // machine vivante, écran mort jusqu'au prochain power-cycle).
+    let mut tx = unsafe { new_pin(DynPinId { bank: DynBankId::Bank0, num: PIN_SCREEN_MOSI }) }
         .try_into_function::<FunctionSpi>()
         .ok()
         .expect("SPI est une fonction valide sur toute broche de Bank0");
-    let sck = unsafe { new_pin(DynPinId { bank: DynBankId::Bank0, num: PIN_SCREEN_SCK }) }
+    tx.set_drive_strength(rp2040_hal::gpio::OutputDriveStrength::TwelveMilliAmps);
+    let mut sck = unsafe { new_pin(DynPinId { bank: DynBankId::Bank0, num: PIN_SCREEN_SCK }) }
         .try_into_function::<FunctionSpi>()
         .ok()
         .expect("SPI est une fonction valide sur toute broche de Bank0");
+    sck.set_drive_strength(rp2040_hal::gpio::OutputDriveStrength::TwelveMilliAmps);
 
     let tx = ValidatedPinTx::validate(tx, &spi0).unwrap_or_else(|_| {
         panic!("PIN_SCREEN_MOSI (GP{}) n'est pas une broche Tx/MOSI valide pour SPI0", PIN_SCREEN_MOSI)
