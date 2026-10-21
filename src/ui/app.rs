@@ -529,8 +529,8 @@ mod tests {
         // Retour au menu (rotation), puis nouveau clic sur le premier
         // item : la garde refuse le redémarrage, la machine garde son
         // avancement.
-        // BACK : rotation (sélection) puis clic (validation).
-        apply_live_action(&mut app, &mut state, LiveAction::RotateRight);
+        // BACK : rotation gauche (sélection) puis clic (validation).
+        apply_live_action(&mut app, &mut state, LiveAction::RotateLeft);
         apply_live_action(&mut app, &mut state, LiveAction::Click);
         apply_live_action(&mut app, &mut state, LiveAction::Click);
         // Purge la demande de démarrage refusée... et le clic a rouvert le
@@ -780,7 +780,7 @@ mod tests {
         snap!("arret_en_cours");
 
         // ─── 8. Voir les stats pendant l'arrêt, revenir ────────────────
-        act!(LiveAction::RotateRight, Screen::CurrentTask); // selection BACK
+        act!(LiveAction::RotateLeft, Screen::CurrentTask); // selection BACK
         act!(LiveAction::Click, Screen::MainMenu);
         snap!("menu_pendant_arret");
         // La selection menu est celle du lancement du cycle : Start(0),

@@ -84,9 +84,11 @@ impl Screens {
             // entre le bouton d'action et BACK — deux boutons, un seul
             // bouton physique : le pattern encodeur. La validation est le
             // clic, cf. `click`.
-            // La rotation va à l'autre bouton, quel que soit le sens —
-            // un toggle : depuis BACK, tourner revient sur l'action.
-            CurrentTask => self.running_selected = self.running_selected.other(),
+            // Le déplacement est spatial et clampé : depuis le bouton le
+            // plus à droite, un cran de plus ne fait rien — pas de
+            // bouclage, qui ramènerait la sélection sur BACK sans que
+            // l'opérateur ne s'en aperçoive.
+            CurrentTask => self.running_selected = self.running_selected.turn_right(),
             // Écrans d'affichage seul : rien à faire défiler. Ignorer une
             // rotation est le bon comportement — `todo!()` faisait paniquer
             // la machine sur un simple geste. La veille est du même genre,
@@ -102,9 +104,9 @@ impl Screens {
             MainMenu => self.main_menu.left_turn(),
             Settings => self.settings.left_turn(),
             Lights => self.lights.left_turn(),
-            // La rotation va à l'autre bouton, quel que soit le sens —
-            // un toggle : depuis BACK, tourner revient sur l'action.
-            CurrentTask => self.running_selected = self.running_selected.other(),
+            // Même clamp à gauche : depuis BACK, un cran de plus ne fait
+            // rien — la sélection ne reboucle pas sur l'action.
+            CurrentTask => self.running_selected = self.running_selected.turn_left(),
             Stats | Idle | Graph | Info => {}
         }
     }
@@ -418,7 +420,7 @@ mod tests {
         assert_eq!(screens.current(), Screen::CurrentTask, "le clic actionne le bouton, ne quitte pas");
 
         // BACK : rotation pour le sélectionner, clic pour valider.
-        screens.right_turn();
+        screens.left_turn();
         screens.click();
         assert_eq!(screens.current(), Screen::MainMenu);
     }
@@ -460,8 +462,8 @@ mod tests {
         screens.click();
         assert_eq!(screens.current(), Screen::CurrentTask);
 
-        // Rotation -> BACK sélectionné, clic -> menu.
-        screens.right_turn();
+        // Rotation gauche -> BACK sélectionné, clic -> menu.
+        screens.left_turn();
         screens.click();
         assert_eq!(screens.current(), Screen::MainMenu);
 
@@ -495,35 +497,38 @@ mod tests {
         }
     }
 
-    /// Depuis BACK, tourner revient sur le bouton d'action — le toggle
-    /// dans les deux sens, sans quoi la sélection restait coincée.
+    /// Depuis BACK, le bouton le plus à gauche, tourner à gauche ne fait
+    /// rien : la sélection ne reboucle pas sur l'action — c'est tout le
+    /// sens du clamp, éviter qu'un cran de trop ne valide l'action par
+    /// surprise. Le clic reste sur BACK et sort vers le menu.
     #[test]
-    fn turning_left_from_back_returns_to_the_action_button() {
+    fn turning_left_from_back_stays_on_back() {
         let mut screens = Screens::new();
         screens.click();
         let _ = screens.take_task_request(SystemTask::Idle);
 
-        screens.right_turn(); // -> Back
-        screens.left_turn(); // -> Action
-        // Le clic doit être l'action (START), pas BACK : la machine démarre.
+        screens.left_turn(); // -> Back
+        screens.left_turn(); // clamp : reste sur Back
+        screens.click();
+        assert_eq!(screens.current(), Screen::MainMenu);
+    }
+
+    /// Depuis l'action, le bouton le plus à droite, tourner à droite
+    /// ne fait rien non plus : le clamp est symétrique.
+    #[test]
+    fn turning_right_from_the_action_stays_on_the_action() {
+        let mut screens = Screens::new();
+        screens.click();
+        let _ = screens.take_task_request(SystemTask::Idle);
+
+        screens.left_turn(); // -> Back
+        screens.right_turn(); // -> Action
+        screens.right_turn(); // clamp : reste sur Action
         screens.click();
         assert_eq!(
             screens.take_task_request(SystemTask::Idle),
             Some(SystemTask::Cooling(CoolingPhase::SensorCheck)),
         );
-    }
-
-    /// `left_turn` fait le même déplacement que `right_turn` : deux
-    /// boutons, la rotation va à l'autre — pas de notion d'ordre.
-    #[test]
-    fn a_left_turn_also_selects_back() {
-        let mut screens = Screens::new();
-        screens.click();
-        let _ = screens.take_task_request(SystemTask::Idle);
-
-        screens.left_turn();
-        screens.click();
-        assert_eq!(screens.current(), Screen::MainMenu);
     }
 
     #[test]
@@ -588,10 +593,10 @@ mod tests {
             Some(SystemTask::Stopping(StoppingPhase::CutHighVoltage)),
         );
 
-        // BACK (rotation + clic) pour sortir de l'écran de suivi, puis
-        // démarrage depuis le menu : passe normalement, les drapeaux
+        // BACK (rotation gauche + clic) pour sortir de l'écran de suivi,
+        // puis démarrage depuis le menu : passe normalement, les drapeaux
         // consommés sans effet ne l'occultent pas.
-        screens.right_turn();
+        screens.left_turn();
         screens.click();
         screens.click();
         assert_eq!(
@@ -739,8 +744,8 @@ mod tests {
 
         // La machine a avancé ; l'opérateur revient au menu et re-clique.
         let running = SystemTask::Cooling(CoolingPhase::HighVoltage);
-        // BACK : rotation + clic pour sortir du suivi.
-        screens.right_turn();
+        // BACK : rotation gauche + clic pour sortir du suivi.
+        screens.left_turn();
         screens.click();
         screens.click(); // menu -> suivi : la garde refuse le redémarrage
         assert_eq!(screens.take_task_request(running), None, "pas de redemarrage");

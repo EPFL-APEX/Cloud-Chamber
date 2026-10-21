@@ -182,12 +182,22 @@ pub enum RunningButton {
 }
 
 impl RunningButton {
-    /// L'autre bouton — la rotation va à l'autre, quel que soit le sens :
-    /// deux boutons, pas d'ordre, un toggle. Sans ça, tourner dans un
-    /// sens sélectionnait BACK et aucun geste ne revenait sur l'action.
-    pub fn other(self) -> Self {
+    /// Un cran vers la gauche de l'écran — sans boucler : sur le bouton
+    /// le plus à gauche, un cran de plus ne fait rien. Un aller-retour
+    /// involontaire sur les commandes d'un cycle en cours coûte plus
+    /// cher qu'une rotation ignorée.
+    pub fn turn_left(self) -> Self {
         match self {
             RunningButton::Action => RunningButton::Back,
+            RunningButton::Back => RunningButton::Back,
+        }
+    }
+
+    /// Un cran vers la droite de l'écran — même clamp : sur le bouton
+    /// le plus à droite, un cran de plus ne fait rien.
+    pub fn turn_right(self) -> Self {
+        match self {
+            RunningButton::Action => RunningButton::Action,
             RunningButton::Back => RunningButton::Action,
         }
     }
