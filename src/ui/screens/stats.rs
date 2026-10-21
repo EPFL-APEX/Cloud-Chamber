@@ -152,8 +152,8 @@ pub struct StatsScreen<'a> {
 /// garder l'alignement des index, mais elle est rendue en zone héroïne,
 /// pas dans la table.
 const DISPLAY_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
-    "CHAUFFAGE IPA",
     "SORTIE RADIAT.",
+    "CHAUFFAGE IPA",
     "ENTREE RADIAT.",
     "MILIEU PLAQUE",
     "COMPRESSEUR",

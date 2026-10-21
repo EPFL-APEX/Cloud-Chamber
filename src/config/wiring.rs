@@ -123,8 +123,8 @@ pub const CHAMBER_PRESSURE_MAX: f32 = 1.0;
 // ─── Labels des capteurs de température ──────────────────────────────────────
 
 pub const TEMP_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
-    "chauffage ipa",
     "sortie radiateur",
+    "chauffage ipa",
     "entree radiateur",
     "milieu plaque",
     "compresseur",

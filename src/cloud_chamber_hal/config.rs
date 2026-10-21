@@ -32,9 +32,9 @@ pub const NUMBER_OF_AMPMETER: usize = 0;
 // porte sa propre sonde pour son thermostat.
 
 /// Corps de chauffe de l'isopropanol — sonde du thermostat IPA.
-pub const ISO_HEATER_IDX: usize = 0;
+pub const ISO_HEATER_IDX: usize = 1;
 /// Sortie du radiateur.
-pub const RADIATOR_OUT_IDX: usize = 1;
+pub const RADIATOR_OUT_IDX: usize = 0;
 /// Entrée du radiateur.
 pub const RADIATOR_IN_IDX: usize = 2;
 /// Milieu de la plaque froide — LA sonde pilote : c'est elle que la
