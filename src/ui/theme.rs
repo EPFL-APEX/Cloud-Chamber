@@ -54,21 +54,21 @@ pub const WARNING_COLOR: Rgb565 = Rgb565::new(31, 63, 0);
 /// voir depuis l'autre bout de la pièce, pas un ornement.
 pub const DANGER_COLOR: Rgb565 = Rgb565::new(31, 10, 0);
 
-/// Luminosité perçue approximative (0-255) d'une couleur Rgb565,
-/// pondérée comme l'œil l'est (vert dominant) — l'outil du test de
-/// contraste ci-dessous.
-pub(crate) fn luminance(c: Rgb565) -> u16 {
-    // R et B sur 5 bits (×8 → 0-248), G sur 6 bits (×4 → 0-252) :
-    // normaliser les trois sur 0-255 avant la pondération.
-    let r = c.r() as u16 * 8;
-    let g = c.g() as u16 * 4;
-    let b = c.b() as u16 * 8;
-    (r * 30 + g * 59 + b * 11) / 100
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Luminosité perçue approximative (0-255) d'une couleur Rgb565,
+    /// pondérée comme l'œil l'est (vert dominant) — l'outil du test de
+    /// contraste ci-dessous.
+    fn luminance(c: Rgb565) -> u16 {
+        // R et B sur 5 bits (×8 → 0-248), G sur 6 bits (×4 → 0-252) :
+        // normaliser les trois sur 0-255 avant la pondération.
+        let r = c.r() as u16 * 8;
+        let g = c.g() as u16 * 4;
+        let b = c.b() as u16 * 8;
+        (r * 30 + g * 59 + b * 11) / 100
+    }
 
     /// Fond vs texte : l'écart de luminosité qui rend un écran lisible.
     /// 80/255 est le seuil au-delà duquel un texte se lit d'un coup

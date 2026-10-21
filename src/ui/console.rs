@@ -1,28 +1,13 @@
 //! La console opérateur : l'écran ILI9341 et l'encodeur rotatif, montés et
 //! pilotés d'une seule façon pour tout le firmware.
 //!
-//! # Pourquoi ce module existe
-//!
-//! `board` s'arrête à « les périphériques sont sortis de reset ».
-//! [`ui::app`](crate::ui::app) commence à « un événement est arrivé ». Entre
-//! les deux, il y avait une centaine de lignes sans domicile — montage du
-//! SPI, ILI9341, framebuffer, encodeur, alarme, interruption, file — qui
-//! existaient **deux fois**, dans `main.rs` et `bin/ui_test.rs`, et
-//! partiellement une troisième dans `bin/screen_test.rs`.
-//!
-//! Ce n'était pas une question de volume. La copie avait déjà divergé sur
-//! la chose qui compte : la vitesse du bus SPI. Le firmware attaquait
-//! l'écran à 32 MHz, `ui_test` à 32 MHz par une valeur recopiée à la main,
-//! et **`screen_test` — le bin dont le seul métier est de valider l'écran —
-//! à 16 MHz.** Il ne pouvait donc pas, par construction, reproduire le
-//! bruit visuel que [`SCREEN_SPI_HZ`] décrit comme le symptôme d'une
-//! fréquence trop haute. C'est exactement le défaut qui avait touché
-//! `relay_test` avant `board` : le bin de bring-up validait autre chose que
-//! ce que le firmware exécutait.
-//!
-//! Une seule définition supprime la classe entière du problème. Les bins de
-//! bring-up testent désormais le chemin réel — même fréquence, même
-//! framebuffer, même interruption.
+//! Le montage de l'écran (SPI, ILI9341, framebuffer) et de l'encodeur
+//! existaient en plusieurs copies — `main.rs` et les bins de bring-up —
+//! qui avaient divergé sur la seule chose qui compte : la vitesse du bus
+//! SPI (`screen_test`, le bin qui valide l'écran, tournait à une autre
+//! fréquence que le firmware, donc validait autre chose). Une seule
+//! définition supprime toute la classe du problème : les bins testent
+//! le chemin réel.
 //!
 //! # L'architecture qu'il impose
 //!

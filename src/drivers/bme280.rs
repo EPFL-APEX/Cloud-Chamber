@@ -6,15 +6,15 @@
 /// # Pattern delay
 ///
 /// Le délai est passé explicitement à `start_measurement(delay)`.
-/// Pour les traits `Sensor`/`DeferredSensor`, utiliser `Bme280Sensor<I, D, C>`
+/// Pour le trait `Sensor`, utiliser `Bme280Sensor<I, D, C>`
 /// qui stocke le delay et l'horloge en interne.
 
 use embedded_hal::i2c::I2c as I2cTrait;
 use embedded_hal::delay::DelayNs;
-use crate::cloud_chamber_hal::sensors::{Sensor, DeferredSensor};
+use crate::cloud_chamber_hal::sensors::Sensor;
 use crate::cloud_chamber_hal::measurement::Measurement;
-use crate::cloud_chamber_hal::timer::{Duration, MonotonicTimer};
-use crate::cloud_chamber_hal::units::{Celsius, HectoPascal};
+use crate::cloud_chamber_hal::timer::MonotonicTimer;
+use crate::cloud_chamber_hal::units::HectoPascal;
 
 const BME_ADDR:       u8 = 0x76;
 
@@ -221,7 +221,7 @@ impl<I: I2cTrait> Bme280Driver<I> {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Wrapper implémentant Sensor/DeferredSensor (delay + horloge stockés en interne)
+// Wrapper implémentant Sensor (delay + horloge stockés en interne)
 // ════════════════════════════════════════════════════════════════════════════
 
 pub struct Bme280Sensor<I, D, C> {
@@ -235,23 +235,8 @@ impl<I: I2cTrait, D: DelayNs, C: MonotonicTimer> Bme280Sensor<I, D, C> {
     pub fn init(&mut self) -> Result<(), Bme280Error> { self.driver.init() }
 }
 
-impl<I: I2cTrait, D: DelayNs, C: MonotonicTimer> Sensor<Measurement<Celsius>> for Bme280Sensor<I, D, C> {
-    type Error = Bme280Error;
-
-    fn read(&mut self) -> Result<Measurement<Celsius>, Self::Error> {
-        self.start_conversion()?;
-        self.delay.delay_ms(self.conversion_time_ms().as_millis() as u32);
-        self.read_result()
-    }
-}
-
-/// Pression **atmosphérique absolue** (~1013 hPa au niveau de la mer).
-///
-/// À ne pas confondre avec ce que mesure `drivers::abp2` : celui-ci lit la
-/// pression d'un circuit de la chambre sur une plage 0–1 bar. Les deux
-/// remplissent aujourd'hui le même créneau `SensorSnapshot::press`, mais ne
-/// décrivent pas la même grandeur physique — si une sécurité pression est
-/// ajoutée un jour, elle devra savoir lequel des deux elle lit.
+/// Pression **atmosphérique absolue** (~1013 hPa au niveau de la mer) —
+/// une donnée d'expérience, pas la pression d'un circuit de la chambre.
 ///
 /// Une seule mesure forcée sert les deux grandeurs (le BME280 convertit
 /// température, pression et humidité en un cycle) : lire la pression coûte
@@ -267,19 +252,5 @@ impl<I: I2cTrait, D: DelayNs, C: MonotonicTimer> Sensor<Measurement<HectoPascal>
         self.driver.fetch_raw()?;
         let hpa = self.driver.read_pressure_hpa()?;
         Ok(Measurement::new(self.clock.now(), HectoPascal(hpa)))
-    }
-}
-
-impl<I: I2cTrait, D: DelayNs, C: MonotonicTimer> DeferredSensor<Measurement<Celsius>> for Bme280Sensor<I, D, C> {
-    fn start_conversion(&mut self) -> Result<(), Self::Error> {
-        self.driver.trigger_measurement()
-    }
-
-    fn conversion_time_ms(&self) -> Duration { Duration::from_millis(BME280_MEASURE_MS as u64) }
-
-    fn read_result(&mut self) -> Result<Measurement<Celsius>, Self::Error> {
-        self.driver.fetch_raw()?;
-        let value = self.driver.read_celsius()?;
-        Ok(Measurement::new(self.clock.now(), Celsius(value)))
     }
 }

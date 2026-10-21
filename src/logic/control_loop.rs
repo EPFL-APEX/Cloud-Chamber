@@ -131,27 +131,17 @@ where
     measurement_history.update(&latest_measurement);
 
     // Adopte une écriture externe (UI) survenue depuis le tour précédent ;
-    // no-op si SHARED_STATE contient encore exactement ce que ce
-    // contrôleur y a lui-même écrit la dernière fois — donc aucune
-    // transition autonome décidée ci-dessous (abandon, timeout, fin de
-    // cycle...) ne peut être écrasée par une valeur restée en retard.
+    // no-op si SHARED_STATE contient encore ce que ce contrôleur y a
+    // écrit lui-même.
     phase.set(read_task());
     let synced_task = phase.current();
 
-    // Acquittement opérateur. `SafetyMonitor` vit ici, sur le cœur 1, avec
-    // son verrouillage interne : l'UI a beau écrire `Idle`, `check()`
-    // republierait `Tripped` dans le même tour tant que personne ne l'a
-    // réarmé. Une demande d'`Idle` arrivée pendant un déclenchement ne peut
-    // venir que de l'opérateur — le contrôleur, lui, publie `Tripped` à
-    // chaque tour — donc elle vaut acquittement.
-    //
-    // Réarmer ne masque rien : `check()` juste en dessous recompte
-    // `TRIP_CYCLES` et redéclenche si la cause est toujours là. C'est
-    // voulu — l'alarme qui revient d'elle-même est l'information utile.
-    //
-    // Pas de `defmt::warn!` ici : `logic/` ne dépend pas de defmt, pour
-    // rester compilable et testable sur hôte. Le journal de l'acquittement,
-    // s'il en faut un, est du ressort de `main.rs`.
+    // Acquittement opérateur : une demande d'`Idle` pendant un
+    // déclenchement ne peut venir que de l'opérateur (le contrôleur
+    // publie `Tripped`), donc elle vaut réarmement. `check()` juste en
+    // dessous redéclenche si la cause est toujours là — l'alarme qui
+    // revient est l'information utile. Pas de `defmt::warn!` ici :
+    // `logic/` ne dépend pas de defmt pour rester testable sur hôte.
     if synced_task == SystemTask::Idle && safety.is_tripped() {
         safety.reset(phase.now());
     }
@@ -256,32 +246,18 @@ impl SystemTask {
     pub fn react_to(self, history: &MeasurementHistory) -> (SystemTask, ActuatorPlan) {
         use SystemTask::*;
         match self {
-            // Mode manuel pas encore codé (cf. plan de réconciliation) —
-            // tout coupé par défaut plutôt qu'un todo!() qui paniquerait.
-            // `iso_pump`/`lights`/`glass_heater` : toujours `false` ci-dessous,
-            // cf. commentaire équivalent dans `logic::cooling` — aucune
-            // politique par phase définie pour l'instant.
+            // À l'arrêt, tout est coupé — `all_off` est la réponse
+            // complète, pas un point de départ.
             Idle => (
                 SystemTask::Idle,
                 ActuatorPlan::all_off(),
             ),
             Cooling(phase) => phase.react_to(history),
-            // Régime permanent après la séquence de refroidissement : on
-            // maintient les sorties de fin de FinalCheckBeforeStabilising,
-            // cibles désormais réellement régulées (cycle on/off autour
-            // de la cible) plutôt que "tout allumé en continu" — plus
-            // réaliste pour un compresseur en régime permanent. Pas de
-            // sortie automatique — seul un arrêt opérateur explicite
-            // (signal UI, pas câblé ici) fait sortir de cet état.
-            //
+            // Régime permanent après la séquence de refroidissement :
             // TOUTES les sorties de fin de séquence, pas seulement les
-            // cibles : pompe IPA, éclairage chambre et anti-buée vitre
-            // restent en marche — c'est le régime d'observation, celui
-            // où l'on regarde les traces. Une première implémentation
-            // ne reportait que les cibles régulées et le HV, et coupait
-            // silencieusement éclairage et vitre au moment précis où ils
-            // servent (vu sur l'écran de stats : les carrés IPA/VITRE
-            // retombaient en entrant dans STABILISE).
+            // cibles régulées — pompe IPA, éclairage chambre et anti-buée
+            // vitre compris, c'est le régime d'observation. Seul un arrêt
+            // opérateur explicite fait sortir de cet état.
             Stabilising => {
                 let settings = settings::get();
                 (

@@ -1,47 +1,26 @@
 //! Driver écran ILI9341 (320×240, SPI) avec framebuffer RAM.
 //!
-//! # Pourquoi un framebuffer plutôt que dessiner directement sur l'écran
+//! # Pourquoi un framebuffer plutôt que dessiner directement
 //!
-//! `Ili9341::draw_iter` (l'implémentation par défaut de `DrawTarget`, celle
-//! qu'`embedded_graphics` utilise pour chaque pixel de texte/icône) fait un
-//! `draw_raw_iter` par pixel *individuel* : chaque pixel rouvre sa propre
-//! fenêtre d'écriture et sa propre transaction SPI. Pour un écran
-//! texte/icônes riche, ça fait des milliers de mini-transactions au lieu
-//! d'une seule — constaté sur matériel réel : plusieurs secondes pour
-//! dessiner un menu, même en `--release`.
-//!
-//! [`FramebufferedDisplay`] dessine plutôt dans une zone de RAM (écritures
-//! quasi gratuites, aucune transaction SPI), puis transfère l'écran entier
-//! en un seul bloc via `Ili9341::draw_raw_slice`.
+//! Le `DrawTarget` par défaut d'`embedded_graphics` rouvre une fenêtre
+//! d'écriture et une transaction SPI par pixel — des milliers de
+//! mini-transactions par écran, plusieurs secondes pour un menu (constaté
+//! sur matériel réel). [`FramebufferedDisplay`] dessine plutôt dans une
+//! zone de RAM, puis transfère l'écran entier en un seul bloc.
 //!
 //! # Plein écran plutôt que bandé
 //!
-//! Le framebuffer fait 320×240×2 = 150 Ko — plein écran, pas bandé.
-//! `BAND_HEIGHT` reste paramétrable (mécanisme conservé pour re-réduire la
-//! RAM utilisée si besoin un jour), mais vaut aujourd'hui [`SCREEN_HEIGHT`]
-//! (une seule "bande" = l'écran entier, une seule transaction SPI).
-//! L'ancienne version à deux bandes rejouait `draw_fn` deux fois par
-//! redessin ; en plein écran, une seule fois.
+//! Le framebuffer fait 320×240×2 = 150 Ko — plein écran.
+//! `BAND_HEIGHT` reste paramétrable si la RAM redevient contrainte.
 //!
 //! # Pourquoi le framebuffer est un `static` et non un champ par valeur
 //!
-//! Il vit en `.bss` et se réclame une fois via [`take_framebuffer`], plutôt
-//! que d'être construit dans [`FramebufferedDisplay::new`].
-//!
-//! La version précédente le construisait par valeur — `Self { framebuffer:
-//! [0; N], .. }` — et **plantait la carte en `--release` comme en debug
-//! selon le profil** : un tableau de 150 Ko construit dans la frame de
-//! `new()` puis renvoyé par valeur demande une copie, donc 300 Ko de pile
-//! au moment de l'appel, pour 246 Ko disponibles. En `--release` le
-//! compilateur élide la copie et ça passe ; en debug il ne l'élide pas, et
-//! la pile déborde — HardFault au démarrage, sans message. Constaté sur
-//! matériel réel.
-//!
-//! Passer par un `static` supprime la question : plus aucune copie, plus
-//! aucune dépendance au profil de compilation ni aux optimisations du
-//! compilateur pour que le firmware démarre. C'est aussi ce qui rend le
-//! coût visible — 150 Ko en `.bss` apparaissent dans `size`, alors qu'une
-//! grosse allocation de pile ne se voit nulle part avant de déborder.
+//! Il vit en `.bss` et se réclame une fois via [`take_framebuffer`]. Une
+//! construction par valeur demanderait une copie de 150 Ko sur la pile —
+//! 300 Ko pour 246 Ko disponibles : HardFault au démarrage en debug
+//! (où la copie n'est pas élicitée), constaté sur matériel réel. En
+//! `.bss`, plus de copie, plus de dépendance au profil de compilation,
+//! et le coût apparaît dans `size`.
 //!
 //! # Utilisation
 //!

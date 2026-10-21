@@ -7,15 +7,6 @@
 //! trait par type physique (température, pression, tension...) — c'est
 //! le paramètre `Unit` de `Measurement` qui distingue les grandeurs.
 //!
-//! # Lecture en une phase vs deux phases
-//!
-//! `Sensor<T>` convient aux capteurs dont la lecture est immédiate ou
-//! auto-suffisante (ADC, GPIO, capteurs à conversion continue en arrière-plan).
-//! `DeferredSensor<T>` s'ajoute pour les capteurs dont la conversion prend un
-//! temps notable (DS18B20, BME280) : `start_conversion()` déclenche la mesure
-//! sans bloquer, ce qui permet de démarrer plusieurs conversions en parallèle
-//! avant de venir chercher les résultats avec `read_result()`.
-//!
 //! # Capteurs groupés (`BatchSensor`)
 //!
 //! Certains capteurs partagent un bus physique unique (ex: plusieurs DS18B20
@@ -28,6 +19,10 @@
 //! elle regroupe `N` capteurs réellement indépendants (ex: puces I2C
 //! séparées) derrière la même interface `BatchSensor`, ce qui permet à
 //! `Sensors` de traiter les deux cas de façon uniforme.
+//!
+//! `DeferredBatchSensor` ajoute la lecture en deux phases pour les bus
+//! partagés : `start_conversion()` déclenche la mesure sans bloquer,
+//! `read_result()` vient chercher les résultats.
 
 use core::fmt::Debug;
 
@@ -42,20 +37,6 @@ use crate::cloud_chamber_hal::{
 pub trait Sensor<T> {
     type Error: Debug;
     fn read(&mut self) -> Result<T, Self::Error>;
-}
-
-/// Capteur dont la conversion prend un temps notable : lecture en deux phases
-/// pour permettre le chevauchement de plusieurs conversions simultanées.
-///
-/// `read()` (hérité de `Sensor<T>`) reste utilisable seul : il déclenche la
-/// conversion, attend `conversion_time_ms()`, puis lit le résultat.
-pub trait DeferredSensor<T>: Sensor<T> {
-    /// Déclenche la conversion sans attendre qu'elle soit terminée.
-    fn start_conversion(&mut self) -> Result<(), Self::Error>;
-    /// Durée à attendre après `start_conversion()` avant que `read_result()` soit valide.
-    fn conversion_time_ms(&self) -> Duration;
-    /// Récupère le résultat d'une conversion déjà déclenchée.
-    fn read_result(&mut self) -> Result<T, Self::Error>;
 }
 
 /// Source produisant `N` mesures horodatées de type `Unit` en un seul appel.
@@ -91,32 +72,7 @@ where
     }
 }
 
-impl<S, Unit, const N: usize> DeferredBatchSensor<Unit, N> for IndependentSensors<S, N>
-where
-    S: DeferredSensor<Measurement<Unit>>,
-{
-    fn start_conversion(&mut self) -> Result<(), Self::Error> {
-        let mut result = Ok(());
-        for sensor in self.0.iter_mut() {
-            if let Err(e) = sensor.start_conversion() {
-                result = Err(e);
-            }
-        }
-        result
-    }
-
-    fn conversion_time_ms(&self) -> Duration {
-        self.0.iter().map(S::conversion_time_ms).max().unwrap()
-    }
-
-    fn read_result(&mut self) -> [Result<Measurement<Unit>, Self::Error>; N] {
-        core::array::from_fn(|i| self.0[i].read_result())
-    }
-}
-
-/// Regroupe les deux sources de mesure (température, pression). Pas de
-/// mesure de tension : `AnalogActuator`/`AdcCurrentSensor` couvrent les
-/// besoins analogiques restants (courant), il n'y a pas de voltmètre dédié.
+/// Regroupe les deux sources de mesure (température, pression).
 ///
 /// Chaque source produit un batch complet en un seul appel — que ce soit un
 /// bus partagé natif (ex: `Ds18b20Sensors`) ou `N` capteurs indépendants

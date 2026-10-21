@@ -50,18 +50,12 @@ pub trait TargetActuator<Unit: Copy, const N: usize> {
 pub trait AnalogActuator<Unit> {
     type Error: Debug;
 
-    /// Applique `value` en sortie.
-    ///
-    /// # Errors
-    ///
-    /// Retourne une erreur si la valeur est hors plage ou si l'écriture
+    /// Applique `value` en sortie — erreur si hors plage ou si l'écriture
     /// matérielle échoue.
     fn set_output(&mut self, value: Unit) -> Result<(), Self::Error>;
 
-    /// Retourne la consigne actuellement appliquée.
-    ///
-    /// Il s'agit de la dernière valeur transmise au matériel, pas
-    /// nécessairement la valeur mesurée en sortie.
+    /// Dernière consigne transmise au matériel (pas nécessairement la
+    /// valeur mesurée en sortie).
     fn get_setpoint(&self) -> Result<Unit, Self::Error>;
 }
 
@@ -94,10 +88,8 @@ pub trait AnalogActuator<Unit> {
 /// assert!(!plan.high_voltage);
 /// ```
 ///
-/// Les quatorze sites de construction énuméraient auparavant les six
-/// champs, y compris ceux qui ne changeaient pas d'une phase à l'autre —
-/// ce qui noyait la seule chose qui compte à la lecture : ce que *cette*
-/// phase allume.
+/// La construction depuis `all_off` ne nomme que ce que *cette* phase
+/// allume — le reste reste coupé.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ActuatorPlan {
     pub cooling: Option<Celsius>,

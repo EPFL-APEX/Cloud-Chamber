@@ -54,11 +54,6 @@ const PLOT: Rectangle = Rectangle::new(Point::new(42, 44), Size::new(268, 160));
 /// pré-refroidissement (45 min de timeout). À revoir si le buffer change.
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(18_000);
 
-/// Fenêtre couverte, affichée en pied de graphe. Déduite plutôt qu'écrite
-/// en dur, sinon elle mentirait au premier changement de cadence.
-const WINDOW_MIN: u64 =
-    SAMPLE_INTERVAL.as_millis() * TEMP_GRAPH_BUFFER_LENGTH as u64 / 60_000;
-
 /// Amplitude verticale minimale. Sans elle, un palier étalerait le pas du
 /// DS18B20 (0.0625 °C en 12 bits) sur toute la hauteur du cadre.
 const MIN_SPAN_C: f32 = 2.0;
@@ -280,11 +275,8 @@ impl TempGraphScreen {
 mod tests {
     use super::*;
     use crate::shared::data::{SensorSnapshot, SystemTask};
-    use embedded_graphics_simulator::SimulatorDisplay;
 
-    fn make_display() -> SimulatorDisplay<Rgb565> {
-        SimulatorDisplay::new(Size::new(320, 240))
-    }
+    use crate::ui::test_support::make_display;
 
     fn state() -> SharedState {
         SharedState {
@@ -404,11 +396,8 @@ mod tests {
 mod axis_tests {
     use super::*;
     use crate::shared::data::{SensorSnapshot, SystemTask};
-    use embedded_graphics_simulator::SimulatorDisplay;
 
-    fn make_display() -> SimulatorDisplay<Rgb565> {
-        SimulatorDisplay::new(Size::new(320, 240))
-    }
+    use crate::ui::test_support::make_display;
 
     fn state() -> SharedState {
         SharedState {

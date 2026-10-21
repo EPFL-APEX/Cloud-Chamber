@@ -40,17 +40,22 @@
 //! sonde (defmt) garde la trace — le redémarrage reste l'affaire d'un
 //! reflash ou d'un reset.
 
+// Base du bloc SIO, seule dépendance de ce module. Hors cible, la
+// fonction qui les lit n'existe pas — même garde que `cut_power_outputs`.
+#[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
 use crate::config::wiring::{
     PIN_COMPRESSOR_RELAY, PIN_FANS_RELAY, PIN_HV_RELAY, PIN_ISO_HEATER_RELAY, PIN_LIGHTS_RELAY,
     PIN_PUMP_RELAY, PIN_WINDOW_HEATER_RELAY,
 };
 
-/// Base du bloc SIO, seule dépendance de ce module.
+#[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
 const SIO_BASE: u32 = 0xd000_0000;
 /// `SIO.GPIO_OUT_W1TC` : écriture « 1 → clear » du registre des sorties.
+#[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
 const GPIO_OUT_W1TC: u32 = SIO_BASE + 0x04;
 
 /// Toutes les broches de sortie de puissance, coupées ensemble.
+#[cfg(any(target_arch = "arm", target_arch = "riscv32"))]
 const POWER_OUTPUT_PINS: [u8; 7] = [
     PIN_HV_RELAY,
     PIN_COMPRESSOR_RELAY,
