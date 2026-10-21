@@ -387,15 +387,23 @@ fn main() -> ! {
         // Une fois le cœur 1 mort, le seul geste qui reste : un clic
         // (n'importe quel événement encodeur — le bouton est le seul qui
         // en produise) coupe le chien de garde et force le reset au plus
-        // vite. Avant `pump`, qui sinon consommerait le clic pour le
-        // routeur — de toute façon hors jeu à ce point : plus personne
-        // ne navigue sur une machine dont le contrôle est mort.
-        if dead.is_some() && cloud_chamber_firmware::ui::console::next_event().is_some() {
-            defmt::error!("redemarrage demande par l'operateur");
-            watchdog.disable();
-            loop {
-                core::hint::spin_loop();
+        // vite.
+        //
+        // Et rien d'autre : pas de `pump`, pas de redraw. Poursuivre le
+        // corps normal de la boucle laissait un événement d'encodeur —
+        // vraie rotation ou parasite EMI sur les contacts — redessiner le
+        // menu PAR-DESSUS l'écran d'erreur, qui n'apparaissait donc
+        // jamais à l'opérateur (vu sur le terrain). Le chien de garde
+        // armé à l'affichage de l'erreur déclenche seul au délai.
+        if dead.is_some() {
+            if cloud_chamber_firmware::ui::console::next_event().is_some() {
+                defmt::error!("redemarrage demande par l'operateur");
+                watchdog.disable();
+                loop {
+                    core::hint::spin_loop();
+                }
             }
+            continue;
         }
 
         // Applique les événements empilés par l'interruption, journalise
@@ -453,7 +461,18 @@ fn main() -> ! {
         // Un changement de phase décidé par le cœur 1 ne passe par aucun
         // événement d'encodeur : sans ça l'écran de suivi resterait figé
         // jusqu'au prochain geste de l'opérateur.
+        //
+        // Le journal qui va avec : un retour à `Idle` en cours de cycle est
+        // silencieux à l'écran (pas de `Tripped`, pas de bannière) — sans
+        // cette trace, impossible de distinguer un abandon perte-sonde
+        // (`SENSOR_LOSS`) d'un timeout de phase, ni même de savoir de
+        // quelle phase la machine est tombée.
         if state.task != last_task {
+            defmt::info!(
+                "phase : {} -> {}",
+                defmt::Debug2Format(&last_task),
+                defmt::Debug2Format(&state.task)
+            );
             last_task = state.task;
             app.mark_dirty();
         }
@@ -520,16 +539,12 @@ fn main() -> ! {
             let _ = bay_lights.set(on);
         }
 
-        if error_pending {
-            defmt::error!("coeur 1 arrete : affichage de l'ecran d'erreur");
-            let screen = cloud_chamber_firmware::ui::screens::error::ErrorScreen;
-            let _ = console.display().render(|target| screen.draw(target));
-            // Rien d'autre à redessiner par-dessus : le prochain tour
-            // relit `core1_panicked`, que la copie ci-dessus a déjà
-            // acquitté — le drapeau ne sera plus jamais levé.
-        }
-
-        if app.take_redraw_request() {
+        // L'écran d'erreur vient d'être dessiné dans ce même tour (le
+        // cœur 1 vient de mourir) : un redraw en attente — il peut
+        // traîner depuis un geste d'encodeur pomplé plus haut dans ce
+        // tour — l'écraserait avec le menu. Le garde de tête de boucle
+        // couvre les tours suivants, celui-ci couvre le tour courant.
+        if dead.is_none() && app.take_redraw_request() {
             console.redraw(&app, &state);
         }
     }
