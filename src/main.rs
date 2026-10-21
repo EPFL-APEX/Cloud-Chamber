@@ -465,11 +465,18 @@ fn main() -> ! {
         // mesures. Le menu était exclu tant que sa bande du bas était vide ;
         // elle porte maintenant les températures et l'état des actionneurs,
         // qui resteraient figés jusqu'au prochain geste de l'opérateur.
+        // L'écran COURBE dessine le même graphe que la veille : sans lui,
+        // la courbe ne s'anime qu'au prochain geste — figée, elle prêterait
+        // à croire que la machine ne rafraîchit plus.
         if state.new_data {
             app.sample(&state);
             if matches!(
                 app.current_screen(),
-                Screen::Stats | Screen::CurrentTask | Screen::MainMenu | Screen::Idle
+                Screen::Stats
+                    | Screen::CurrentTask
+                    | Screen::MainMenu
+                    | Screen::Graph
+                    | Screen::Idle
             ) {
                 app.mark_dirty();
             }
