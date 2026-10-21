@@ -260,9 +260,13 @@ impl<'a> StatsScreen<'a> {
         }
 
         // ─── Héroïne : sonde pilote + métadonnées ────────────────────────────
+        // Une sonde muette au dernier sondage s'affiche comme absente :
+        // la valeur figée du dernier sondage réussi n'est pas une mesure
+        // vivante, elle ne doit pas se faire passer pour telle.
+        let pilot_mute = snap.temp_mute_mask & (1 << PLATE_MID_IDX) != 0;
         let mut val: String<12> = String::new();
         match snap.temps[PLATE_MID_IDX] {
-            Some(m) if !m.value.is_nan() => {
+            Some(m) if !m.value.is_nan() && !pilot_mute => {
                 let _ = write!(val, "{:+.1}", m.value.0);
                 let width = val.len() as i32 * 10;
                 Text::with_text_style(
@@ -388,13 +392,21 @@ impl<'a> StatsScreen<'a> {
             )
             .draw(display)?;
 
+            // Sonde muette au dernier sondage : `---`, comme une sonde
+            // jamais lue — la valeur figée ne doit pas se faire passer
+            // pour une mesure vivante.
+            let mute = snap.temp_mute_mask & (1 << i) != 0;
             let mut s: String<12> = String::new();
-            let (text, color) = match snap.temps[i] {
-                Some(m) if !m.value.is_nan() => {
-                    let _ = write!(s, "{:+.1}", m.value.0);
-                    (s.as_str(), theme::TEXT_COLOR)
+            let (text, color) = if mute {
+                ("---", theme::DIM_COLOR)
+            } else {
+                match snap.temps[i] {
+                    Some(m) if !m.value.is_nan() => {
+                        let _ = write!(s, "{:+.1}", m.value.0);
+                        (s.as_str(), theme::TEXT_COLOR)
+                    }
+                    _ => ("---", theme::DIM_COLOR),
                 }
-                _ => ("---", theme::DIM_COLOR),
             };
             Text::with_text_style(
                 text,

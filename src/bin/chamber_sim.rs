@@ -52,6 +52,7 @@ use cloud_chamber_firmware::logic::control_loop::tick;
 use cloud_chamber_firmware::logic::phase_clock::PhaseClock;
 use cloud_chamber_firmware::logic::probing::{MeasurementHistory, ProbingPlan};
 use cloud_chamber_firmware::logic::security::{SafetyConfig, SafetyMonitor};
+use cloud_chamber_firmware::logic::stopping::RunningOutputs;
 use cloud_chamber_firmware::shared::data::{SHARED_STATE, SystemTask};
 use cloud_chamber_firmware::simulator::actuators::SimActuators;
 use cloud_chamber_firmware::simulator::clock::VirtualClock;
@@ -112,6 +113,8 @@ fn main() {
     let mut phase = PhaseClock::new(&clock, SystemTask::default());
     let mut safety = SafetyMonitor::new(SafetyConfig::default(), phase.now());
     let mut history = MeasurementHistory::new();
+    // Mémoire des sorties actives — même boucle que la vraie machine.
+    let mut running_outputs = RunningOutputs::all_off();
     // Dernier sondage : démarre « jamais fait » pour que le premier
     // tour sonde immédiatement.
     let mut last_probe = Instant::ZERO;
@@ -250,6 +253,7 @@ fn main() {
                 &mut safety,
                 &mut history,
                 plan,
+                &mut running_outputs,
             );
         }
 

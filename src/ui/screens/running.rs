@@ -255,10 +255,13 @@ impl<'a> RunningScreen<'a> {
             .draw(display)?;
         }
 
-        // Sonde pilote, alignée à droite du bandeau.
+        // Sonde pilote, alignée à droite du bandeau. Mue au dernier
+        // sondage : `---`, comme jamais lue — une valeur figée ne se
+        // fait pas passer pour une mesure vivante.
+        let pilot_mute = self.state.snapshot.temp_mute_mask & (1 << PLATE_MID_IDX) != 0;
         let mut pilot: String<16> = String::new();
         match self.state.snapshot.temps[PLATE_MID_IDX] {
-            Some(m) if !m.value.is_nan() => {
+            Some(m) if !m.value.is_nan() && !pilot_mute => {
                 let _ = write!(pilot, "{:+.1} C", m.value.0);
                 (pilot.as_str(), theme::TEXT_COLOR)
             }

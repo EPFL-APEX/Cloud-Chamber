@@ -84,12 +84,15 @@ use cloud_chamber_firmware::ui::console;
 fn main() -> ! {
     let mut board = board::init();
 
+    // Binaire de bring-up : crash franc avec trace sur un écran muet —
+    // c'est ce qu'il vient valider.
     let mut console = console::init(
         board.spi0,
         &mut board.resets,
         board.clocks.peripheral_clock.freq(),
         &mut board.timer,
-    );
+    )
+    .expect("ecran indisponible");
 
     // `UiApp` appartient à cette fonction — c'est tout l'objet du
     // découplage : il n'est partagé avec personne, donc le rendu ne prend

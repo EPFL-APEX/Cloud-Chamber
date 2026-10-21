@@ -152,6 +152,40 @@ const TEMP_RESOLUTION: Resolution = Resolution::Bits12;
 /// du cœur 0 garde tout le bas de la RAM, où loge le framebuffer de 150 Ko.
 static CORE1_STACK: Stack<CORE1_STACK_WORDS> = Stack::new();
 
+/// Délai du chien de garde pour un boot raté : assez court pour retenter
+/// vite (la panne au boot est souvent transitoire — bus 1-Wire brouillé,
+/// écran muet), assez long pour que l'opérateur lise l'écran d'erreur.
+/// En microsecondes, l'unité du chien de garde du RP2040 — 10 s.
+const BOOT_RETRY_DELAY_US: u32 = 10_000_000;
+
+/// Échec d'initialisation : la machine ne peut pas piloter, mais elle ne
+/// panique pas. L'écran d'erreur porte le message, le chien de garde
+/// relance le boot au bout du délai — et un clic de l'opérateur force le
+/// reset immédiat, même mécanisme que l'écran d'erreur de panique.
+///
+/// Tout ce qui échoue avant la console (l'écran lui-même) passe par un
+/// chemin plus court : chien de garde + rotation, rien à afficher.
+fn boot_fatal(
+    console: &mut console::Console,
+    watchdog: &mut hal::Watchdog,
+    message: &str,
+) -> ! {
+    defmt::error!("erreur fatale au demarrage : {}", message);
+    let screen = cloud_chamber_firmware::ui::screens::error::ErrorScreen;
+    let _ = console.display().render(|target| screen.draw(target, message));
+    watchdog.start(BOOT_RETRY_DELAY_US.micros());
+    loop {
+        if console::next_event().is_some() {
+            defmt::error!("redemarrage demande par l'operateur");
+            watchdog.disable();
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+        core::hint::spin_loop();
+    }
+}
+
 /// Gestionnaire de panique du firmware complet (les deux cœurs).
 ///
 /// Priorité absolue aux sorties de puissance : la coupure précède tout,
@@ -180,6 +214,12 @@ fn main() -> ! {
 
     defmt::info!("cloud-chamber : demarrage");
 
+    // Le chien de garde relance tout le boot si une initialisation
+    // échoue : pris avant la console, il sert déjà aux erreurs fatales
+    // de démarrage (cf. `boot_fatal`) — un boot raté se retente, il ne
+    // s'arrête pas.
+    let mut watchdog = board.watchdog;
+
     // ─── Console opérateur (écran + encodeur) ──────────────────────────────
     //
     // Tout le montage vit dans `ui::console` : même fréquence SPI, même
@@ -187,12 +227,25 @@ fn main() -> ! {
     // bring-up. Cf. sa doc de module pour l'architecture ISR/boucle qu'il
     // impose — et pourquoi le rendu ne doit prendre aucune section
     // critique sur cette machine à deux cœurs.
-    let mut console = console::init(
+    //
+    // Un écran muet au boot n'a droit ni à une panique ni à un écran
+    // d'erreur (rien pour l'afficher) : le chien de garde relance la
+    // machine au bout du délai, le boot retente.
+    let mut console = match console::init(
         board.spi0,
         &mut board.resets,
         board.clocks.peripheral_clock.freq(),
         &mut board.timer,
-    );
+    ) {
+        Ok(console) => console,
+        Err(e) => {
+            defmt::error!("ecran indisponible au boot : {}", defmt::Debug2Format(&e));
+            watchdog.start(BOOT_RETRY_DELAY_US.micros());
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    };
 
     // `UiApp` n'est volontairement pas un static : il appartient à la
     // boucle du cœur 0, seule à le toucher. L'interruption ne communique
@@ -226,12 +279,19 @@ fn main() -> ! {
 
     // `Ds18b20Sensors::new` configure la résolution de chaque capteur
     // découvert ; un échec ici veut dire que le bus ne répond pas comme
-    // attendu, ce qui rend toute lecture de température douteuse.
+    // attendu, ce qui rend toute lecture de température douteuse. Pas de
+    // panique : l'écran d'erreur porte le message, et le chien de garde
+    // relance le boot au bout du délai — le bus a une chance de revenir,
+    // la machine ne reste pas morte sur une panne transitoire.
     let temperature_source = match Ds18b20Sensors::new(bus, board.timer, board.timer, TEMP_RESOLUTION) {
         Ok(sensors) => sensors,
         Err(e) => {
             defmt::error!("echec config DS18B20 : {}", defmt::Debug2Format(&e));
-            panic!("bus 1-Wire inutilisable");
+            boot_fatal(
+                &mut console,
+                &mut watchdog,
+                "Bus 1-Wire inutilisable au demarrage.",
+            );
         }
     };
 
@@ -266,9 +326,14 @@ fn main() -> ! {
     if let Err(e) = bme.init() {
         // Sans init, les coefficients de compensation ne sont pas chargés et
         // toutes les lectures seraient fausses — mieux vaut le dire ici que
-        // laisser `control_loop` paniquer sur un capteur muet.
+        // laisser `control_loop` tourner sur un capteur muet. L'écran
+        // d'erreur porte le message, le chien de garde relance le boot.
         defmt::error!("echec init BME280 (adresse 0x76) : {}", defmt::Debug2Format(&e));
-        panic!("capteur de pression indisponible");
+        boot_fatal(
+            &mut console,
+            &mut watchdog,
+            "Capteur de pression indisponible au demarrage.",
+        );
     }
     defmt::info!("BME280 initialise — source de pression");
 
@@ -368,10 +433,6 @@ fn main() -> ! {
     // survie à une coupure est différée.
     let mut pending_save: Option<Settings> = None;
 
-    // Chien de garde : armé uniquement si le cœur 1 meurt (cf. bloc
-    // `core1_panicked` dans la boucle). Pris ici car le bloc
-    // d'initialisation des réglages consomme `board.fifo` avant.
-    let mut watchdog = board.watchdog;
     // `Some(())` une fois l'écran d'erreur affiché : plus rien ne
     // réalimente le chien de garde ensuite.
     let mut dead: Option<()> = None;
@@ -382,6 +443,19 @@ fn main() -> ! {
     // l'état, puis on travaille dessus verrou relâché (cf. doc de module).
     let mut last_task = SystemTask::Idle;
     let mut last_activity = board.timer.get_counter();
+
+    // Santé des sondes au dernier sondage (bit i = index i) — journalisée
+    // à chaque changement, cf. la boucle.
+    let mut last_mute_mask = 0u8;
+
+    // Réinitialisation périodique de l'écran : la seule arme contre
+    // l'écran blanc intermittent (contrôleur déréglé par un crêux
+    // d'alim ou un parasite — il ne se répare que par sa séquence de
+    // boot, un power-cycle logiciel quoi). Toutes les 5 minutes :
+    // assez fréquent pour qu'une panne ne dure jamais plus que ça,
+    // assez rare pour que le gel de ~130 ms passe inaperçu.
+    const DISPLAY_REINIT_INTERVAL_US: u64 = 5 * 60 * 1_000_000;
+    let mut last_display_reinit = board.timer.get_counter();
 
     loop {
         // Une fois le cœur 1 mort, le seul geste qui reste : un clic
@@ -450,12 +524,42 @@ fn main() -> ! {
         if error_pending && dead.is_none() {
             defmt::error!("coeur 1 arrete : affichage de l'ecran d'erreur");
             let screen = cloud_chamber_firmware::ui::screens::error::ErrorScreen;
-            let _ = console.display().render(|target| screen.draw(target));
+            let _ = console
+                .display()
+                .render(|target| screen.draw(target, "Boucle de controle arretee (panique)."));
             // 60 s de délai avant l'auto-reset : assez pour lire
             // l'écran, assez court pour ne pas laisser la chambre
-            // sans supervision très longtemps.
-            watchdog.start(60_000u32.micros());
+            // sans supervision très longtemps. En microsecondes —
+            // `60_000` valait 60 ms et l'écran disparaissait avant
+            // d'avoir été vu.
+            watchdog.start(60_000_000u32.micros());
             dead = Some(());
+        }
+
+        // ─── Santé des sondes : visibilité ────────────────────────────────
+        // Le cœur 1 publie à chaque sondage les capteurs qui n'ont pas
+        // répondu CE tour-là (bit i = index i). Un capteur brouillé ne
+        // doit se voir ni trop tard (à l'arrêt brutal) ni jamais (valeur
+        // figée à l'écran) : le journal dit qui et quand, l'écran Stats
+        // affiche `---`.
+        if state.snapshot.temp_mute_mask != last_mute_mask {
+            last_mute_mask = state.snapshot.temp_mute_mask;
+            if last_mute_mask != 0 {
+                defmt::warn!("capteurs muets au dernier sondage : {:#b} sur 8", last_mute_mask);
+            } else {
+                defmt::info!("tous les capteurs repondent");
+            }
+        }
+
+        // L'auto-guérison de l'écran : réinitialisation périodique du
+        // contrôleur, image renvoyée telle quelle (cf. le commentaire
+        // de `last_display_reinit`).
+        if (board.timer.get_counter() - last_display_reinit).to_micros()
+            >= DISPLAY_REINIT_INTERVAL_US
+        {
+            last_display_reinit = board.timer.get_counter();
+            console.reinit_display();
+            defmt::debug!("ecran reinitalise (entretien periodique)");
         }
 
         // Un changement de phase décidé par le cœur 1 ne passe par aucun

@@ -257,8 +257,23 @@ where
         }
 
         if probing_plan.probe_temperature {
-            for (slot, reading) in result.temps.iter_mut().zip(self.temperature_source.read_result()) {
+            // Le masque de santé : bit i à 1 si la sonde i n'a pas répondu
+            // à CE sondage. La valeur de `temps[i]` reste la dernière reçue
+            // (fusion côté publication) — c'est le masque qui dit ce qui
+            // vit, pour l'écran et le journal. Les sondes muettes n'ont pas
+            // non plus à faire tomber la machine : un ou deux silences par
+            // tour sont tolérés par construction, le danger ne vient qu'avec
+            // la durée (`CompressorSensorLost`, `sensor_loss_abort`).
+            for (i, (slot, reading)) in result
+                .temps
+                .iter_mut()
+                .zip(self.temperature_source.read_result())
+                .enumerate()
+            {
                 *slot = reading.ok();
+                if slot.is_none() {
+                    result.temp_mute_mask |= 1 << i;
+                }
             }
         }
 

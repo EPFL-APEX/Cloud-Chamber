@@ -38,9 +38,21 @@ use crate::{
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SensorSnapshot {
     /// Températures mesurées, indexées par numéro de capteur.
+    ///
+    /// Ce sont les **dernières valeurs reçues** (fusion par le cœur 1 :
+    /// un capteur muet à un tour n'efface pas sa valeur précédente) —
+    /// la fraîcheur se lit dans [`SensorSnapshot::temp_mute_mask`].
     pub temps: [Option<Measurement<Celsius>>; NUMBER_OF_TEMP_SENSOR],
     /// Pressions mesurées.
     pub press: [Option<Measurement<HectoPascal>>; NUMBER_OF_PRESSURE_SENSOR],
+    /// Bit `i` à 1 : la sonde de température `i` **n'a pas répondu au
+    /// dernier sondage qui l'incluait**. Zéro = tout le monde a répondu.
+    ///
+    /// La valeur de `temps[i]` peut être ancienne (elle), le masque dit
+    /// ce qui est vivant *maintenant* — c'est lui que l'écran Stats
+    /// consulte pour afficher `---` plutôt qu'une valeur figée, et que la
+    /// boucle du cœur 0 journalise.
+    pub temp_mute_mask: u8,
 }
 
 impl SensorSnapshot {
@@ -109,6 +121,7 @@ pub static SHARED_STATE: Mutex<RefCell<SharedState>> = Mutex::new(RefCell::new(S
     snapshot: SensorSnapshot {
             temps: [None; NUMBER_OF_TEMP_SENSOR],
             press: [None; NUMBER_OF_PRESSURE_SENSOR],
+            temp_mute_mask: 0,
     },
     task: SystemTask::Idle,
     new_data: false,
