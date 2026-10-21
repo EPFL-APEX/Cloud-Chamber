@@ -41,8 +41,6 @@ pub struct SensorSnapshot {
     pub temps: [Option<Measurement<Celsius>>; NUMBER_OF_TEMP_SENSOR],
     /// Pressions mesurées.
     pub press: [Option<Measurement<HectoPascal>>; NUMBER_OF_PRESSURE_SENSOR],
-    /// `true` si la chambre est physiquement fermée (capteur de fermeture).
-    pub is_closed: bool,
 }
 
 impl SensorSnapshot {
@@ -111,7 +109,6 @@ pub static SHARED_STATE: Mutex<RefCell<SharedState>> = Mutex::new(RefCell::new(S
     snapshot: SensorSnapshot {
             temps: [None; NUMBER_OF_TEMP_SENSOR],
             press: [None; NUMBER_OF_PRESSURE_SENSOR],
-            is_closed: false
     },
     task: SystemTask::Idle,
     new_data: false,
@@ -135,7 +132,6 @@ mod tests {
         let s = SensorSnapshot::default();
         for &t in &s.temps { assert!(t.is_none()); }
         for &p in &s.press { assert!(p.is_none()); }
-        assert!(!s.is_closed);
     }
 
     #[test]
@@ -152,6 +148,6 @@ mod tests {
     fn snapshot_is_copy() {
         let a = SensorSnapshot::default();
         let b = a; // Copy — `a` reste valide après cette ligne
-        assert_eq!(a.is_closed, b.is_closed);
+        assert_eq!(a.press[0].is_none(), b.press[0].is_none());
     }
 }

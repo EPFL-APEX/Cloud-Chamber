@@ -31,7 +31,9 @@ use embedded_graphics::{
 
 use crate::{
     cloud_chamber_hal::config::{
-        CHAMBER_PRESSURE_IDX, PLATE_MID_IDX, NUMBER_OF_TEMP_SENSOR,
+        CHAMBER_PRESSURE_IDX, NUMBER_OF_TEMP_SENSOR, COMPRESSOR_IDX, COMPRESSOR_IN_IDX,
+        ISO_HEATER_IDX, PLATE_IN_IDX, PLATE_MID_IDX, PLATE_OUT_IDX, RADIATOR_IN_IDX,
+        RADIATOR_OUT_IDX,
     },
     logic::{cooling::CoolingPhase, security::SafetyCause, stopping::StoppingPhase},
     shared::data::{SharedState, SystemTask},
@@ -311,11 +313,16 @@ impl<'a> StatsScreen<'a> {
         )
         .draw(display)?;
 
-        // Pression — `HectoPascal` porte bien des hPa (cf. doc du
-        // module pour l'unité, corrigée d'un affichage 1000× trop grand).
+        // Pas d'indicateur de fermeture de chambre : il n'y a pas de
+        // capteur, et ouvrir la chambre en cycle est une procédure
+        // suffisamment lourde pour qu'un départ dans cette situation ne
+        // peut pas passer inaperçu — l'indicateur n'apportait rien.
+        // La colonne à droite de la cible porte donc la pression.
+        // `HectoPascal` est bien des hPa (cf. doc de module pour
+        // l'unité, corrigée d'un affichage 1000× trop grand).
         Text::with_text_style(
             "PRESSION",
-            Point::new(172, 92),
+            Point::new(252, 64),
             MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
             top_style,
         )
@@ -330,24 +337,8 @@ impl<'a> StatsScreen<'a> {
         };
         Text::with_text_style(
             p_text,
-            Point::new(172, 104),
-            MonoTextStyle::new(&FONT_6X13, p_color),
-            top_style,
-        )
-        .draw(display)?;
-
-        // Fermeture de la chambre.
-        Text::with_text_style(
-            "CHAMBRE",
-            Point::new(252, 64),
-            MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
-            top_style,
-        )
-        .draw(display)?;
-        Text::with_text_style(
-            if snap.is_closed { "FERMEE" } else { "OUVERTE" },
             Point::new(252, 76),
-            MonoTextStyle::new(&FONT_6X13, theme::TEXT_COLOR),
+            MonoTextStyle::new(&FONT_6X13, p_color),
             top_style,
         )
         .draw(display)?;
@@ -369,12 +360,21 @@ impl<'a> StatsScreen<'a> {
         // ─── Table des autres sondes : deux colonnes ─────────────────────────
         // La sonde pilote vit en zone héroïne ; les sept autres, une par
         // cellule, libellé gris sur valeur blanche, valeurs alignées à
-        // droite de leur colonne.
+        // droite de leur colonne. L'ordre suit le trajet du fluide, pas
+        // le bus : la plaque (entrée/sortie) d'abord — c'est elle qu'on
+        // surveille —, puis le radiateur, le compresseur, et l'IPA en
+        // bas de tableau.
+        const TABLE_ORDER: [usize; 7] = [
+            PLATE_IN_IDX,
+            PLATE_OUT_IDX,
+            RADIATOR_IN_IDX,
+            RADIATOR_OUT_IDX,
+            COMPRESSOR_IDX,
+            COMPRESSOR_IN_IDX,
+            ISO_HEATER_IDX,
+        ];
         let mut cell = 0usize;
-        for i in 0..NUMBER_OF_TEMP_SENSOR {
-            if i == PLATE_MID_IDX {
-                continue;
-            }
+        for i in TABLE_ORDER {
             let col = (cell % 2) as i32;
             let row = (cell / 2) as i32;
             let x = MARGIN + col * 156;
