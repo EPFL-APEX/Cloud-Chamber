@@ -32,7 +32,7 @@
 //! ```text
 //! D/G ou flèches       tourner l'encodeur (droite / gauche)
 //! Entrée (ou E)        clic
-//! P                    panne de la sonde sortie-compresseur
+//! P                    panne de la sonde compresseur
 //! S                    surchauffe compresseur (130 °C)
 //! Espace               pause / reprise du temps virtuel
 //! + / -                vitesse d'écoulement du temps
@@ -44,7 +44,7 @@
 //! sont du temps virtuel.
 
 use cloud_chamber_firmware::cloud_chamber_hal::actuators::Actuators;
-use cloud_chamber_firmware::cloud_chamber_hal::config::{CHAMBER_TEMP_IDX, COMPRESSOR_OUT_IDX};
+use cloud_chamber_firmware::cloud_chamber_hal::config::{PLATE_MID_IDX, COMPRESSOR_IDX};
 use cloud_chamber_firmware::cloud_chamber_hal::sensors::Sensors;
 use cloud_chamber_firmware::cloud_chamber_hal::timer::{Instant, MonotonicTimer};
 use cloud_chamber_firmware::drivers::encoder::EncoderEvent;
@@ -52,6 +52,7 @@ use cloud_chamber_firmware::logic::control_loop::tick;
 use cloud_chamber_firmware::logic::phase_clock::PhaseClock;
 use cloud_chamber_firmware::logic::probing::{MeasurementHistory, ProbingPlan};
 use cloud_chamber_firmware::logic::security::{SafetyConfig, SafetyMonitor};
+use cloud_chamber_firmware::logic::stopping::RunningOutputs;
 use cloud_chamber_firmware::shared::data::{SHARED_STATE, SystemTask};
 use cloud_chamber_firmware::simulator::actuators::SimActuators;
 use cloud_chamber_firmware::simulator::clock::VirtualClock;
@@ -99,6 +100,7 @@ fn main() {
         iso_pump: sim.iso_pump,
         lights: sim.lights,
         glass_heater: sim.glass_heater,
+        fans: sim.fans,
     };
 
     use cloud_chamber_firmware::cloud_chamber_hal::sensors::IndependentSensors;
@@ -111,6 +113,8 @@ fn main() {
     let mut phase = PhaseClock::new(&clock, SystemTask::default());
     let mut safety = SafetyMonitor::new(SafetyConfig::default(), phase.now());
     let mut history = MeasurementHistory::new();
+    // Mémoire des sorties actives — même boucle que la vraie machine.
+    let mut running_outputs = RunningOutputs::all_off();
     // Dernier sondage : démarre « jamais fait » pour que le premier
     // tour sonde immédiatement.
     let mut last_probe = Instant::ZERO;
@@ -167,7 +171,7 @@ fn main() {
                     Keycode::P => {
                         probe_failed = !probe_failed;
                         eprintln!(
-                            ">>> sonde sortie-compresseur : {}",
+                            ">>> sonde compresseur : {}",
                             if probe_failed { "MUETTE" } else { "reparee" }
                         );
                         continue;
@@ -249,6 +253,7 @@ fn main() {
                 &mut safety,
                 &mut history,
                 plan,
+                &mut running_outputs,
             );
         }
 
@@ -336,18 +341,18 @@ fn render(
     );
 
     // ─── Sorties (ce que la physique applique) ─────────────────────
-    println!("  froid[{}] IPA[{}] HV[{}] pompe[{}] vitre[{}]",
+    println!("  froid[{}] IPA[{}] HV[{}] pompe[{}] vitre[{}] ventilo[{}]",
         on(power.cooling), on(power.iso_heater), on(power.high_voltage),
-        on(power.iso_pump), on(power.glass_heater),
+        on(power.iso_pump), on(power.glass_heater), on(power.fans),
     );
 
     // ─── Températures : réelles (physique) et lues (avec bruit) ────
-    // La plaque et la sortie compresseur : les deux grandeurs pilotes.
+    // La plaque et la corps compresseur : les deux grandeurs pilotes.
     let (plate_real, comp_real) = {
         let p = physics.borrow();
-        (p.real_temp(CHAMBER_TEMP_IDX), p.real_temp(COMPRESSOR_OUT_IDX))
+        (p.real_temp(PLATE_MID_IDX), p.real_temp(COMPRESSOR_IDX))
     };
-    let plate_read = history.newest_valid(CHAMBER_TEMP_IDX).map(|c| c.0);
+    let plate_read = history.newest_valid(PLATE_MID_IDX).map(|c| c.0);
     println!("  plaque   réelle {:6.1} °C   lue {}", plate_real,
         match plate_read { Some(t) => format!("{:6.1} °C", t), None => "  ---".into() });
     println!("  comp.out réelle {:6.1} °C", comp_real);
@@ -359,7 +364,7 @@ fn render(
     let mut temps = [f32::NAN; 60];
     let mut count = 0usize;
     for i in 0..60 {
-        if let Ok(m) = history.temps[CHAMBER_TEMP_IDX].get(i) {
+        if let Ok(m) = history.temps[PLATE_MID_IDX].get(i) {
             if !m.value.is_nan() {
                 temps[count] = m.value.0;
                 count += 1;

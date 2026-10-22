@@ -61,12 +61,16 @@ use cloud_chamber_firmware::ui::console;
 fn main() -> ! {
     let mut board = board::init();
 
+    // Binaire de bring-up : un échec d'écran est exactement ce qu'il vient
+    // valider — le crash avec la trace est la bonne réponse ici, pas un
+    // écran d'erreur.
     let mut display = console::init_display(
         board.spi0,
         &mut board.resets,
         board.clocks.peripheral_clock.freq(),
         &mut board.timer,
-    );
+    )
+    .expect("ecran indisponible");
 
     defmt::info!("screen_test : ecran initialise, affichage de Hello, world!");
 

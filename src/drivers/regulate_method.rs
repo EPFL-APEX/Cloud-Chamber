@@ -37,7 +37,12 @@ pub fn pid<U: Unit, const N: usize>(
     history: &RingBuffer<Measurement<U>, N>,
     gains: PidGains,
 ) -> U {
-    let newest = history.get(0).unwrap();
+    // Historique vide : pas de mesure, pas de commande — zéro, pas une
+    // panique. Un `unwrap()` ici tuait la boucle de contrôle sur le
+    // premier tour d'un capteur muet.
+    let Some(newest) = history.get(0).ok() else {
+        return U::zero();
+    };
 
     let error_of = |m: Measurement<U>| m.value - target;
 
@@ -47,7 +52,9 @@ pub fn pid<U: Unit, const N: usize>(
     let mut previous = newest;
 
     for i in 1..N {
-        let sample = history.get(i).unwrap();
+        // Le buffer peut contenir moins de N échantillons : le premier
+        // `get` en erreur termine le balayage, il ne fait pas planter.
+        let Ok(sample) = history.get(i) else { break };
         let dt_s = previous.time.since(sample.time).as_millis() as f32 / 1_000.0;
         integral += (error_of(previous) + error_of(sample)) * 0.5 * dt_s;
         if i == 1 && dt_s > 0.0 {

@@ -27,11 +27,17 @@ use embedded_graphics::{
 
 use crate::ui::theme;
 
-/// Écran « contrôle mort, sorties coupées ».
+/// Écran d'erreur fatale — cœur de contrôle mort ou initialisation
+/// impossible.
+///
+/// `message` porte la cause en toutes lettres : c'est la seule information
+/// que l'opérateur n'a pas déjà, tout le reste est identique d'une
+/// erreur à l'autre. Sans accents ni glyphe exotique — les fontes
+/// `ascii`.
 pub struct ErrorScreen;
 
 impl ErrorScreen {
-    pub fn draw<D>(&self, display: &mut D) -> Result<(), D::Error>
+    pub fn draw<D>(&self, display: &mut D, message: &str) -> Result<(), D::Error>
     where
         D: DrawTarget<Color = Rgb565> + OriginDimensions,
     {
@@ -48,7 +54,7 @@ impl ErrorScreen {
         .draw(display)?;
 
         Text::new(
-            "Boucle de controle arretee (panique).",
+            message,
             Point::new(20, 80),
             MonoTextStyle::new(&FONT_6X13, theme::TEXT_COLOR),
         )
@@ -98,6 +104,6 @@ mod tests {
     #[test]
     fn draws_without_error() {
         let mut d = SimulatorDisplay::<Rgb565>::new(Size::new(320, 240));
-        ErrorScreen.draw(&mut d).unwrap();
+        ErrorScreen.draw(&mut d, "Bus 1-Wire inutilisable.").unwrap();
     }
 }

@@ -46,9 +46,9 @@
 //! # Utilisation
 //!
 //! ```ignore
-//! let ili9341_display = Ili9341::new(iface, reset_pin, &mut delay, Orientation::Landscape, DisplaySize240x320)?;
+//! let panel = Ili9341Panel::new(iface, reset_pin, &mut delay)?;
 //! let framebuffer = display::take_framebuffer().expect("un seul ecran");
-//! let mut display = FramebufferedDisplay::new(ili9341_display, framebuffer);
+//! let mut display = FramebufferedDisplay::new(panel, framebuffer);
 //!
 //! // `draw_fn` doit être pure/idempotente (dessiner un état donné, pas des
 //! // effets de bord cumulatifs) : appelée une fois par bande, avec le même
@@ -61,11 +61,11 @@ use core::cell::Cell;
 use critical_section::Mutex;
 
 use display_interface::WriteOnlyDataCommand;
+use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
 use embedded_graphics::pixelcolor::{Rgb565, raw::RawU16};
 use embedded_graphics::primitives::Rectangle;
 use embedded_graphics::prelude::*;
-use ili9341::Ili9341;
 
 /// Largeur de l'écran ILI9341 en pixels (orientation paysage).
 pub const SCREEN_WIDTH: usize = 320;
@@ -105,9 +105,161 @@ pub fn take_framebuffer() -> Option<&'static mut Framebuffer> {
     Some(unsafe { &mut *(&raw mut FRAMEBUFFER) })
 }
 
+// ─── Le contrôleur ILI9341, sans crate ───────────────────────────────────────
+//
+// La crate `ili9341` faisait le travail, mais son `Ili9341::new` consomme
+// l'interface : plus aucun chemin pour renvoyer la séquence d'initialisation
+// une fois l'écran monté. Or l'écran blanc intermittent du bench ne se
+// répare QUE par là — un reset du contrôleur (crêux d'alimentation, parasite
+// EMI sur les fils volants) laisse la dalle dans son état de démarrage :
+// endormie, orientation portrait. Sans réinitialisation à chaud, la seule
+// issue est un power-cycle.
+//
+// Ce pilote réplique la séquence de la crate (reset matériel, reset
+// logiciel, orientation, format pixel, sortie de veille, affichage ON) et
+// l'expose en deux temps : `new` au boot, `reinit` à tout moment.
+
+/// Reset logiciel (SWRESET) — cf. datasheet ILI9341, §Command list.
+const CMD_SOFTWARE_RESET: u8 = 0x01;
+/// Sortie de veille (SLPOUT) — 120 ms à respecter après le reset.
+const CMD_SLEEP_OUT: u8 = 0x11;
+/// Contrôle d'orientation (MADCTL) : la valeur du champ qui suit détermine
+/// le balayage mémoire — c'est elle qui fait le paysage.
+const CMD_MEMORY_ACCESS_CTRL: u8 = 0x36;
+/// Format pixel (COLMOD) : 0x55 = RGB565, 16 bits par pixel.
+const CMD_PIXEL_FORMAT: u8 = 0x3A;
+/// Début d'écriture mémoire (RAMWR) — les données qui suivent remplissent
+/// la fenêtre posée par CASET/PASET.
+const CMD_MEMORY_WRITE: u8 = 0x2C;
+/// Colonne de début de fenêtre (CASET).
+const CMD_COLUMN_ADDR_SET: u8 = 0x2A;
+/// Rangée de début de fenêtre (PASET).
+const CMD_PAGE_ADDR_SET: u8 = 0x2B;
+/// Affichage ON (DISPON).
+const CMD_DISPLAY_ON: u8 = 0x29;
+
+/// MADCTL paysage — même valeur que `Orientation::Landscape` de la crate
+/// `ili9341` (`0x20 | 0x08`) : c'est le réglage avec lequel l'écran a été
+/// validé au banc, on ne réinvente pas l'orientation.
+pub const MADCTL_LANDSCAPE: u8 = 0x28;
+
+/// Contrôleur ILI9341 piloté en commandes brutes — initialisation et
+/// écriture de pixels, rien d'autre. Cf. la doc de module pour pourquoi il
+/// vit ici plutôt que dans une crate.
+pub struct Ili9341Panel<IFACE, RESET> {
+    iface: IFACE,
+    reset: RESET,
+}
+
+impl<IFACE, RESET> Ili9341Panel<IFACE, RESET>
+where
+    IFACE: WriteOnlyDataCommand,
+    RESET: OutputPin,
+{
+    /// Montage à froid : reset matériel, puis séquence d'initialisation
+    /// complète. Renvoie une erreur si l'interface SPI refuse le moindre
+    /// octet — l'appelant décide (au boot de ce firmware : écran d'erreur
+    /// et reset, pas de panique).
+    pub fn new<DELAY: DelayNs>(
+        iface: IFACE,
+        reset: RESET,
+        delay: &mut DELAY,
+    ) -> Result<Self, display_interface::DisplayError> {
+        let mut panel = Self { iface, reset };
+        panel.init_sequence(delay)?;
+        Ok(panel)
+    }
+
+    /// Séquence d'initialisation — reset matériel compris. C'est **la**
+    /// séquence de [`Self::new`] : la rejouer remet la dalle dans l'état
+    /// où le firmware l'a trouvée au boot, c'est le remède à un contrôleur
+    /// déréglé par un parasite (écran blanc).
+    ///
+    /// ~130 ms par appel, presque tout dans les délais de reset imposés
+    /// par le datasheet — à appeler rarement (périodiquement), jamais dans
+    /// un rendu.
+    pub fn reinit<DELAY: DelayNs>(
+        &mut self,
+        delay: &mut DELAY,
+    ) -> Result<(), display_interface::DisplayError> {
+        self.init_sequence(delay)
+    }
+
+    /// Le corps commun de `new` et `reinit` : reset matériel bas 1 ms,
+    /// reset logiciel, 120 ms (datasheet : délai entre SWRESET et SLPOUT),
+    /// orientation, format pixel, sortie de veille, 5 ms, affichage ON.
+    /// Mêmes commandes et mêmes délais que la crate `ili9341` : c'est la
+    /// séquence qui a été validée sur cette dalle.
+    fn init_sequence<DELAY: DelayNs>(
+        &mut self,
+        delay: &mut DELAY,
+    ) -> Result<(), display_interface::DisplayError> {
+        // Reset matériel : au moins 10 µs au niveau bas ; 1 ms par marge.
+        self.reset.set_low().map_err(|_| display_interface::DisplayError::RSError)?;
+        let _ = delay.delay_ms(1);
+        self.reset.set_high().map_err(|_| display_interface::DisplayError::RSError)?;
+        // 5 ms après le reset avant la première commande.
+        let _ = delay.delay_ms(5);
+
+        // Reset logiciel, puis le long délai du datasheet.
+        self.command(CMD_SOFTWARE_RESET, &[])?;
+        let _ = delay.delay_ms(120);
+
+        // Orientation paysage + format RGB565.
+        self.command(CMD_MEMORY_ACCESS_CTRL, &[MADCTL_LANDSCAPE])?;
+        self.command(CMD_PIXEL_FORMAT, &[0x55])?;
+
+        // Sortie de veille, 5 ms, allumage.
+        self.command(CMD_SLEEP_OUT, &[])?;
+        let _ = delay.delay_ms(5);
+        self.command(CMD_DISPLAY_ON, &[])?;
+        Ok(())
+    }
+
+    fn command(&mut self, cmd: u8, args: &[u8]) -> Result<(), display_interface::DisplayError> {
+        self.iface.send_commands(display_interface::DataFormat::U8(&[cmd]))?;
+        self.iface.send_data(display_interface::DataFormat::U8(args))
+    }
+
+    /// Pose la fenêtre d'écriture `[x0..x1] × [y0..y1]` — les coordonnées
+    /// sont en paysage, le MADCTL fait le remap côté contrôleur.
+    fn set_window(
+        &mut self,
+        x0: u16,
+        y0: u16,
+        x1: u16,
+        y1: u16,
+    ) -> Result<(), display_interface::DisplayError> {
+        self.command(CMD_COLUMN_ADDR_SET, &[(x0 >> 8) as u8, (x0 & 0xff) as u8, (x1 >> 8) as u8, (x1 & 0xff) as u8])?;
+        self.command(CMD_PAGE_ADDR_SET, &[(y0 >> 8) as u8, (y0 & 0xff) as u8, (y1 >> 8) as u8, (y1 & 0xff) as u8])?;
+        Ok(())
+    }
+
+    /// Écrit `data` dans la fenêtre `[x0..x1] × [y0..y1]`, pixels RGB565 en
+    /// gros boutiste — l'ordre physique du bus, le framebuffer est déjà
+    /// en u16 natifs.
+    pub fn draw_raw_slice(
+        &mut self,
+        x0: u16,
+        y0: u16,
+        x1: u16,
+        y1: u16,
+        data: &[u16],
+    ) -> Result<(), display_interface::DisplayError> {
+        self.set_window(x0, y0, x1, y1)?;
+        self.command(CMD_MEMORY_WRITE, &[])?;
+        // `U16BEIter` : gros boutiste, l'ordre physique du bus — même
+        // chemin que la crate `ili9341` (`draw_raw_slice` →
+        // `draw_raw_iter`), le framebuffer est en u16 natifs.
+        self.iface.send_data(display_interface::DataFormat::U16BEIter(
+            &mut data.iter().copied(),
+        ))
+    }
+}
+
 /// Écran ILI9341 avec framebuffer RAM — cf. doc de module.
 pub struct FramebufferedDisplay<IFACE, RESET> {
-    display: Ili9341<IFACE, RESET>,
+    display: Ili9341Panel<IFACE, RESET>,
     framebuffer: &'static mut Framebuffer,
 }
 
@@ -118,8 +270,31 @@ where
 {
     /// `framebuffer` vient de [`take_framebuffer`] — cf. doc de module
     /// pour pourquoi il n'est pas construit ici.
-    pub fn new(display: Ili9341<IFACE, RESET>, framebuffer: &'static mut Framebuffer) -> Self {
+    pub fn new(display: Ili9341Panel<IFACE, RESET>, framebuffer: &'static mut Framebuffer) -> Self {
         Self { display, framebuffer }
+    }
+
+    /// Réinitialise le contrôleur ILI9341 puis renvoie l'image telle
+    /// quelle : le framebuffer garde le dernier écran rendu, il suffit de
+    /// le re-transférer après la séquence de reset. C'est l'auto-guérison
+    /// de l'écran blanc — un contrôleur déréglé par un parasite revient à
+    /// son état de boot, orientation comprise, sans power-cycle.
+    ///
+    /// ~130 ms de gel d'image (délais de reset du datasheet) + le transfert
+    /// habituel. À appeler périodiquement, pas dans un rendu.
+    pub fn reinit<DELAY: DelayNs>(
+        &mut self,
+        delay: &mut DELAY,
+    ) -> Result<(), display_interface::DisplayError> {
+        self.display.reinit(delay)?;
+        let mut band_start_y = 0;
+        while band_start_y < SCREEN_HEIGHT {
+            let y0 = band_start_y as u16;
+            let y1 = (band_start_y + BAND_HEIGHT - 1) as u16;
+            self.display.draw_raw_slice(0, y0, (SCREEN_WIDTH - 1) as u16, y1, self.framebuffer)?;
+            band_start_y += BAND_HEIGHT;
+        }
+        Ok(())
     }
 
     /// Dessine l'écran en appelant `draw_fn` une fois par bande verticale

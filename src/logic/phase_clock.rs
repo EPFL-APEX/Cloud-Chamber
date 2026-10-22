@@ -77,12 +77,12 @@ impl SystemTask {
     }
 }
 
-/// Abandon si la sonde base-chambre reste invalide trop longtemps en cours
+/// Abandon si la sonde milieu de plaque reste invalide trop longtemps en cours
 /// de cycle (hors `SensorCheck`, qui attend justement cette sonde, et hors
 /// `Idle`/`Stabilising`/`Tripped`, qui n'en dépendent pas de la même façon).
-fn sensor_loss_abort(task: SystemTask, chamber_stale: Duration) -> Option<SystemTask> {
+fn sensor_loss_abort(task: SystemTask, plate_stale: Duration) -> Option<SystemTask> {
     let mid_cycle = matches!(task, SystemTask::Cooling(p) if p != CoolingPhase::SensorCheck);
-    (mid_cycle && chamber_stale > SENSOR_LOSS).then_some(SystemTask::Idle)
+    (mid_cycle && plate_stale > SENSOR_LOSS).then_some(SystemTask::Idle)
 }
 
 /// Où va une phase purement temporisée (`PhaseLimit::AdvanceAfter`) une fois
@@ -124,13 +124,13 @@ fn timed_transition(task: SystemTask, elapsed: Duration) -> Option<SystemTask> {
 /// `control_loop.rs::run()`), ne sait rien d'une horloge — juste des
 /// durées déjà calculées.
 pub fn advance(
-    current: SystemTask, history: &MeasurementHistory, elapsed: Duration, chamber_stale: Duration,
+    current: SystemTask, history: &MeasurementHistory, elapsed: Duration, plate_stale: Duration,
 ) -> (SystemTask, ActuatorPlan) {
     let (reacted, plan) = current.react_to(history);
     if reacted != current {
         return (reacted, plan);
     }
-    let next = sensor_loss_abort(current, chamber_stale)
+    let next = sensor_loss_abort(current, plate_stale)
         .or_else(|| timed_transition(current, elapsed))
         .unwrap_or(current);
     (next, plan)
@@ -157,7 +157,7 @@ impl<Clk: MonotonicTimer> PhaseClock<Clk> {
     }
 
     /// Instant courant — ce que réclament `SafetyMonitor::check` et
-    /// `MeasurementHistory::chamber_stale_duration`, qui raisonnent en
+    /// `MeasurementHistory::plate_stale_duration`, qui raisonnent en
     /// [`Instant`] et non en millisecondes nues.
     pub fn now(&self) -> Instant {
         self.clock.now()
@@ -186,7 +186,7 @@ impl<Clk: MonotonicTimer> PhaseClock<Clk> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud_chamber_hal::config::{CHAMBER_TEMP_IDX, COMPRESSOR_OUT_IDX, ISO_TEMP_IDX};
+    use crate::cloud_chamber_hal::config::{PLATE_MID_IDX, COMPRESSOR_IDX, ISO_HEATER_IDX};
     use crate::cloud_chamber_hal::measurement::Measurement;
     use crate::cloud_chamber_hal::units::Celsius;
     use crate::config::operating::{IPA_HEATER_TARGET_C, SATURATION_TARGET_C};
@@ -222,21 +222,21 @@ mod tests {
     // Fonction pure : pas de PhaseClock/horloge à construire pour la tester.
 
     /// Un historique où tous les capteurs exigés au démarrage
-    /// (`cooling::required_to_start`) sont valides, la base chambre étant à
+    /// (`cooling::required_to_start`) sont valides, la milieu de plaque étant à
     /// `value_c`. Sans les autres, `SensorCheck` ne laisserait plus avancer
     /// — ce qui n'est pas ce que ces tests-là cherchent à exercer.
     fn history_with_chamber_temp(value_c: f32) -> MeasurementHistory {
         let mut h = MeasurementHistory::new();
         let t0 = Instant::from_micros(1);
-        h.temps[CHAMBER_TEMP_IDX].push(Measurement::new(t0, Celsius(value_c)));
-        h.temps[COMPRESSOR_OUT_IDX].push(Measurement::new(t0, Celsius(20.0)));
-        h.temps[ISO_TEMP_IDX].push(Measurement::new(t0, Celsius(20.0)));
+        h.temps[PLATE_MID_IDX].push(Measurement::new(t0, Celsius(value_c)));
+        h.temps[COMPRESSOR_IDX].push(Measurement::new(t0, Celsius(20.0)));
+        h.temps[ISO_HEATER_IDX].push(Measurement::new(t0, Celsius(20.0)));
         h
     }
 
     #[test]
     fn advance_prioritizes_measurement_over_timing() {
-        // Un capteur base-chambre valide fait avancer SensorCheck
+        // Un capteur milieu de plaque valide fait avancer SensorCheck
         // immédiatement, bien avant tout timeout/durée.
         let history = history_with_chamber_temp(-5.0);
         let (next, _plan) =
@@ -255,7 +255,7 @@ mod tests {
 
     #[test]
     fn advance_advances_after_minimum_duration() {
-        // Capteur base-chambre valide (sinon `sensor_loss_abort` prend la
+        // Capteur milieu de plaque valide (sinon `sensor_loss_abort` prend la
         // main avant même que la durée minimale ne soit évaluée).
         let history = history_with_chamber_temp(-25.0);
         let (next, _plan) = advance(
@@ -303,6 +303,7 @@ mod tests {
                     iso_heater: Some(IPA_HEATER_TARGET_C),
                     high_voltage: true,
                     iso_pump: true, lights: Some(true), glass_heater: true,
+                    fans: true,
                 }
             );
         });

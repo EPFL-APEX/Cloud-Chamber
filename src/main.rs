@@ -86,7 +86,8 @@ use cloud_chamber_firmware::cloud_chamber_hal::sensors::{IndependentSensors, Sen
 use cloud_chamber_firmware::config::operating::REGULATION_BAND_C;
 use cloud_chamber_firmware::config::wiring::{
     PIN_COMPRESSOR_RELAY, PIN_HV_RELAY, PIN_I2C_SCL, PIN_I2C_SDA, PIN_ISO_HEATER_RELAY,
-    PIN_LED_STRIP, PIN_LIGHTS_RELAY, PIN_ONEWIRE, PIN_PUMP_RELAY, PIN_WINDOW_HEATER_RELAY,
+    PIN_FANS_RELAY, PIN_LED_STRIP, PIN_LIGHTS_RELAY, PIN_ONEWIRE, PIN_PUMP_RELAY,
+    PIN_WINDOW_HEATER_RELAY,
 };
 use cloud_chamber_firmware::drivers::bme280::{Bme280Driver, Bme280Sensor};
 use cloud_chamber_firmware::drivers::breaker::GpioBreaker;
@@ -97,6 +98,7 @@ use cloud_chamber_firmware::drivers::ds18b20::{
 };
 use cloud_chamber_firmware::drivers::heater::Heater;
 use cloud_chamber_firmware::drivers::lights::Lights;
+use cloud_chamber_firmware::drivers::fans::Fans;
 use cloud_chamber_firmware::drivers::pump::Pump;
 use cloud_chamber_firmware::drivers::window_heater::WindowHeater;
 use cloud_chamber_firmware::logic::control_loop;
@@ -150,6 +152,40 @@ const TEMP_RESOLUTION: Resolution = Resolution::Bits12;
 /// du cœur 0 garde tout le bas de la RAM, où loge le framebuffer de 150 Ko.
 static CORE1_STACK: Stack<CORE1_STACK_WORDS> = Stack::new();
 
+/// Délai du chien de garde pour un boot raté : assez court pour retenter
+/// vite (la panne au boot est souvent transitoire — bus 1-Wire brouillé,
+/// écran muet), assez long pour que l'opérateur lise l'écran d'erreur.
+/// En microsecondes, l'unité du chien de garde du RP2040 — 10 s.
+const BOOT_RETRY_DELAY_US: u32 = 10_000_000;
+
+/// Échec d'initialisation : la machine ne peut pas piloter, mais elle ne
+/// panique pas. L'écran d'erreur porte le message, le chien de garde
+/// relance le boot au bout du délai — et un clic de l'opérateur force le
+/// reset immédiat, même mécanisme que l'écran d'erreur de panique.
+///
+/// Tout ce qui échoue avant la console (l'écran lui-même) passe par un
+/// chemin plus court : chien de garde + rotation, rien à afficher.
+fn boot_fatal(
+    console: &mut console::Console,
+    watchdog: &mut hal::Watchdog,
+    message: &str,
+) -> ! {
+    defmt::error!("erreur fatale au demarrage : {}", message);
+    let screen = cloud_chamber_firmware::ui::screens::error::ErrorScreen;
+    let _ = console.display().render(|target| screen.draw(target, message));
+    watchdog.start(BOOT_RETRY_DELAY_US.micros());
+    loop {
+        if console::next_event().is_some() {
+            defmt::error!("redemarrage demande par l'operateur");
+            watchdog.disable();
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+        core::hint::spin_loop();
+    }
+}
+
 /// Gestionnaire de panique du firmware complet (les deux cœurs).
 ///
 /// Priorité absolue aux sorties de puissance : la coupure précède tout,
@@ -178,6 +214,12 @@ fn main() -> ! {
 
     defmt::info!("cloud-chamber : demarrage");
 
+    // Le chien de garde relance tout le boot si une initialisation
+    // échoue : pris avant la console, il sert déjà aux erreurs fatales
+    // de démarrage (cf. `boot_fatal`) — un boot raté se retente, il ne
+    // s'arrête pas.
+    let mut watchdog = board.watchdog;
+
     // ─── Console opérateur (écran + encodeur) ──────────────────────────────
     //
     // Tout le montage vit dans `ui::console` : même fréquence SPI, même
@@ -185,12 +227,25 @@ fn main() -> ! {
     // bring-up. Cf. sa doc de module pour l'architecture ISR/boucle qu'il
     // impose — et pourquoi le rendu ne doit prendre aucune section
     // critique sur cette machine à deux cœurs.
-    let mut console = console::init(
+    //
+    // Un écran muet au boot n'a droit ni à une panique ni à un écran
+    // d'erreur (rien pour l'afficher) : le chien de garde relance la
+    // machine au bout du délai, le boot retente.
+    let mut console = match console::init(
         board.spi0,
         &mut board.resets,
         board.clocks.peripheral_clock.freq(),
         &mut board.timer,
-    );
+    ) {
+        Ok(console) => console,
+        Err(e) => {
+            defmt::error!("ecran indisponible au boot : {}", defmt::Debug2Format(&e));
+            watchdog.start(BOOT_RETRY_DELAY_US.micros());
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    };
 
     // `UiApp` n'est volontairement pas un static : il appartient à la
     // boucle du cœur 0, seule à le toucher. L'interruption ne communique
@@ -224,12 +279,19 @@ fn main() -> ! {
 
     // `Ds18b20Sensors::new` configure la résolution de chaque capteur
     // découvert ; un échec ici veut dire que le bus ne répond pas comme
-    // attendu, ce qui rend toute lecture de température douteuse.
+    // attendu, ce qui rend toute lecture de température douteuse. Pas de
+    // panique : l'écran d'erreur porte le message, et le chien de garde
+    // relance le boot au bout du délai — le bus a une chance de revenir,
+    // la machine ne reste pas morte sur une panne transitoire.
     let temperature_source = match Ds18b20Sensors::new(bus, board.timer, board.timer, TEMP_RESOLUTION) {
         Ok(sensors) => sensors,
         Err(e) => {
             defmt::error!("echec config DS18B20 : {}", defmt::Debug2Format(&e));
-            panic!("bus 1-Wire inutilisable");
+            boot_fatal(
+                &mut console,
+                &mut watchdog,
+                "Bus 1-Wire inutilisable au demarrage.",
+            );
         }
     };
 
@@ -264,9 +326,14 @@ fn main() -> ! {
     if let Err(e) = bme.init() {
         // Sans init, les coefficients de compensation ne sont pas chargés et
         // toutes les lectures seraient fausses — mieux vaut le dire ici que
-        // laisser `control_loop` paniquer sur un capteur muet.
+        // laisser `control_loop` tourner sur un capteur muet. L'écran
+        // d'erreur porte le message, le chien de garde relance le boot.
         defmt::error!("echec init BME280 (adresse 0x76) : {}", defmt::Debug2Format(&e));
-        panic!("capteur de pression indisponible");
+        boot_fatal(
+            &mut console,
+            &mut watchdog,
+            "Capteur de pression indisponible au demarrage.",
+        );
     }
     defmt::info!("BME280 initialise — source de pression");
 
@@ -292,6 +359,7 @@ fn main() -> ! {
         iso_pump: Pump::new(board::configure_relay_pin(PIN_PUMP_RELAY)),
         lights: Lights::new(board::configure_relay_pin(PIN_LIGHTS_RELAY)),
         glass_heater: WindowHeater::new(board::configure_relay_pin(PIN_WINDOW_HEATER_RELAY)),
+        fans: Fans::new(board::configure_relay_pin(PIN_FANS_RELAY)),
     };
 
     // ─── Cœur 1 : la boucle de contrôle ───────────────────────────────────
@@ -365,10 +433,6 @@ fn main() -> ! {
     // survie à une coupure est différée.
     let mut pending_save: Option<Settings> = None;
 
-    // Chien de garde : armé uniquement si le cœur 1 meurt (cf. bloc
-    // `core1_panicked` dans la boucle). Pris ici car le bloc
-    // d'initialisation des réglages consomme `board.fifo` avant.
-    let mut watchdog = board.watchdog;
     // `Some(())` une fois l'écran d'erreur affiché : plus rien ne
     // réalimente le chien de garde ensuite.
     let mut dead: Option<()> = None;
@@ -380,19 +444,40 @@ fn main() -> ! {
     let mut last_task = SystemTask::Idle;
     let mut last_activity = board.timer.get_counter();
 
+    // Santé des sondes au dernier sondage (bit i = index i) — journalisée
+    // à chaque changement, cf. la boucle.
+    let mut last_mute_mask = 0u8;
+
+    // Réinitialisation périodique de l'écran : la seule arme contre
+    // l'écran blanc intermittent (contrôleur déréglé par un crêux
+    // d'alim ou un parasite — il ne se répare que par sa séquence de
+    // boot, un power-cycle logiciel quoi). Toutes les 5 minutes :
+    // assez fréquent pour qu'une panne ne dure jamais plus que ça,
+    // assez rare pour que le gel de ~130 ms passe inaperçu.
+    const DISPLAY_REINIT_INTERVAL_US: u64 = 5 * 60 * 1_000_000;
+    let mut last_display_reinit = board.timer.get_counter();
+
     loop {
         // Une fois le cœur 1 mort, le seul geste qui reste : un clic
         // (n'importe quel événement encodeur — le bouton est le seul qui
         // en produise) coupe le chien de garde et force le reset au plus
-        // vite. Avant `pump`, qui sinon consommerait le clic pour le
-        // routeur — de toute façon hors jeu à ce point : plus personne
-        // ne navigue sur une machine dont le contrôle est mort.
-        if dead.is_some() && cloud_chamber_firmware::ui::console::next_event().is_some() {
-            defmt::error!("redemarrage demande par l'operateur");
-            watchdog.disable();
-            loop {
-                core::hint::spin_loop();
+        // vite.
+        //
+        // Et rien d'autre : pas de `pump`, pas de redraw. Poursuivre le
+        // corps normal de la boucle laissait un événement d'encodeur —
+        // vraie rotation ou parasite EMI sur les contacts — redessiner le
+        // menu PAR-DESSUS l'écran d'erreur, qui n'apparaissait donc
+        // jamais à l'opérateur (vu sur le terrain). Le chien de garde
+        // armé à l'affichage de l'erreur déclenche seul au délai.
+        if dead.is_some() {
+            if cloud_chamber_firmware::ui::console::next_event().is_some() {
+                defmt::error!("redemarrage demande par l'operateur");
+                watchdog.disable();
+                loop {
+                    core::hint::spin_loop();
+                }
             }
+            continue;
         }
 
         // Applique les événements empilés par l'interruption, journalise
@@ -439,18 +524,59 @@ fn main() -> ! {
         if error_pending && dead.is_none() {
             defmt::error!("coeur 1 arrete : affichage de l'ecran d'erreur");
             let screen = cloud_chamber_firmware::ui::screens::error::ErrorScreen;
-            let _ = console.display().render(|target| screen.draw(target));
+            let _ = console
+                .display()
+                .render(|target| screen.draw(target, "Boucle de controle arretee (panique)."));
             // 60 s de délai avant l'auto-reset : assez pour lire
             // l'écran, assez court pour ne pas laisser la chambre
-            // sans supervision très longtemps.
-            watchdog.start(60_000u32.micros());
+            // sans supervision très longtemps. En microsecondes —
+            // `60_000` valait 60 ms et l'écran disparaissait avant
+            // d'avoir été vu.
+            watchdog.start(60_000_000u32.micros());
             dead = Some(());
+        }
+
+        // ─── Santé des sondes : visibilité ────────────────────────────────
+        // Le cœur 1 publie à chaque sondage les capteurs qui n'ont pas
+        // répondu CE tour-là (bit i = index i). Un capteur brouillé ne
+        // doit se voir ni trop tard (à l'arrêt brutal) ni jamais (valeur
+        // figée à l'écran) : le journal dit qui et quand, l'écran Stats
+        // affiche `---`.
+        if state.snapshot.temp_mute_mask != last_mute_mask {
+            last_mute_mask = state.snapshot.temp_mute_mask;
+            if last_mute_mask != 0 {
+                defmt::warn!("capteurs muets au dernier sondage : {:#b} sur 8", last_mute_mask);
+            } else {
+                defmt::info!("tous les capteurs repondent");
+            }
+        }
+
+        // L'auto-guérison de l'écran : réinitialisation périodique du
+        // contrôleur, image renvoyée telle quelle (cf. le commentaire
+        // de `last_display_reinit`).
+        if (board.timer.get_counter() - last_display_reinit).to_micros()
+            >= DISPLAY_REINIT_INTERVAL_US
+        {
+            last_display_reinit = board.timer.get_counter();
+            console.reinit_display();
+            defmt::debug!("ecran reinitalise (entretien periodique)");
         }
 
         // Un changement de phase décidé par le cœur 1 ne passe par aucun
         // événement d'encodeur : sans ça l'écran de suivi resterait figé
         // jusqu'au prochain geste de l'opérateur.
+        //
+        // Le journal qui va avec : un retour à `Idle` en cours de cycle est
+        // silencieux à l'écran (pas de `Tripped`, pas de bannière) — sans
+        // cette trace, impossible de distinguer un abandon perte-sonde
+        // (`SENSOR_LOSS`) d'un timeout de phase, ni même de savoir de
+        // quelle phase la machine est tombée.
         if state.task != last_task {
+            defmt::info!(
+                "phase : {} -> {}",
+                defmt::Debug2Format(&last_task),
+                defmt::Debug2Format(&state.task)
+            );
             last_task = state.task;
             app.mark_dirty();
         }
@@ -462,11 +588,18 @@ fn main() -> ! {
         // mesures. Le menu était exclu tant que sa bande du bas était vide ;
         // elle porte maintenant les températures et l'état des actionneurs,
         // qui resteraient figés jusqu'au prochain geste de l'opérateur.
+        // L'écran COURBE dessine le même graphe que la veille : sans lui,
+        // la courbe ne s'anime qu'au prochain geste — figée, elle prêterait
+        // à croire que la machine ne rafraîchit plus.
         if state.new_data {
             app.sample(&state);
             if matches!(
                 app.current_screen(),
-                Screen::Stats | Screen::CurrentTask | Screen::MainMenu | Screen::Idle
+                Screen::Stats
+                    | Screen::CurrentTask
+                    | Screen::MainMenu
+                    | Screen::Graph
+                    | Screen::Idle
             ) {
                 app.mark_dirty();
             }
@@ -510,16 +643,12 @@ fn main() -> ! {
             let _ = bay_lights.set(on);
         }
 
-        if error_pending {
-            defmt::error!("coeur 1 arrete : affichage de l'ecran d'erreur");
-            let screen = cloud_chamber_firmware::ui::screens::error::ErrorScreen;
-            let _ = console.display().render(|target| screen.draw(target));
-            // Rien d'autre à redessiner par-dessus : le prochain tour
-            // relit `core1_panicked`, que la copie ci-dessus a déjà
-            // acquitté — le drapeau ne sera plus jamais levé.
-        }
-
-        if app.take_redraw_request() {
+        // L'écran d'erreur vient d'être dessiné dans ce même tour (le
+        // cœur 1 vient de mourir) : un redraw en attente — il peut
+        // traîner depuis un geste d'encodeur pomplé plus haut dans ce
+        // tour — l'écraserait avec le menu. Le garde de tête de boucle
+        // couvre les tours suivants, celui-ci couvre le tour courant.
+        if dead.is_none() && app.take_redraw_request() {
             console.redraw(&app, &state);
         }
     }

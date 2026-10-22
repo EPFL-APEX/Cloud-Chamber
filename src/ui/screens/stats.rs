@@ -31,7 +31,9 @@ use embedded_graphics::{
 
 use crate::{
     cloud_chamber_hal::config::{
-        CHAMBER_PRESSURE_IDX, CHAMBER_TEMP_IDX, NUMBER_OF_TEMP_SENSOR,
+        CHAMBER_PRESSURE_IDX, NUMBER_OF_TEMP_SENSOR, COMPRESSOR_IDX, COMPRESSOR_IN_IDX,
+        ISO_HEATER_IDX, PLATE_IN_IDX, PLATE_MID_IDX, PLATE_OUT_IDX, RADIATOR_IN_IDX,
+        RADIATOR_OUT_IDX,
     },
     logic::{cooling::CoolingPhase, security::SafetyCause, stopping::StoppingPhase},
     shared::data::{SharedState, SystemTask},
@@ -122,13 +124,13 @@ pub(super) fn expected_outputs(task: SystemTask) -> ExpectedOutputs {
 /// PHASE                        SORTIES
 /// HAUTE TENSION                ▪ COMP    ▪ HV
 /// ─────────────────────────────────────────────  y=56
-/// BASE CHAMBRE    |  CIBLE -40.0 C    CHAMBRE
+/// MILIEU PLAQUE   |  CIBLE -40.0 C    CHAMBRE
 /// -35.2 C        |  1013 hPa         FERMEE
 /// ─────────────────────────────────────────────  y=128
-/// SORTIE COMPRESSION  +42.3 │ SORTIE CONDENSEUR  +38.9
-/// ENTREE EVAPOR.      -12.4 │ SORTIE EVAPOR.    -18.7
-/// SONDE 5              +21.7 │ SONDE 6            +21.2
-/// SONDE 7              +20.9 │
+/// CHAUFFAGE IPA       +40.1 │ SORTIE RADIAT.     +38.9
+/// ENTREE RADIAT.      -12.4 │ COMPRESSEUR        +42.3
+/// SORTIE PLAQUE       +21.7 │ ENTREE COMP.       +20.9
+/// ENTREE PLAQUE       -18.7 │
 /// ```
 ///
 /// La grille et les alignements font le travail : libellés en petit
@@ -144,15 +146,20 @@ pub struct StatsScreen<'a> {
 /// n'ont pas de É. La sonde pilote (index 4) y a sa place pour garder
 /// l'alignement des index, mais elle est rendue en zone héroïne, pas
 /// dans la table.
+/// Libellés d'affichage des sondes, dans l'ordre du bus
+/// (`config::wiring::TEMP_LABELS`). Sans accents : les fontes `ascii`
+/// n'ont pas de É. La sonde pilote (milieu de plaque) y a sa place pour
+/// garder l'alignement des index, mais elle est rendue en zone héroïne,
+/// pas dans la table.
 const DISPLAY_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
-    "SORTIE COMPRESSION",
-    "SORTIE CONDENSEUR",
-    "ENTREE EVAPOR.",
-    "SORTIE EVAPOR.",
-    "BASE CHAMBRE",
-    "SONDE 5",
-    "SONDE 6",
-    "SONDE 7",
+    "SORTIE RADIAT.",
+    "CHAUFFAGE IPA",
+    "ENTREE RADIAT.",
+    "MILIEU PLAQUE",
+    "COMPRESSEUR",
+    "SORTIE PLAQUE",
+    "ENTREE COMP.",
+    "ENTREE PLAQUE",
 ];
 
 /// Ordonnées des deux filets qui découpent l'écran.
@@ -253,9 +260,13 @@ impl<'a> StatsScreen<'a> {
         }
 
         // ─── Héroïne : sonde pilote + métadonnées ────────────────────────────
+        // Une sonde muette au dernier sondage s'affiche comme absente :
+        // la valeur figée du dernier sondage réussi n'est pas une mesure
+        // vivante, elle ne doit pas se faire passer pour telle.
+        let pilot_mute = snap.temp_mute_mask & (1 << PLATE_MID_IDX) != 0;
         let mut val: String<12> = String::new();
-        match snap.temps[CHAMBER_TEMP_IDX] {
-            Some(m) if !m.value.is_nan() => {
+        match snap.temps[PLATE_MID_IDX] {
+            Some(m) if !m.value.is_nan() && !pilot_mute => {
                 let _ = write!(val, "{:+.1}", m.value.0);
                 let width = val.len() as i32 * 10;
                 Text::with_text_style(
@@ -306,11 +317,16 @@ impl<'a> StatsScreen<'a> {
         )
         .draw(display)?;
 
-        // Pression — `HectoPascal` porte bien des hPa (cf. doc du
-        // module pour l'unité, corrigée d'un affichage 1000× trop grand).
+        // Pas d'indicateur de fermeture de chambre : il n'y a pas de
+        // capteur, et ouvrir la chambre en cycle est une procédure
+        // suffisamment lourde pour qu'un départ dans cette situation ne
+        // peut pas passer inaperçu — l'indicateur n'apportait rien.
+        // La colonne à droite de la cible porte donc la pression.
+        // `HectoPascal` est bien des hPa (cf. doc de module pour
+        // l'unité, corrigée d'un affichage 1000× trop grand).
         Text::with_text_style(
             "PRESSION",
-            Point::new(172, 92),
+            Point::new(252, 64),
             MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
             top_style,
         )
@@ -325,24 +341,8 @@ impl<'a> StatsScreen<'a> {
         };
         Text::with_text_style(
             p_text,
-            Point::new(172, 104),
-            MonoTextStyle::new(&FONT_6X13, p_color),
-            top_style,
-        )
-        .draw(display)?;
-
-        // Fermeture de la chambre.
-        Text::with_text_style(
-            "CHAMBRE",
-            Point::new(252, 64),
-            MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
-            top_style,
-        )
-        .draw(display)?;
-        Text::with_text_style(
-            if snap.is_closed { "FERMEE" } else { "OUVERTE" },
             Point::new(252, 76),
-            MonoTextStyle::new(&FONT_6X13, theme::TEXT_COLOR),
+            MonoTextStyle::new(&FONT_6X13, p_color),
             top_style,
         )
         .draw(display)?;
@@ -364,12 +364,21 @@ impl<'a> StatsScreen<'a> {
         // ─── Table des autres sondes : deux colonnes ─────────────────────────
         // La sonde pilote vit en zone héroïne ; les sept autres, une par
         // cellule, libellé gris sur valeur blanche, valeurs alignées à
-        // droite de leur colonne.
+        // droite de leur colonne. L'ordre suit le trajet du fluide, pas
+        // le bus : la plaque (entrée/sortie) d'abord — c'est elle qu'on
+        // surveille —, puis le radiateur, le compresseur, et l'IPA en
+        // bas de tableau.
+        const TABLE_ORDER: [usize; 7] = [
+            PLATE_IN_IDX,
+            PLATE_OUT_IDX,
+            RADIATOR_IN_IDX,
+            RADIATOR_OUT_IDX,
+            COMPRESSOR_IDX,
+            COMPRESSOR_IN_IDX,
+            ISO_HEATER_IDX,
+        ];
         let mut cell = 0usize;
-        for i in 0..NUMBER_OF_TEMP_SENSOR {
-            if i == CHAMBER_TEMP_IDX {
-                continue;
-            }
+        for i in TABLE_ORDER {
             let col = (cell % 2) as i32;
             let row = (cell / 2) as i32;
             let x = MARGIN + col * 156;
@@ -383,13 +392,21 @@ impl<'a> StatsScreen<'a> {
             )
             .draw(display)?;
 
+            // Sonde muette au dernier sondage : `---`, comme une sonde
+            // jamais lue — la valeur figée ne doit pas se faire passer
+            // pour une mesure vivante.
+            let mute = snap.temp_mute_mask & (1 << i) != 0;
             let mut s: String<12> = String::new();
-            let (text, color) = match snap.temps[i] {
-                Some(m) if !m.value.is_nan() => {
-                    let _ = write!(s, "{:+.1}", m.value.0);
-                    (s.as_str(), theme::TEXT_COLOR)
+            let (text, color) = if mute {
+                ("---", theme::DIM_COLOR)
+            } else {
+                match snap.temps[i] {
+                    Some(m) if !m.value.is_nan() => {
+                        let _ = write!(s, "{:+.1}", m.value.0);
+                        (s.as_str(), theme::TEXT_COLOR)
+                    }
+                    _ => ("---", theme::DIM_COLOR),
                 }
-                _ => ("---", theme::DIM_COLOR),
             };
             Text::with_text_style(
                 text,

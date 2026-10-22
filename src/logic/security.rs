@@ -27,7 +27,7 @@
 //!   compteur à fuite atteint `TRIP_CYCLES` (anti-rebond — cf.
 //!   [`SafetyMonitor::check`]).
 
-use crate::cloud_chamber_hal::config::COMPRESSOR_OUT_IDX;
+use crate::cloud_chamber_hal::config::COMPRESSOR_IDX;
 use crate::cloud_chamber_hal::timer::Instant;
 use crate::cloud_chamber_hal::units::{Celsius, Unit};
 use crate::config::operating::SAFETY_TEMP_COMPRESSOR_MAX;
@@ -65,9 +65,9 @@ pub enum Severity {
 #[repr(usize)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, num_enum::TryFromPrimitive, num_enum::IntoPrimitive)]
 pub enum SafetyCause {
-    /// T° sortie compresseur au-dessus du seuil.
+    /// T° corps compresseur au-dessus du seuil.
     CompressorOverheat,
-    /// Sonde sortie-compresseur invalide depuis trop longtemps.
+    /// Sonde corps compresseur invalide depuis trop longtemps.
     ///
     /// Contrairement à une lecture ponctuelle invalide — ignorée, pour ne
     /// pas générer de faux positif au démarrage — une invalidité prolongée
@@ -103,7 +103,7 @@ impl SafetyCause {
 /// mesure la chambre (`CHAMBER_PRESSURE_IDX`), pas le circuit réfrigérant
 #[derive(Debug, Clone, Copy)]
 pub struct SafetyConfig {
-    /// T° sortie compresseur (°C) — surchauffe.
+    /// T° corps compresseur (°C) — surchauffe.
     pub temp_compressor_warn: Celsius,
     pub temp_compressor_alarm: Celsius,
 }
@@ -131,7 +131,7 @@ where
 }
 
 /// Moniteur de sécurité — anti-rebond, verrouillage, et suivi de fraîcheur
-/// du capteur sortie-compresseur.
+/// du capteur corps compresseur.
 pub struct SafetyMonitor {
     config: SafetyConfig,
     alarm_cycles: u8,
@@ -192,7 +192,7 @@ impl SafetyMonitor {
         if self.tripped { self.trip_cause } else { None }
     }
 
-    /// Mémorise la dernière fois que la sonde sortie-compresseur a répondu.
+    /// Mémorise la dernière fois que la sonde compresseur a répondu.
     ///
     /// Isolé du reste parce que c'est la seule partie de l'évaluation qui
     /// **écrit** : [`Self::evaluate`] et [`Self::severity_of`] ne font que
@@ -200,7 +200,7 @@ impl SafetyMonitor {
     /// verdict, et un test peut interroger un danger sans faire avancer
     /// l'état du moniteur.
     fn note_sensor_freshness(&mut self, history: &MeasurementHistory, now: Instant) {
-        if history.has_valid_reading(COMPRESSOR_OUT_IDX) {
+        if history.has_valid_reading(COMPRESSOR_IDX) {
             self.last_compressor_valid = now;
         }
     }
@@ -222,7 +222,7 @@ impl SafetyMonitor {
             // simplement rien dit encore — une alarme ici serait un faux
             // positif systématique. L'invalidité qui *dure* est le danger
             // d'en dessous.
-            SafetyCause::CompressorOverheat => match history.newest_valid(COMPRESSOR_OUT_IDX) {
+            SafetyCause::CompressorOverheat => match history.newest_valid(COMPRESSOR_IDX) {
                 Some(temp) => check_high(
                     temp,
                     self.config.temp_compressor_warn,
@@ -354,7 +354,7 @@ mod tests {
 
     fn history_with_compressor_temp(value_c: f32) -> MeasurementHistory {
         let mut h = MeasurementHistory::new();
-        h.temps[COMPRESSOR_OUT_IDX].push(Measurement::new(Instant::from_micros(0), Celsius(value_c)));
+        h.temps[COMPRESSOR_IDX].push(Measurement::new(Instant::from_micros(0), Celsius(value_c)));
         h
     }
 

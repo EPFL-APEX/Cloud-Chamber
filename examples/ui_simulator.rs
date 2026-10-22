@@ -29,7 +29,6 @@ fn render_status(state: SystemState, temp: f32) {
     snap.temps[0] = temp;
     snap.volts[0] = 24.0;
     snap.amps[0] = 2.5;
-    snap.is_closed = true;
     StatusScreen { snapshot: &snap, system_state: state }
         .draw(&mut display)
         .expect("status screen render failed");

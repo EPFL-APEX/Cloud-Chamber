@@ -209,7 +209,7 @@ impl UiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
+    use crate::cloud_chamber_hal::config::PLATE_MID_IDX;
     use crate::cloud_chamber_hal::measurement::Measurement;
     use crate::cloud_chamber_hal::timer::Instant;
     use crate::cloud_chamber_hal::units::Celsius;
@@ -377,7 +377,7 @@ mod tests {
             SystemTask::Idle,
         ] {
             let mut state = state_with(task);
-            state.snapshot.temps[CHAMBER_TEMP_IDX] =
+            state.snapshot.temps[PLATE_MID_IDX] =
                 Some(Measurement::new(Instant::from_micros(1), Celsius(-20.0)));
             let mut d = make_display();
             app.draw(&mut d, &state).unwrap();
@@ -493,7 +493,7 @@ mod tests {
             state.task = task;
         }
 
-        state.snapshot.temps[CHAMBER_TEMP_IDX] = Some(Measurement::new(
+        state.snapshot.temps[PLATE_MID_IDX] = Some(Measurement::new(
             Instant::from_micros(1),
             Celsius(simulated_chamber_temp(state.task)),
         ));
@@ -529,8 +529,8 @@ mod tests {
         // Retour au menu (rotation), puis nouveau clic sur le premier
         // item : la garde refuse le redémarrage, la machine garde son
         // avancement.
-        // BACK : rotation (sélection) puis clic (validation).
-        apply_live_action(&mut app, &mut state, LiveAction::RotateRight);
+        // BACK : rotation gauche (sélection) puis clic (validation).
+        apply_live_action(&mut app, &mut state, LiveAction::RotateLeft);
         apply_live_action(&mut app, &mut state, LiveAction::Click);
         apply_live_action(&mut app, &mut state, LiveAction::Click);
         // Purge la demande de démarrage refusée... et le clic a rouvert le
@@ -606,7 +606,7 @@ mod tests {
             LiveAction::Reset,
         ] {
             apply_live_action(&mut app, &mut state, action);
-            assert!(state.snapshot.temps[CHAMBER_TEMP_IDX].is_some(), "{action:?}");
+            assert!(state.snapshot.temps[PLATE_MID_IDX].is_some(), "{action:?}");
         }
     }
 
@@ -641,7 +641,7 @@ mod tests {
 
         let mut sync_readings = |state: &mut SharedState| {
             let t = simulated_chamber_temp(state.task);
-            state.snapshot.temps[CHAMBER_TEMP_IDX] =
+            state.snapshot.temps[PLATE_MID_IDX] =
                 Some(Measurement::new(Instant::from_micros(1), Celsius(t)));
         };
 
@@ -780,7 +780,7 @@ mod tests {
         snap!("arret_en_cours");
 
         // ─── 8. Voir les stats pendant l'arrêt, revenir ────────────────
-        act!(LiveAction::RotateRight, Screen::CurrentTask); // selection BACK
+        act!(LiveAction::RotateLeft, Screen::CurrentTask); // selection BACK
         act!(LiveAction::Click, Screen::MainMenu);
         snap!("menu_pendant_arret");
         // La selection menu est celle du lancement du cycle : Start(0),

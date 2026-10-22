@@ -15,7 +15,7 @@ use heapless::String;
 use embedded_graphics::{
     Drawable,
     draw_target::DrawTarget,
-    geometry::{OriginDimensions, Point, Size},
+    geometry::{OriginDimensions, Point},
     mono_font::{MonoTextStyle, ascii::{FONT_6X10, FONT_6X13, FONT_9X18_BOLD}},
     pixelcolor::Rgb565,
     primitives::{Line, Primitive, PrimitiveStyle},
@@ -100,6 +100,7 @@ impl InfoScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use embedded_graphics::geometry::Size;
     use embedded_graphics_simulator::SimulatorDisplay;
 
     fn make_display() -> SimulatorDisplay<Rgb565> {

@@ -76,7 +76,6 @@ use display_interface_spi::SPIInterface;
 use embedded_hal::delay::DelayNs;
 use embedded_hal::spi::MODE_0;
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
-use ili9341::{DisplaySize240x320, Ili9341, Orientation};
 use rp2040_hal::{
     self as hal,
     fugit::{ExtU32, HertzU32, RateExtU32},
@@ -94,7 +93,7 @@ use crate::config::wiring::{
     PIN_ENCODER_A, PIN_ENCODER_B, PIN_ENCODER_SW, PIN_SCREEN_CS, PIN_SCREEN_DC, PIN_SCREEN_MOSI,
     PIN_SCREEN_RESET, PIN_SCREEN_SCK,
 };
-use crate::drivers::display::{self, FramebufferedDisplay};
+use crate::drivers::display::{self, FramebufferedDisplay, Ili9341Panel};
 use crate::drivers::encoder::{EncoderEvent, RotaryEncoder};
 use crate::shared::data::{SHARED_STATE, SharedState};
 use crate::ui::app::UiApp;
@@ -198,34 +197,43 @@ fn TIMER_IRQ_0() {
 /// Monte l'écran : SPI0 à [`SCREEN_SPI_HZ`], ILI9341 en paysage,
 /// framebuffer RAM.
 ///
-/// # Panics
+/// # Panique
 ///
 /// - si `PIN_SCREEN_MOSI`/`PIN_SCREEN_SCK` ne sont pas les broches Tx/Sck
 ///   câblées en dur pour SPI0 sur ce silicium (table fixe du datasheet,
 ///   vérifiée par `ValidatedPinTx`/`ValidatedPinSck`) ;
-/// - si le framebuffer a déjà été réclamé — il est unique ;
-/// - si l'ILI9341 ne répond pas.
+/// - si le framebuffer a déjà été réclamé — il est unique.
 ///
-/// Les trois sont des défaillances de démarrage. L'écran est le seul canal
-/// d'information de l'opérateur : continuer sans lui, ce serait piloter à
-/// l'aveugle. `panic_probe` rend la cause visible sur la sonde.
+/// Ces deux-là sont des invariants statiques, pas des défaillances de
+/// terrain. La défaillance réelle — l'ILI9341 qui ne répond pas — est
+/// renvoyée en `Err` : l'appelant affiche son écran d'erreur (ou reset s'il
+/// n'a pas encore d'écran), il ne panique pas.
 pub fn init_display(
     spi0: pac::SPI0,
     resets: &mut pac::RESETS,
     peripheral_freq: HertzU32,
     delay: &mut impl DelayNs,
-) -> OperatorDisplay {
+) -> Result<OperatorDisplay, display_interface::DisplayError> {
     // Safety : seule construction de `Pin` pour ces broches. `Board::pins`
     // réserve bien un champ typé par numéro, mais aucun n'est lu ni écrit —
     // cf. la note de sûreté commune dans `board`.
-    let tx = unsafe { new_pin(DynPinId { bank: DynBankId::Bank0, num: PIN_SCREEN_MOSI }) }
+    //
+    // Force de commande 12 mA pour SCK/MOSI : à 32 MHz sur fils volants,
+    // les 4 mA par défaut laissent des fronts mous — un front lent près
+    // d'une commutation de relais, c'est un octet corrompu, et un octet
+    // corrompu côté ILI9341 peut se faire prendre pour une commande
+    // (l'écran blanc intermittent constaté au bench a ce profil-là :
+    // machine vivante, écran mort jusqu'au prochain power-cycle).
+    let mut tx = unsafe { new_pin(DynPinId { bank: DynBankId::Bank0, num: PIN_SCREEN_MOSI }) }
         .try_into_function::<FunctionSpi>()
         .ok()
         .expect("SPI est une fonction valide sur toute broche de Bank0");
-    let sck = unsafe { new_pin(DynPinId { bank: DynBankId::Bank0, num: PIN_SCREEN_SCK }) }
+    tx.set_drive_strength(rp2040_hal::gpio::OutputDriveStrength::TwelveMilliAmps);
+    let mut sck = unsafe { new_pin(DynPinId { bank: DynBankId::Bank0, num: PIN_SCREEN_SCK }) }
         .try_into_function::<FunctionSpi>()
         .ok()
         .expect("SPI est une fonction valide sur toute broche de Bank0");
+    sck.set_drive_strength(rp2040_hal::gpio::OutputDriveStrength::TwelveMilliAmps);
 
     let tx = ValidatedPinTx::validate(tx, &spi0).unwrap_or_else(|_| {
         panic!("PIN_SCREEN_MOSI (GP{}) n'est pas une broche Tx/MOSI valide pour SPI0", PIN_SCREEN_MOSI)
@@ -261,16 +269,13 @@ pub fn init_display(
         SCREEN_SPI_HZ,
     );
 
-    let ili = match Ili9341::new(iface, rst, delay, Orientation::Landscape, DisplaySize240x320) {
-        Ok(ili) => ili,
-        Err(e) => {
-            defmt::error!("echec init ecran : {}", defmt::Debug2Format(&e));
-            panic!("ecran indisponible");
-        }
-    };
+    let ili = Ili9341Panel::new(iface, rst, delay).map_err(|e| {
+        defmt::error!("echec init ecran : {}", defmt::Debug2Format(&e));
+        e
+    })?;
 
     let framebuffer = display::take_framebuffer().expect("le framebuffer n'est reclame qu'ici");
-    FramebufferedDisplay::new(ili, framebuffer)
+    Ok(FramebufferedDisplay::new(ili, framebuffer))
 }
 
 /// Arme la scrutation de l'encodeur : configure A/B/SW en entrée pull-up,
@@ -338,16 +343,21 @@ pub struct Console {
 ///
 /// L'ordre compte : l'écran d'abord, pour que le premier rendu puisse
 /// partir avant que l'encodeur ne commence à produire des événements.
+///
+/// Renvoie `Err` sans paniquer si l'écran ne répond pas : le montage du
+/// contrôleur n'affecte pas les sorties de puissance, ce n'est pas une
+/// urgence de panique — l'appelant reset et retente, un écran raté au
+/// boot n'a jamais tué une chambre.
 pub fn init(
     spi0: pac::SPI0,
     resets: &mut pac::RESETS,
     peripheral_freq: HertzU32,
     timer: &mut hal::Timer,
-) -> Console {
-    let display = init_display(spi0, resets, peripheral_freq, timer);
+) -> Result<Console, display_interface::DisplayError> {
+    let display = init_display(spi0, resets, peripheral_freq, timer)?;
     start_encoder(timer);
     // `hal::Timer` est `Copy` — juste un accès aux registres matériels.
-    Console { display, timer: *timer }
+    Ok(Console { display, timer: *timer })
 }
 
 impl Console {
@@ -412,6 +422,23 @@ impl Console {
             stats.draw_us / 1_000,
             stats.transfer_us / 1_000,
         );
+    }
+
+    /// Réinitialise le contrôleur ILI9341 et renvoie l'image courante.
+    ///
+    /// Le remède de l'écran blanc intermittent : un contrôleur déréglé
+    /// par un crêux d'alimentation ou un parasite EMI ne se répare que par
+    /// sa séquence d'initialisation — la même qu'au boot, orientation
+    /// comprise. Le framebuffer garde le dernier écran rendu : la dalle
+    /// retrouve l'image sans redessiner quoi que ce soit.
+    ///
+    /// ~130 ms de gel (délais de reset du datasheet) + un transfert plein
+    /// écran. L'appelant choisit le moment — périodique, jamais pendant un
+    /// geste de l'opérateur.
+    pub fn reinit_display(&mut self) {
+        if let Err(e) = self.display.reinit(&mut self.timer) {
+            defmt::warn!("reinit ecran : {}", defmt::Debug2Format(&e));
+        }
     }
 
     /// L'écran nu, pour les usages qui ne passent pas par [`UiApp`] —

@@ -2,7 +2,7 @@ use crate::cloud_chamber_hal::sensors::{BatchSensor, DeferredBatchSensor, Sensor
 use crate::cloud_chamber_hal::measurement::Measurement;
 use crate::cloud_chamber_hal::units::{Celsius, HectoPascal};
 use crate::cloud_chamber_hal::config::{
-    CHAMBER_PRESSURE_IDX, CHAMBER_TEMP_IDX, COMPRESSOR_OUT_IDX, ControlSensor, ISO_TEMP_IDX,
+    CHAMBER_PRESSURE_IDX, PLATE_MID_IDX, COMPRESSOR_IDX, ControlSensor, ISO_HEATER_IDX,
     NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR,
 };
 use crate::logic::timing::CONTROL_LOOP_HISTORY_SIZE;
@@ -83,9 +83,9 @@ impl MeasurementHistory {
     /// l'enum.
     pub fn has_valid_reading_for(&self, sensor: ControlSensor) -> bool {
         match sensor {
-            ControlSensor::ChamberTemp => self.has_valid_reading(CHAMBER_TEMP_IDX),
-            ControlSensor::CompressorOut => self.has_valid_reading(COMPRESSOR_OUT_IDX),
-            ControlSensor::IsoTemp => self.has_valid_reading(ISO_TEMP_IDX),
+            ControlSensor::PlateMid => self.has_valid_reading(PLATE_MID_IDX),
+            ControlSensor::Compressor => self.has_valid_reading(COMPRESSOR_IDX),
+            ControlSensor::IsoHeater => self.has_valid_reading(ISO_HEATER_IDX),
             ControlSensor::ChamberPressure => self.has_valid_pressure(CHAMBER_PRESSURE_IDX),
         }
     }
@@ -197,7 +197,7 @@ impl MeasurementHistory {
         spans_window && n >= 2 && (max - min) <= tolerance.0
     }
 
-    /// Depuis combien de temps la sonde base-chambre n'a pas fourni de
+    /// Depuis combien de temps la sonde milieu de plaque n'a pas fourni de
     /// lecture. Pas de champ dédié à maintenir ailleurs : le ring buffer ne
     /// se met à jour que sur une lecture réussie (`push_if_newer` ignore
     /// les absences), son horodatage le plus récent EST la fraîcheur
@@ -209,8 +209,8 @@ impl MeasurementHistory {
     /// particulier à traiter chez lui. C'est cette convention que la méthode
     /// encapsule, sa raison d'exister, plutôt que d'exposer l'horodatage
     /// brut et de laisser chaque appelant la réinventer.
-    pub fn chamber_stale_duration(&self, now: Instant) -> Duration {
-        let last_valid = self.temps[CHAMBER_TEMP_IDX]
+    pub fn plate_stale_duration(&self, now: Instant) -> Duration {
+        let last_valid = self.temps[PLATE_MID_IDX]
             .get(0)
             .map(|m| m.time)
             .unwrap_or(Instant::from_micros(0));
@@ -257,8 +257,23 @@ where
         }
 
         if probing_plan.probe_temperature {
-            for (slot, reading) in result.temps.iter_mut().zip(self.temperature_source.read_result()) {
+            // Le masque de santé : bit i à 1 si la sonde i n'a pas répondu
+            // à CE sondage. La valeur de `temps[i]` reste la dernière reçue
+            // (fusion côté publication) — c'est le masque qui dit ce qui
+            // vit, pour l'écran et le journal. Les sondes muettes n'ont pas
+            // non plus à faire tomber la machine : un ou deux silences par
+            // tour sont tolérés par construction, le danger ne vient qu'avec
+            // la durée (`CompressorSensorLost`, `sensor_loss_abort`).
+            for (i, (slot, reading)) in result
+                .temps
+                .iter_mut()
+                .zip(self.temperature_source.read_result())
+                .enumerate()
+            {
                 *slot = reading.ok();
+                if slot.is_none() {
+                    result.temp_mute_mask |= 1 << i;
+                }
             }
         }
 
@@ -280,26 +295,26 @@ mod tests {
         Instant::from_micros(s * 1_000_000)
     }
 
-    // ─── chamber_stale_duration ─────────────────────────────────────────
+    // ─── plate_stale_duration ─────────────────────────────────────────
 
     #[test]
-    fn chamber_stale_is_the_full_uptime_when_never_read() {
+    fn plate_stale_is_the_full_uptime_when_never_read() {
         let history = MeasurementHistory::new();
-        assert_eq!(history.chamber_stale_duration(at_secs(60)), Duration::from_secs(60));
+        assert_eq!(history.plate_stale_duration(at_secs(60)), Duration::from_secs(60));
     }
 
     #[test]
-    fn chamber_stale_reflects_last_valid_reading() {
+    fn plate_stale_reflects_last_valid_reading() {
         let mut history = MeasurementHistory::new();
-        history.temps[CHAMBER_TEMP_IDX].push(Measurement::new(at_secs(10), Celsius(-20.0)));
-        assert_eq!(history.chamber_stale_duration(at_secs(15)), Duration::from_secs(5));
+        history.temps[PLATE_MID_IDX].push(Measurement::new(at_secs(10), Celsius(-20.0)));
+        assert_eq!(history.plate_stale_duration(at_secs(15)), Duration::from_secs(5));
     }
 
     #[test]
-    fn chamber_stale_is_zero_right_after_a_reading() {
+    fn plate_stale_is_zero_right_after_a_reading() {
         let mut history = MeasurementHistory::new();
-        history.temps[CHAMBER_TEMP_IDX].push(Measurement::new(at_secs(10), Celsius(-20.0)));
-        assert!(history.chamber_stale_duration(at_secs(10)).is_zero());
+        history.temps[PLATE_MID_IDX].push(Measurement::new(at_secs(10), Celsius(-20.0)));
+        assert!(history.plate_stale_duration(at_secs(10)).is_zero());
     }
 
     // ─── has_valid_reading / is_at_or_below ─────────────────────────────
@@ -308,22 +323,22 @@ mod tests {
     fn a_fresh_history_has_no_valid_reading() {
         // Les buffers s'initialisent à NaN : un emplacement occupé ne prouve
         // rien, c'est tout l'objet de la garde.
-        assert!(!MeasurementHistory::new().has_valid_reading(CHAMBER_TEMP_IDX));
+        assert!(!MeasurementHistory::new().has_valid_reading(PLATE_MID_IDX));
     }
 
     #[test]
     fn a_reading_makes_the_sensor_valid() {
         let mut history = MeasurementHistory::new();
-        history.temps[CHAMBER_TEMP_IDX].push(Measurement::new(at_secs(1), Celsius(20.0)));
-        assert!(history.has_valid_reading(CHAMBER_TEMP_IDX));
+        history.temps[PLATE_MID_IDX].push(Measurement::new(at_secs(1), Celsius(20.0)));
+        assert!(history.has_valid_reading(PLATE_MID_IDX));
     }
 
     #[test]
     fn a_nan_reading_does_not_count_as_valid() {
         let mut history = MeasurementHistory::new();
-        history.temps[CHAMBER_TEMP_IDX]
+        history.temps[PLATE_MID_IDX]
             .push(Measurement::new(at_secs(1), Celsius(f32::NAN)));
-        assert!(!history.has_valid_reading(CHAMBER_TEMP_IDX));
+        assert!(!history.has_valid_reading(PLATE_MID_IDX));
     }
 
     #[test]
@@ -331,14 +346,14 @@ mod tests {
         let mut history = MeasurementHistory::new();
         let target = Celsius(-20.0);
 
-        history.temps[CHAMBER_TEMP_IDX].push(Measurement::new(at_secs(1), Celsius(-19.9)));
-        assert!(!history.is_at_or_below(CHAMBER_TEMP_IDX, target), "au-dessus");
+        history.temps[PLATE_MID_IDX].push(Measurement::new(at_secs(1), Celsius(-19.9)));
+        assert!(!history.is_at_or_below(PLATE_MID_IDX, target), "au-dessus");
 
-        history.temps[CHAMBER_TEMP_IDX].push(Measurement::new(at_secs(2), target));
-        assert!(history.is_at_or_below(CHAMBER_TEMP_IDX, target), "exactement dessus");
+        history.temps[PLATE_MID_IDX].push(Measurement::new(at_secs(2), target));
+        assert!(history.is_at_or_below(PLATE_MID_IDX, target), "exactement dessus");
 
-        history.temps[CHAMBER_TEMP_IDX].push(Measurement::new(at_secs(3), Celsius(-25.0)));
-        assert!(history.is_at_or_below(CHAMBER_TEMP_IDX, target), "en dessous");
+        history.temps[PLATE_MID_IDX].push(Measurement::new(at_secs(3), Celsius(-25.0)));
+        assert!(history.is_at_or_below(PLATE_MID_IDX, target), "en dessous");
     }
 
     /// Fail-closed : sans donnée exploitable, le seuil n'est jamais franchi.
@@ -346,12 +361,12 @@ mod tests {
     #[test]
     fn a_missing_or_nan_reading_never_crosses_the_threshold() {
         let history = MeasurementHistory::new();
-        assert!(!history.is_at_or_below(CHAMBER_TEMP_IDX, Celsius(1000.0)));
+        assert!(!history.is_at_or_below(PLATE_MID_IDX, Celsius(1000.0)));
 
         let mut history = MeasurementHistory::new();
-        history.temps[CHAMBER_TEMP_IDX]
+        history.temps[PLATE_MID_IDX]
             .push(Measurement::new(at_secs(1), Celsius(f32::NAN)));
-        assert!(!history.is_at_or_below(CHAMBER_TEMP_IDX, Celsius(1000.0)));
+        assert!(!history.is_at_or_below(PLATE_MID_IDX, Celsius(1000.0)));
     }
 
     #[test]
@@ -363,12 +378,12 @@ mod tests {
 
     // ─── is_temp_stable ─────────────────────────────────────────────────
 
-    /// Remplit `CHAMBER_TEMP_IDX` avec `count` echantillons espaces de
+    /// Remplit `PLATE_MID_IDX` avec `count` echantillons espaces de
     /// `step_s`, du plus ancien au plus recent, en terminant a `t = 0 +
     /// count * step_s`.
     fn fill_chamber(history: &mut MeasurementHistory, count: u64, step_s: u64, value_c: f32) {
         for i in 1..=count {
-            history.temps[CHAMBER_TEMP_IDX]
+            history.temps[PLATE_MID_IDX]
                 .push(Measurement::new(at_secs(i * step_s), Celsius(value_c)));
         }
     }
@@ -379,7 +394,7 @@ mod tests {
         // 80 echantillons a 1 s : la chaine enjambe largement 60 s.
         fill_chamber(&mut history, 80, 1, -40.0);
         assert!(history.is_temp_stable(
-            CHAMBER_TEMP_IDX, Duration::from_secs(60), Celsius(1.0)
+            PLATE_MID_IDX, Duration::from_secs(60), Celsius(1.0)
         ));
     }
 
@@ -390,7 +405,7 @@ mod tests {
         // 60 s n'est pas couverte, meme si la valeur ne bouge pas.
         fill_chamber(&mut history, 10, 1, -40.0);
         assert!(!history.is_temp_stable(
-            CHAMBER_TEMP_IDX, Duration::from_secs(60), Celsius(1.0)
+            PLATE_MID_IDX, Duration::from_secs(60), Celsius(1.0)
         ));
     }
 
@@ -403,7 +418,7 @@ mod tests {
         let mut history = MeasurementHistory::new();
         fill_chamber(&mut history, 4, 30, -40.0);
         assert!(history.is_temp_stable(
-            CHAMBER_TEMP_IDX, Duration::from_secs(60), Celsius(1.0)
+            PLATE_MID_IDX, Duration::from_secs(60), Celsius(1.0)
         ));
     }
 
@@ -411,9 +426,9 @@ mod tests {
     fn unstable_when_the_spread_exceeds_the_tolerance() {
         let mut history = MeasurementHistory::new();
         fill_chamber(&mut history, 80, 1, -40.0);
-        history.temps[CHAMBER_TEMP_IDX].push(Measurement::new(at_secs(81), Celsius(-35.0)));
+        history.temps[PLATE_MID_IDX].push(Measurement::new(at_secs(81), Celsius(-35.0)));
         assert!(!history.is_temp_stable(
-            CHAMBER_TEMP_IDX, Duration::from_secs(60), Celsius(1.0)
+            PLATE_MID_IDX, Duration::from_secs(60), Celsius(1.0)
         ));
     }
 
@@ -421,17 +436,17 @@ mod tests {
     fn a_nan_in_the_window_fails_closed() {
         let mut history = MeasurementHistory::new();
         fill_chamber(&mut history, 40, 1, -40.0);
-        history.temps[CHAMBER_TEMP_IDX]
+        history.temps[PLATE_MID_IDX]
             .push(Measurement::new(at_secs(41), Celsius(f32::NAN)));
         fill_chamber_from(&mut history, 42, 80, -40.0);
         assert!(!history.is_temp_stable(
-            CHAMBER_TEMP_IDX, Duration::from_secs(60), Celsius(1.0)
+            PLATE_MID_IDX, Duration::from_secs(60), Celsius(1.0)
         ));
     }
 
     fn fill_chamber_from(history: &mut MeasurementHistory, from_s: u64, to_s: u64, value_c: f32) {
         for i in from_s..=to_s {
-            history.temps[CHAMBER_TEMP_IDX]
+            history.temps[PLATE_MID_IDX]
                 .push(Measurement::new(at_secs(i), Celsius(value_c)));
         }
     }
@@ -440,7 +455,7 @@ mod tests {
     fn a_fresh_history_is_never_stable() {
         let history = MeasurementHistory::new();
         assert!(!history.is_temp_stable(
-            CHAMBER_TEMP_IDX, Duration::from_secs(60), Celsius(1.0)
+            PLATE_MID_IDX, Duration::from_secs(60), Celsius(1.0)
         ));
     }
 

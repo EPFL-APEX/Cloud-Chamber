@@ -163,16 +163,16 @@ pub fn handle_command(cmd: &str) -> Reply {
 /// Lecture des mesures courantes — ici plutôt que dans [`state_line`]
 /// pour que `decide` reste pure et testable sans `static`.
 pub fn snapshot_line() -> Reply {
-    use crate::cloud_chamber_hal::config::{CHAMBER_PRESSURE_IDX, CHAMBER_TEMP_IDX, COMPRESSOR_OUT_IDX, ISO_TEMP_IDX};
+    use crate::cloud_chamber_hal::config::{CHAMBER_PRESSURE_IDX, PLATE_MID_IDX, COMPRESSOR_IDX, ISO_HEATER_IDX};
     let snapshot = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot);
     let mut s = String::new();
     let _ = core::fmt::Write::write_fmt(
         &mut s,
         format_args!(
             "MEAS T={} C={} I={} P={}\r\n",
-            fmt_measure(snapshot.temps[CHAMBER_TEMP_IDX].map(|m| m.value.0), "C"),
-            fmt_measure(snapshot.temps[COMPRESSOR_OUT_IDX].map(|m| m.value.0), "C"),
-            fmt_measure(snapshot.temps[ISO_TEMP_IDX].map(|m| m.value.0), "C"),
+            fmt_measure(snapshot.temps[PLATE_MID_IDX].map(|m| m.value.0), "C"),
+            fmt_measure(snapshot.temps[COMPRESSOR_IDX].map(|m| m.value.0), "C"),
+            fmt_measure(snapshot.temps[ISO_HEATER_IDX].map(|m| m.value.0), "C"),
             fmt_measure(snapshot.press[CHAMBER_PRESSURE_IDX].map(|m| m.value.0), "hPa"),
         ),
     );

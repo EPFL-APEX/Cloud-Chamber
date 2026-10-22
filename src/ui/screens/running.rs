@@ -47,7 +47,7 @@ use embedded_graphics::{
     text::{Baseline, Text, TextStyleBuilder},
 };
 
-use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
+use crate::cloud_chamber_hal::config::PLATE_MID_IDX;
 use crate::config::operating::REGULATION_BAND_C;
 use crate::logic::cooling::CoolingPhase;
 use crate::logic::stopping::StoppingPhase;
@@ -182,12 +182,22 @@ pub enum RunningButton {
 }
 
 impl RunningButton {
-    /// L'autre bouton — la rotation va à l'autre, quel que soit le sens :
-    /// deux boutons, pas d'ordre, un toggle. Sans ça, tourner dans un
-    /// sens sélectionnait BACK et aucun geste ne revenait sur l'action.
-    pub fn other(self) -> Self {
+    /// Un cran vers la gauche de l'écran — sans boucler : sur le bouton
+    /// le plus à gauche, un cran de plus ne fait rien. Un aller-retour
+    /// involontaire sur les commandes d'un cycle en cours coûte plus
+    /// cher qu'une rotation ignorée.
+    pub fn turn_left(self) -> Self {
         match self {
             RunningButton::Action => RunningButton::Back,
+            RunningButton::Back => RunningButton::Back,
+        }
+    }
+
+    /// Un cran vers la droite de l'écran — même clamp : sur le bouton
+    /// le plus à droite, un cran de plus ne fait rien.
+    pub fn turn_right(self) -> Self {
+        match self {
+            RunningButton::Action => RunningButton::Action,
             RunningButton::Back => RunningButton::Action,
         }
     }
@@ -245,10 +255,13 @@ impl<'a> RunningScreen<'a> {
             .draw(display)?;
         }
 
-        // Sonde pilote, alignée à droite du bandeau.
+        // Sonde pilote, alignée à droite du bandeau. Mue au dernier
+        // sondage : `---`, comme jamais lue — une valeur figée ne se
+        // fait pas passer pour une mesure vivante.
+        let pilot_mute = self.state.snapshot.temp_mute_mask & (1 << PLATE_MID_IDX) != 0;
         let mut pilot: String<16> = String::new();
-        match self.state.snapshot.temps[CHAMBER_TEMP_IDX] {
-            Some(m) if !m.value.is_nan() => {
+        match self.state.snapshot.temps[PLATE_MID_IDX] {
+            Some(m) if !m.value.is_nan() && !pilot_mute => {
                 let _ = write!(pilot, "{:+.1} C", m.value.0);
                 (pilot.as_str(), theme::TEXT_COLOR)
             }
@@ -412,14 +425,14 @@ impl<'a> RunningScreen<'a> {
         let target = settings::get().saturation_target;
 
         Text::with_text_style(
-            "BASE CHAMBRE",
+            "MILIEU PLAQUE",
             Point::new(MARGIN, 56),
             MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
             top_style,
         )
         .draw(display)?;
 
-        match self.state.snapshot.temps[CHAMBER_TEMP_IDX] {
+        match self.state.snapshot.temps[PLATE_MID_IDX] {
             Some(m) if !m.value.is_nan() => {
                 let mut v: String<12> = String::new();
                 let _ = write!(v, "{:+.1}", m.value.0);
@@ -523,14 +536,14 @@ impl<'a> RunningScreen<'a> {
         let top_style = TextStyleBuilder::new().baseline(Baseline::Top).build();
 
         Text::with_text_style(
-            "BASE CHAMBRE",
+            "MILIEU PLAQUE",
             Point::new(MARGIN, 56),
             MonoTextStyle::new(&FONT_6X10, theme::DIM_COLOR),
             top_style,
         )
         .draw(display)?;
         let mut v: String<12> = String::new();
-        let hero = match self.state.snapshot.temps[CHAMBER_TEMP_IDX] {
+        let hero = match self.state.snapshot.temps[PLATE_MID_IDX] {
             Some(m) if !m.value.is_nan() => {
                 let _ = write!(v, "{:+.1}", m.value.0);
                 (v.as_str(), theme::TEXT_COLOR)
@@ -759,7 +772,7 @@ mod tests {
     fn draws_with_a_chamber_reading_without_error() {
         let mut d = make_display();
         let mut state = state_with(SystemTask::Cooling(CoolingPhase::HighVoltage));
-        state.snapshot.temps[CHAMBER_TEMP_IDX] =
+        state.snapshot.temps[PLATE_MID_IDX] =
             Some(Measurement::new(Instant::from_micros(1), Celsius(-32.4)));
         RunningScreen { state: &state, selected: RunningButton::Action }.draw(&mut d).unwrap();
     }
@@ -770,7 +783,7 @@ mod tests {
 
         let mut display = make_display();
         let mut state = state_with(SystemTask::Cooling(CoolingPhase::SaturatingAirWithIpa));
-        state.snapshot.temps[CHAMBER_TEMP_IDX] =
+        state.snapshot.temps[PLATE_MID_IDX] =
             Some(Measurement::new(Instant::from_micros(1), Celsius(-28.6)));
         RunningScreen { state: &state, selected: RunningButton::Action }.draw(&mut display)?;
 

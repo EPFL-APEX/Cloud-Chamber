@@ -2,7 +2,7 @@
 //! capteur/actionneur est branché sur cette installation précise.
 //!
 //! Les compteurs (`NUMBER_OF_TEMP_SENSOR`...) et les index de rôle
-//! (`CHAMBER_TEMP_IDX`...) restent dans
+//! (`PLATE_MID_IDX`...) restent dans
 //! [`crate::cloud_chamber_hal::config`] plutôt qu'ici : le code générique du
 //! HAL (`Sensors<Tmp, Prs>`, `RingBuffer<T, N>`...) en a besoin comme
 //! paramètres de type, et le HAL ne doit pas dépendre de `crate::config`
@@ -32,6 +32,8 @@ pub const PIN_ISO_HEATER_RELAY: u8 = 9;
 pub const PIN_PUMP_RELAY: u8 = 7;
 pub const PIN_LIGHTS_RELAY: u8 = 8;
 pub const PIN_WINDOW_HEATER_RELAY: u8 = 10;
+/// Ventilateurs du radiateur (relais, actif à l'état haut).
+pub const PIN_FANS_RELAY: u8 = 6;
 /// Bande LED du compartiment machine (MOSFET actif haut), pour voir la
 /// mécanique fonctionner. Commande opérateur uniquement depuis le menu —
 /// hors du cycle automatique, contrairement à `PIN_LIGHTS_RELAY` (éclairage
@@ -46,7 +48,7 @@ pub const PIN_LED_STRIP: u8 = 4;
 /// l'empêche : `gpio::new_pin` prend un numéro, pas un jeton unique.
 /// Ce tableau doit rester en phase avec les constantes ; une broche ajoutée
 /// et oubliée ici n'est simplement pas vérifiée.
-const ASSIGNED_PINS: [(&str, u8); 18] = [
+const ASSIGNED_PINS: [(&str, u8); 19] = [
     ("PIN_ONEWIRE", PIN_ONEWIRE),
     ("PIN_I2C_SDA", PIN_I2C_SDA),
     ("PIN_I2C_SCL", PIN_I2C_SCL),
@@ -56,6 +58,7 @@ const ASSIGNED_PINS: [(&str, u8); 18] = [
     ("PIN_PUMP_RELAY", PIN_PUMP_RELAY),
     ("PIN_LIGHTS_RELAY", PIN_LIGHTS_RELAY),
     ("PIN_WINDOW_HEATER_RELAY", PIN_WINDOW_HEATER_RELAY),
+    ("PIN_FANS_RELAY", PIN_FANS_RELAY),
     ("PIN_LED_STRIP", PIN_LED_STRIP),
     ("PIN_ENCODER_A", PIN_ENCODER_A),
     ("PIN_ENCODER_B", PIN_ENCODER_B),
@@ -120,12 +123,12 @@ pub const CHAMBER_PRESSURE_MAX: f32 = 1.0;
 // ─── Labels des capteurs de température ──────────────────────────────────────
 
 pub const TEMP_LABELS: [&str; NUMBER_OF_TEMP_SENSOR] = [
-    "sortie_compresseur",
-    "sortie_condenseur",
-    "entree_evaporateur",
-    "sortie_evaporateur",
-    "base_chambre",
-    "",
-    "",
-    "",
+    "sortie radiateur",
+    "chauffage ipa",
+    "entree radiateur",
+    "milieu plaque",
+    "compresseur",
+    "sortie plaque",
+    "entree compresseur",
+    "entree plaque",
 ];

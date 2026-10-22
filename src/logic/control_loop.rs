@@ -1,7 +1,7 @@
 //! Point d'entrée Core0 : boucle de sondage + machine à états + actionneurs.
 
 use crate::{cloud_chamber_hal::{
-    actuators::{ActuatorPlan, Actuators, BinaryActuator, TargetActuator}, config::{CHAMBER_TEMP_IDX, ISO_TEMP_IDX, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR}, sensors::{BatchSensor, DeferredBatchSensor, Sensors}, timer::MonotonicTimer, units::{Celsius, HectoPascal},
+    actuators::{ActuatorPlan, Actuators, BinaryActuator, TargetActuator}, config::{PLATE_MID_IDX, ISO_HEATER_IDX, NUMBER_OF_PRESSURE_SENSOR, NUMBER_OF_TEMP_SENSOR}, sensors::{BatchSensor, DeferredBatchSensor, Sensors}, timer::MonotonicTimer, units::{Celsius, HectoPascal},
 }};
 use crate::logic::timing::CONTROL_LOOP_HISTORY_SIZE;
 use crate::logic::phase_clock::{PhaseClock, advance};
@@ -10,6 +10,7 @@ use crate::shared::data::{SHARED_STATE, SensorSnapshot, SystemTask};
 use crate::shared::settings;
 
 use super::probing::{MeasurementHistory, ProbingPlan};
+use super::stopping::RunningOutputs;
 
 /// Point d'entrée Core0 : boucle de sondage + machine à états.
 ///
@@ -27,9 +28,9 @@ use super::probing::{MeasurementHistory, ProbingPlan};
 /// `drivers::flash_rp2040::park_if_requested`). Le type reste une fermeture
 /// quelconque : `logic/` n'a pas à savoir qu'il existe une flash, et les
 /// tests passent une fermeture vide.
-pub fn run<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Clk, Y>(
+pub fn run<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Fans, Clk, Y>(
     mut sensors: Sensors<Ts, Ps>,
-    mut actuators: Actuators<Hv, Cool, Iso, Pump, Lights, Glass>,
+    mut actuators: Actuators<Hv, Cool, Iso, Pump, Lights, Glass, Fans>,
     clock: Clk,
     mut yield_core: Y,
 ) -> !
@@ -42,29 +43,21 @@ where
     Pump: BinaryActuator,
     Lights: BinaryActuator,
     Glass: BinaryActuator,
+    Fans: BinaryActuator,
     Clk: MonotonicTimer,
     Y: FnMut(),
 {
-    // Initial values, mais est-ce qu'on veut vraiment ça ?
+    // Premier sondage : sans panique. Une sonde muette au démarrage n'est
+    // pas une erreur de logiciel — le bus 1-Wire brouillé un instant, une
+    // sonde qui répond mal — et la machine a déjà tout pour y répondre
+    // sans mourir : les phases fail-closed refusent d'avancer sur des
+    // données manquantes (`is_at_or_below`, `is_temp_stable`), `SensorCheck`
+    // ne laisse partir aucun cycle sans sonde pilote, la sécurité déclenche
+    // sur une perte prolongée, et l'abandon perte-sonde coupe un cycle
+    // devenu aveugle. Les capteurs muets sont publiés dans
+    // `temp_mute_mask` : l'écran et le journal les disent, l'opérateur
+    // décide — un boot raté se retente, il ne s'arrête pas.
     let latest_measurement = sensors.probe_all();
-    if !latest_measurement.are_all_some() {
-        // Le message d'origine ne disait pas *lequel* manquait, ce qui est
-        // pourtant la seule information utile : elle désigne le faisceau à
-        // aller vérifier. Un masque de bits plutôt qu'un libellé par
-        // capteur — `logic/` ne connaît pas le câblage, et ce module reste
-        // sans dépendance à une pile de traces pour rester testable sur
-        // hôte.
-        panic!(
-            "Demarrage impossible : capteurs muets au premier sondage. \
-             Temperatures manquantes (bit i = index i) : {:#b} sur {}, \
-             pressions : {:#b} sur {}.",
-            missing_mask(&latest_measurement.temps),
-            NUMBER_OF_TEMP_SENSOR,
-            missing_mask(&latest_measurement.press),
-            NUMBER_OF_PRESSURE_SENSOR,
-        );
-    }
-
     update_global_state(&latest_measurement);
 
     // History
@@ -80,6 +73,10 @@ where
     // Probing plan
     let mut probing_plan = phase.current().create_probing_plan(&measurement_history);
 
+    // Mémoire des sorties actives — le point de départ de toute séquence
+    // d'arrêt (cf. `RunningOutputs`).
+    let mut running = RunningOutputs::all_off();
+
     // Control loop
     loop {
         // Avant le tour, pas après : `tick()` peut bloquer plusieurs
@@ -89,7 +86,7 @@ where
 
         probing_plan = tick(
             &mut sensors, &mut actuators, &mut phase, &mut safety,
-            &mut measurement_history, probing_plan,
+            &mut measurement_history, probing_plan, &mut running,
         );
     }
 }
@@ -101,13 +98,14 @@ where
 /// (`chamber_sim`) qui a besoin d'intercaler ses pas de physique entre
 /// deux tours — même contenu que l'ancien corps de `loop`, aucun
 /// changement de comportement.
-pub fn tick<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Clk>(
+pub fn tick<Ts, Ps, Hv, Cool, Iso, Pump, Lights, Glass, Fans, Clk>(
     sensors: &mut Sensors<Ts, Ps>,
-    actuators: &mut Actuators<Hv, Cool, Iso, Pump, Lights, Glass>,
+    actuators: &mut Actuators<Hv, Cool, Iso, Pump, Lights, Glass, Fans>,
     phase: &mut PhaseClock<Clk>,
     safety: &mut SafetyMonitor,
     measurement_history: &mut MeasurementHistory,
     probing_plan: ProbingPlan,
+    running: &mut RunningOutputs,
 ) -> ProbingPlan
 where
     Ts: DeferredBatchSensor<Celsius, NUMBER_OF_TEMP_SENSOR>,
@@ -118,12 +116,18 @@ where
     Pump: BinaryActuator,
     Lights: BinaryActuator,
     Glass: BinaryActuator,
+    Fans: BinaryActuator,
     Clk: MonotonicTimer,
 {
     let latest_measurement = sensors.probe(probing_plan);
     if !latest_measurement.are_all_none() {
         update_global_state(&latest_measurement);
-    };
+    } else {
+        // Tout a échoué ce tour : rien à fusionner (garder les dernières
+        // valeurs), mais la santé se publie quand même — un bus
+        // entièrement muet est précisément ce que l'opérateur doit voir.
+        publish_sensor_health(latest_measurement.temp_mute_mask);
+    }
     measurement_history.update(&latest_measurement);
 
     // Adopte une écriture externe (UI) survenue depuis le tour précédent ;
@@ -154,14 +158,25 @@ where
 
     // Sécurité en priorité absolue sur la logique de phase — décision
     // explicite ici (orchestration), pas cachée dans une méthode.
-    let (next, plan) = if let Some(cause) = safety.check(measurement_history, phase.now()) {
+    let (next, mut plan) = if let Some(cause) = safety.check(measurement_history, phase.now()) {
         SystemTask::Tripped(cause).react_to(measurement_history)
     } else {
         advance(
             phase.current(), measurement_history,
-            phase.elapsed(), measurement_history.chamber_stale_duration(phase.now()),
+            phase.elapsed(), measurement_history.plate_stale_duration(phase.now()),
         )
     };
+
+    // La séquence d'arrêt ne rallume rien : tout ce qui était déjà éteint
+    // quand l'arrêt a commencé reste éteint, seul ce qui tournait suit
+    // les étapes pour s'éteindre (cf. `RunningOutputs`). Hors arrêt, on
+    // mémorise ce qui tourne — c'est le prochain point de départ d'une
+    // séquence d'arrêt.
+    if matches!(phase.current(), SystemTask::Stopping(_)) {
+        running.restrict(&mut plan);
+    } else {
+        running.observe(&plan);
+    }
     actuators.apply(plan, measurement_history);
 
     // Publie et adopte localement `next` seulement si SHARED_STATE
@@ -178,20 +193,17 @@ where
 }
 
 
-/// Masque des index sans mesure : bit `i` à 1 = capteur `i` muet.
-///
-/// Sert au diagnostic de démarrage ci-dessus.
-fn missing_mask<T>(readings: &[Option<T>]) -> u32 {
-    let mut mask = 0;
-    for (i, reading) in readings.iter().enumerate() {
-        if reading.is_none() {
-            mask |= 1 << i;
-        }
-    }
-    mask
+/// Publie le seul masque de santé des sondes — la voie étroite pour un
+/// sondage où tout a échoué : pas de valeurs à fusionner, mais l'opérateur
+/// doit savoir que plus rien ne répond.
+fn publish_sensor_health(mask: u8) {
+    critical_section::with(|cs| {
+        SHARED_STATE.borrow_ref_mut(cs).snapshot.temp_mute_mask = mask;
+    });
 }
 
-/// Can be expensive due to using the critical section so avoid using it if there is no update.
+/// Peut être coûteuse à cause de la section critique — ne l'appeler que
+/// quand il y a du nouveau.
 fn update_global_state(latest_measurement:&SensorSnapshot) {
     critical_section::with(|cs| {
         let mut shared_state = SHARED_STATE.borrow_ref_mut(cs);
@@ -199,6 +211,10 @@ fn update_global_state(latest_measurement:&SensorSnapshot) {
 
         merge_new_readings(&mut shared_sensor_data.temps, &latest_measurement.temps);
         merge_new_readings(&mut shared_sensor_data.press, &latest_measurement.press);
+        // Le masque de santé reflète CE sondage, sans fusion : une sonde
+        // qui se tait doit se voir immédiatement, même si sa dernière
+        // valeur reste affichée à côté.
+        shared_sensor_data.temp_mute_mask = latest_measurement.temp_mute_mask;
 
         shared_state.new_data = true;
     });
@@ -276,7 +292,8 @@ impl SystemTask {
                         .with_high_voltage()
                         .with_iso_pump()
                         .with_lights(true)
-                        .with_glass_heater(),
+                        .with_glass_heater()
+                        .with_fans(),
                 )
             }
             Stopping(phase) => phase.react_to(history),
@@ -292,7 +309,7 @@ impl SystemTask {
 }
 
 
-impl<Hv, Cool, Iso, Pump, Lights, Glass> Actuators<Hv, Cool, Iso, Pump, Lights, Glass>
+impl<Hv, Cool, Iso, Pump, Lights, Glass, Fans> Actuators<Hv, Cool, Iso, Pump, Lights, Glass, Fans>
 where
     Hv: BinaryActuator,
     Cool: TargetActuator<Celsius, CONTROL_LOOP_HISTORY_SIZE>,
@@ -300,10 +317,11 @@ where
     Pump: BinaryActuator,
     Lights: BinaryActuator,
     Glass: BinaryActuator,
+    Fans: BinaryActuator,
 {
     pub fn apply(&mut self, plan: ActuatorPlan, hist: &MeasurementHistory) {
-        let cooling_hist = &hist.temps[CHAMBER_TEMP_IDX];
-        let iso_temp_hist = &hist.temps[ISO_TEMP_IDX];
+        let cooling_hist = &hist.temps[PLATE_MID_IDX];
+        let iso_temp_hist = &hist.temps[ISO_HEATER_IDX];
 
         let _ = self.cooling.regulate(cooling_hist, plan.cooling);
         let _ = self.iso_heater.regulate(iso_temp_hist, plan.iso_heater);
@@ -316,6 +334,7 @@ where
             set_binary(&mut self.lights, on);
         }
         set_binary(&mut self.glass_heater, plan.glass_heater);
+        set_binary(&mut self.fans, plan.fans);
     }
 }
 
@@ -338,7 +357,7 @@ fn set_binary<A: BinaryActuator>(actuator: &mut A, on: bool) {
 mod tests {
     use super::*;
     use crate::cloud_chamber_hal::config::{
-        CHAMBER_PRESSURE_IDX, CHAMBER_TEMP_IDX, COMPRESSOR_OUT_IDX, ISO_TEMP_IDX,
+        CHAMBER_PRESSURE_IDX, PLATE_MID_IDX, COMPRESSOR_IDX, ISO_HEATER_IDX,
     };
     use crate::cloud_chamber_hal::measurement::Measurement;
     use crate::cloud_chamber_hal::timer::{Duration, Instant};
@@ -386,11 +405,12 @@ mod tests {
     struct Harness<'a> {
         clock: &'a MockClock,
         sensors: Sensors<MockTempSensor, MockPressureSensor>,
-        actuators: Actuators<MockActuator, MockActuator, MockActuator, MockActuator, MockActuator, MockActuator>,
+        actuators: Actuators<MockActuator, MockActuator, MockActuator, MockActuator, MockActuator, MockActuator, MockActuator>,
         phase: PhaseClock<&'a MockClock>,
         safety: SafetyMonitor,
         history: MeasurementHistory,
         probing_plan: ProbingPlan,
+        running: RunningOutputs,
     }
 
     impl<'a> Harness<'a> {
@@ -413,7 +433,7 @@ mod tests {
                 MockTempSensor::new(f32::NAN),
                 MockPressureSensor::new(f32::NAN),
             );
-            // Température sortie-compresseur valide par défaut (loin des
+            // Température corps compresseur valide par défaut (loin des
             // seuils d'alarme), horodatée avant tout instant utilisable par
             // un test (`Instant::from_micros(1)` : après le t0 par défaut
             // de `MeasurementHistory`, mais avant toute horloge de test qui
@@ -424,7 +444,7 @@ mod tests {
             // temps simulé. Les tests qui exercent spécifiquement ce chemin
             // (sécurité) l'écrasent explicitement via `set_compressor_temp`.
             sensors.temperature_source.set(
-                COMPRESSOR_OUT_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
+                COMPRESSOR_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
             );
             // Même raison pour la sonde du thermostat IPA : depuis que
             // `SensorCheck` vérifie tous les capteurs dont dépend la
@@ -433,7 +453,7 @@ mod tests {
             // représente une machine dont les capteurs sont vivants ; les
             // tests qui veulent en perdre un l'écrasent explicitement.
             sensors.temperature_source.set(
-                ISO_TEMP_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
+                ISO_HEATER_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
             );
 
             let actuators = Actuators {
@@ -443,18 +463,20 @@ mod tests {
                 iso_pump: MockActuator::new(),
                 lights: MockActuator::new(),
                 glass_heater: MockActuator::new(),
+                fans: MockActuator::new(),
             };
             let history = MeasurementHistory::new();
             let probing_plan = task.create_probing_plan(&history);
             let phase = PhaseClock::new(clock, task);
             let safety = SafetyMonitor::new(SafetyConfig::default(), phase.now());
-            Self { clock, sensors, actuators, phase, safety, history, probing_plan }
+            let running = RunningOutputs::all_off();
+            Self { clock, sensors, actuators, phase, safety, history, probing_plan, running }
         }
 
         fn tick(&mut self) {
             self.probing_plan = tick(
                 &mut self.sensors, &mut self.actuators, &mut self.phase, &mut self.safety,
-                &mut self.history, self.probing_plan,
+                &mut self.history, self.probing_plan, &mut self.running,
             );
         }
 
@@ -469,19 +491,19 @@ mod tests {
         }
 
         fn set_chamber_temp(&mut self, value: Celsius) {
-            self.set_temp(CHAMBER_TEMP_IDX, value);
+            self.set_temp(PLATE_MID_IDX, value);
         }
 
         fn set_iso_temp(&mut self, value: Celsius) {
-            self.set_temp(ISO_TEMP_IDX, value);
+            self.set_temp(ISO_HEATER_IDX, value);
         }
 
         fn set_compressor_temp(&mut self, value: Celsius) {
-            self.set_temp(COMPRESSOR_OUT_IDX, value);
+            self.set_temp(COMPRESSOR_IDX, value);
         }
 
         fn lose_chamber_temp(&mut self) {
-            self.sensors.temperature_source.set(CHAMBER_TEMP_IDX, Err(MockSensorError));
+            self.sensors.temperature_source.set(PLATE_MID_IDX, Err(MockSensorError));
         }
 
         fn set_pressure(&mut self, idx: usize, value: f32) {
@@ -524,26 +546,11 @@ mod tests {
     }
 
     // ─── Diagnostic de démarrage ─────────────────────────────────────────
-
-    #[test]
-    fn missing_mask_flags_each_silent_sensor_by_index() {
-        // Bit i à 1 = capteur i muet. C'est ce masque que le message de
-        // panique affiche, et qui désigne le faisceau à vérifier.
-        let readings = [Some(1u8), None, Some(3), None];
-        assert_eq!(missing_mask(&readings), 0b1010);
-    }
-
-    #[test]
-    fn missing_mask_is_zero_when_every_sensor_answers() {
-        let readings = [Some(1u8), Some(2), Some(3)];
-        assert_eq!(missing_mask(&readings), 0);
-    }
-
-    #[test]
-    fn missing_mask_flags_everything_when_nothing_answers() {
-        let readings: [Option<u8>; 3] = [None, None, None];
-        assert_eq!(missing_mask(&readings), 0b111);
-    }
+    // Le masque de sondes muettes vit maintenant dans le sondage lui-même
+    // (`SensorSnapshot::temp_mute_mask`, rempli par `probe`) : le premier
+    // sondage ne panique plus, il publie ce qu'il a — les tests
+    // correspondants sont dans `probing.rs` (masque) et ici en section E
+    // (fusion des lectures partielles).
 
     // ─── F — Base ─────────────────────────────────────────────────────────
 
@@ -977,7 +984,7 @@ mod tests {
                 MockTempSensor::new(-20.0), MockPressureSensor::new(f32::NAN),
             );
             sensors.temperature_source.set(
-                COMPRESSOR_OUT_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
+                COMPRESSOR_IDX, Ok(Measurement::new(Instant::from_micros(1), Celsius(20.0))),
             );
             // Chambre déjà sous PRECOOL_TARGET_C : `advance()` va vouloir
             // avancer de PreCoolingThePlate vers StartingIpaCirculation ce
@@ -989,11 +996,13 @@ mod tests {
                 iso_pump: MockActuator::new(),
                 lights: MockActuator::new(),
                 glass_heater: MockActuator::new(),
+                fans: MockActuator::new(),
             };
             let mut history = MeasurementHistory::new();
             let mut phase = PhaseClock::new(&clock, SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
             let mut safety = SafetyMonitor::new(SafetyConfig::default(), phase.now());
             let probing_plan = phase.current().create_probing_plan(&history);
+            let mut running = RunningOutputs::all_off();
 
             // `with_isolated_shared_state` a remis SHARED_STATE.task à
             // `Idle` — il faut l'aligner sur l'état local avant le premier
@@ -1004,7 +1013,7 @@ mod tests {
                 SHARED_STATE.borrow_ref_mut(cs).task = SystemTask::Cooling(CoolingPhase::PreCoolingThePlate);
             });
 
-            let probing_plan = tick(&mut sensors, &mut actuators, &mut phase, &mut safety, &mut history, probing_plan);
+            let probing_plan = tick(&mut sensors, &mut actuators, &mut phase, &mut safety, &mut history, probing_plan, &mut running);
 
             // L'écriture injectée (survenue "pendant" ce tour) n'a pas été
             // écrasée par la publication de `next` :
@@ -1015,12 +1024,42 @@ mod tests {
             assert_eq!(phase.current(), SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
 
             // Le tour suivant adopte correctement la valeur injectée.
-            tick(&mut sensors, &mut actuators, &mut phase, &mut safety, &mut history, probing_plan);
+            tick(&mut sensors, &mut actuators, &mut phase, &mut safety, &mut history, probing_plan, &mut running);
             assert_eq!(phase.current(), SystemTask::Idle);
         });
     }
 
     // ─── E — Sondage / robustesse capteurs ───────────────────────────────
+
+    /// Le scénario du terrain : arrêt opérateur pendant le
+    /// pré-refroidissement. Le plan `CutHighVoltage` maintient la pompe
+    /// IPA « active » (il décrit l'arrêt d'un cycle complet) — sans le
+    /// verrou `RunningOutputs`, elle s'allumait quelques secondes juste
+    /// pour s'éteindre ensuite. Tout ce qui était éteint reste éteint ;
+    /// seul le compresseur (qui tournait) suit la séquence.
+    #[test]
+    fn stopping_mid_precooling_never_lights_the_ipa_pump() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(Instant::from_millis(1));
+            let mut h = Harness::new(&clock);
+            h.set_chamber_temp(Celsius(-5.0));
+            h.write_shared_task(SystemTask::Cooling(CoolingPhase::PreCoolingThePlate));
+            h.tick_after(Duration::from_millis(1_000));
+            assert!(!h.actuators.iso_pump.is_on, "en precooling la pompe est eteinte");
+            assert!(!h.actuators.glass_heater.is_on);
+            assert!(h.actuators.cooling.is_on, "le compresseur refroidit");
+
+            // Arrêt opérateur : la séquence démarre à sa première phase.
+            h.write_shared_task(SystemTask::Stopping(StoppingPhase::CutHighVoltage));
+            h.tick_after(Duration::from_millis(1_000));
+
+            assert!(!h.actuators.iso_pump.is_on, "la pompe etait eteinte, l'arret ne la rallume pas");
+            assert!(!h.actuators.glass_heater.is_on, "la vitre etait eteinte, elle doit le rester");
+            assert!(!h.actuators.high_voltage.is_on, "la HV etait coupee, elle doit le rester");
+            assert!(h.actuators.cooling.is_on, "le compresseur tournait, il suit la sequence");
+            assert!(h.actuators.fans.is_on, "les ventilateurs suivent le compresseur");
+        });
+    }
 
     #[test]
     fn partial_sensor_failure_keeps_last_known_reading() {
@@ -1029,7 +1068,7 @@ mod tests {
             let mut h = Harness::new(&clock);
             h.set_chamber_temp(Celsius(-10.0));
             h.tick_after(Duration::from_millis(1_000));
-            let before = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[CHAMBER_TEMP_IDX]);
+            let before = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[PLATE_MID_IDX]);
             assert_eq!(before.unwrap().value.0, -10.0);
 
             // La sonde chambre tombe en erreur ce tour ; une autre catégorie
@@ -1039,8 +1078,14 @@ mod tests {
             h.set_pressure(CHAMBER_PRESSURE_IDX, 0.5);
             h.tick_after(Duration::from_millis(1_000));
 
-            let kept = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[CHAMBER_TEMP_IDX]);
+            let kept = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[PLATE_MID_IDX]);
             assert_eq!(kept.unwrap().value.0, -10.0);
+
+            // Et le masque de santé dit bien que la sonde est muette ce
+            // tour-là, bit par index : c'est lui que l'écran et le journal
+            // consultent.
+            let mask = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temp_mute_mask);
+            assert_ne!(mask & (1 << PLATE_MID_IDX), 0, "la sonde muette doit se voir au masque");
         });
     }
 
@@ -1060,8 +1105,33 @@ mod tests {
             }
             h.tick_after(Duration::from_millis(1_000));
 
-            let after = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[CHAMBER_TEMP_IDX]);
+            let after = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temps[PLATE_MID_IDX]);
             assert_eq!(after.unwrap().value.0, -10.0);
+
+            // Bus entièrement muet : le masque complet — huit bits sur
+            // huit, dit comme il est au journal.
+            let mask = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temp_mute_mask);
+            assert_eq!(mask, 0b1111_1111);
+        });
+    }
+
+    /// Un sondage où tout répond remet le masque à zéro : la santé se
+    /// publie à chaque tour, pas seulement quand elle se dégrade.
+    #[test]
+    fn a_healthy_probe_clears_the_mute_mask() {
+        with_isolated_shared_state(|| {
+            let clock = MockClock::new(Instant::from_millis(1));
+            let mut h = Harness::new(&clock);
+
+            h.lose_chamber_temp();
+            h.tick_after(Duration::from_millis(1_000));
+            let degraded = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temp_mute_mask);
+            assert_ne!(degraded, 0);
+
+            h.set_chamber_temp(Celsius(-10.0));
+            h.tick_after(Duration::from_millis(1_000));
+            let healed = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).snapshot.temp_mute_mask);
+            assert_eq!(healed, 0, "sonde revenue, masque efface");
         });
     }
 
@@ -1088,7 +1158,7 @@ mod tests {
     #[cfg(feature = "sim")]
     #[test]
     fn cooling_sequence_completes_through_simulated_physics() {
-        use crate::cloud_chamber_hal::config::CHAMBER_TEMP_IDX;
+        use crate::cloud_chamber_hal::config::PLATE_MID_IDX;
         use crate::cloud_chamber_hal::sensors::IndependentSensors;
         use crate::cloud_chamber_hal::timer::MonotonicTimer;
         use crate::simulator::actuators::SimActuators;
@@ -1110,6 +1180,7 @@ mod tests {
                 iso_pump: sim.iso_pump,
                 lights: sim.lights,
                 glass_heater: sim.glass_heater,
+                fans: sim.fans,
             };
             let mut sensors = Sensors::new(
                 SimTempSensors::new(std::rc::Rc::clone(&physics), &clock),
@@ -1120,6 +1191,7 @@ mod tests {
             let mut safety = SafetyMonitor::new(SafetyConfig::default(), phase.now());
             let mut history = MeasurementHistory::new();
             let mut last_probe = Instant::ZERO;
+            let mut running_outputs = RunningOutputs::all_off();
 
             // Démarre un cycle, comme le ferait l'UI depuis le menu.
             critical_section::with(|cs| {
@@ -1154,12 +1226,13 @@ mod tests {
                     &mut safety,
                     &mut history,
                     plan,
+                    &mut running_outputs,
                 );
 
                 let task = critical_section::with(|cs| SHARED_STATE.borrow_ref(cs).task);
                 if task != last_task {
                     last_task = task;
-                    let plate = history.temps[CHAMBER_TEMP_IDX]
+                    let plate = history.temps[PLATE_MID_IDX]
                         .get(0)
                         .map(|m| m.value.0)
                         .unwrap_or(f32::NAN);

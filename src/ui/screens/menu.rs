@@ -26,7 +26,7 @@ use embedded_graphics::{
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use tinybmp::Bmp;
 
-use crate::cloud_chamber_hal::config::{CHAMBER_TEMP_IDX, ISO_TEMP_IDX};
+use crate::cloud_chamber_hal::config::{PLATE_MID_IDX, ISO_HEATER_IDX};
 use crate::cloud_chamber_hal::{measurement::Measurement, units::Celsius};
 use crate::logic::cooling::CoolingPhase;
 use crate::shared::data::{SharedState, SystemTask};
@@ -82,9 +82,9 @@ fn bottom_value(slot: usize, state: &SharedState, out: &mut String<8>) {
     let (compressor, high_voltage) = (outputs.compressor, outputs.high_voltage);
     match slot {
         0 => write_state(compressor, out),
-        1 => write_temp(state.snapshot.temps[CHAMBER_TEMP_IDX], out),
+        1 => write_temp(state.snapshot.temps[PLATE_MID_IDX], out),
         2 => write_state(high_voltage, out),
-        _ => write_temp(state.snapshot.temps[ISO_TEMP_IDX], out),
+        _ => write_temp(state.snapshot.temps[ISO_HEATER_IDX], out),
     }
 }
 
@@ -361,8 +361,8 @@ mod tests {
 
         let mut snapshot = SensorSnapshot::default();
         let now = Instant::from_micros(0);
-        snapshot.temps[CHAMBER_TEMP_IDX] = Some(Measurement::new(now, Celsius(-38.4)));
-        snapshot.temps[ISO_TEMP_IDX] = Some(Measurement::new(now, Celsius(21.7)));
+        snapshot.temps[PLATE_MID_IDX] = Some(Measurement::new(now, Celsius(-38.4)));
+        snapshot.temps[ISO_HEATER_IDX] = Some(Measurement::new(now, Celsius(21.7)));
         SharedState {
             snapshot,
             task: SystemTask::Cooling(CoolingPhase::HighVoltage),

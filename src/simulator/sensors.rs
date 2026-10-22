@@ -149,9 +149,9 @@ mod tests {
         let mut sensors = SimTempSensors::new(std::rc::Rc::clone(&physics), &clock);
 
         let readings = sensors.read();
-        assert!(readings[crate::cloud_chamber_hal::config::COMPRESSOR_OUT_IDX].is_err());
+        assert!(readings[crate::cloud_chamber_hal::config::COMPRESSOR_IDX].is_err());
         for (i, r) in readings.iter().enumerate() {
-            if i != crate::cloud_chamber_hal::config::COMPRESSOR_OUT_IDX {
+            if i != crate::cloud_chamber_hal::config::COMPRESSOR_IDX {
                 assert!(r.is_ok(), "sonde {i} doit rester lisible");
             }
         }
