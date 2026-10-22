@@ -2,25 +2,22 @@
 //!
 //! # Une implémentation, plusieurs rôles
 //!
-//! `Pump`, `Lights` et `WindowHeater` étaient trois fichiers dont le code de
-//! production était identique octet pour octet, au nom du type près : même
-//! champ, même `new` qui force la broche à l'état bas, même `is_on`, même
-//! implémentation de [`BinaryActuator`]. Trois copies à corriger en trois
-//! endroits.
-//!
-//! Le paramètre `Role` est un marqueur de taille nulle : il ne coûte rien à
-//! l'exécution, mais garde `Pump<P>` et `Lights<P>` **distincts pour le
-//! compilateur**. Un simple alias les aurait rendus interchangeables, et
-//! intervertir la pompe et l'éclairage dans le `Actuators { … }` de
-//! `main.rs` — un littéral de struct où les deux champs se suivent — serait
-//! passé inaperçu. Sur une machine qui pilote de la haute tension, ce
-//! contrôle vaut les trois lignes de marqueur.
+//! Toutes les sorties binaires de la chambre partagent le même
+//! comportement — `new` qui force la broche à l'état bas, on/off — donc
+//! un seul type : [`Relay<P, Role>`](Relay). Le paramètre `Role` est un
+//! marqueur de taille nulle : il ne coûte rien à l'exécution, mais garde
+//! `Pump<P>` et `Lights<P>` **distincts pour le compilateur**. Un simple
+//! alias les aurait rendus interchangeables, et intervertir la pompe et
+//! l'éclairage dans le `Actuators { … }` de `main.rs` — un littéral de
+//! struct où les deux champs se suivent — serait passé inaperçu. Sur une
+//! machine qui pilote de la haute tension, ce contrôle vaut les trois
+//! lignes de marqueur. Les rôles sont définis en bas de ce fichier.
 //!
 //! # Actif à l'état haut
 //!
 //! `turn_on` met la broche à 1. Les modules de relais actifs à l'état bas
 //! existent : si la chambre en reçoit un jour, c'est ici que l'inversion se
-//! fait, une fois pour les trois rôles. `drivers::breaker::GpioBreaker`, lui,
+//! fait, une fois pour tous les rôles. `drivers::breaker::GpioBreaker`, lui,
 //! porte déjà son propre `active_high` parce qu'il doit pouvoir être câblé
 //! dans les deux sens sans recompiler la logique de sécurité.
 
@@ -32,9 +29,7 @@ use crate::cloud_chamber_hal::actuators::BinaryActuator;
 
 /// Relais GPIO actif à l'état haut, spécialisé par un marqueur `Role`.
 ///
-/// Voir les alias de rôle : [`crate::drivers::pump::Pump`],
-/// [`crate::drivers::lights::Lights`],
-/// [`crate::drivers::window_heater::WindowHeater`].
+/// Les rôles (et leurs alias) sont définis en bas de ce fichier.
 pub struct Relay<P, Role>
 where
     P: OutputPin,
@@ -100,12 +95,38 @@ where
     }
 }
 
+// ─── Rôles des sorties binaires ───────────────────────────────────────────────
+
+/// Pompe de circulation de l'isopropanol.
+pub struct PumpRole;
+pub type Pump<P> = Relay<P, PumpRole>;
+
+/// Éclairage de la chambre — deux ampoules sur le même circuit, pilotées
+/// comme un seul actionneur.
+pub struct LightsRole;
+pub type Lights<P> = Relay<P, LightsRole>;
+
+/// Ventilateurs du radiateur.
+pub struct FansRole;
+pub type Fans<P> = Relay<P, FansRole>;
+
+/// Chauffage anti-buée de la vitre supérieure.
+pub struct WindowHeaterRole;
+pub type WindowHeater<P> = Relay<P, WindowHeaterRole>;
+
+/// Bande LED du compartiment machine — un rôle distinct de [`Lights`] :
+/// elle n'appartient à aucun cycle, seule la commande opérateur
+/// l'allume (écran dédié, cœur 0 seul propriétaire), et sa broche
+/// n'est pas dans `safe_panic::POWER_OUTPUT_PINS` — une LED allumée
+/// pendant une panique aide au diagnostic.
+pub struct BayLightsRole;
+pub type LedStrip<P> = Relay<P, BayLightsRole>;
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::drivers::{lights::Lights, pump::Pump, window_heater::WindowHeater};
+    use super::{Lights, Pump, WindowHeater, *};
 
     /// Démarre à l'état haut, pour que `new` ait quelque chose à corriger.
     struct MockPin {

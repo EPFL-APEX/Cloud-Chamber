@@ -194,7 +194,7 @@ impl Screens {
     /// [`super::screens::lights::LightsScreen::take_strip_request`].
     ///
     /// À consommer depuis la boucle du cœur 0, seule propriétaire du
-    /// GPIO (`drivers::led_strip::LedStrip`).
+    /// GPIO (`drivers::relay::LedStrip`).
     pub fn take_strip_request(&mut self) -> Option<bool> {
         self.lights.take_strip_request()
     }
@@ -364,17 +364,9 @@ mod tests {
     use crate::logic::cooling::CoolingPhase;
     use crate::logic::security::SafetyCause;
     use crate::logic::stopping::StoppingPhase;
-    use crate::shared::data::SensorSnapshot;
-    use embedded_graphics::geometry::Size;
-    use embedded_graphics_simulator::SimulatorDisplay;
+    use crate::ui::test_support::make_display;
 
-    fn make_display() -> SimulatorDisplay<Rgb565> {
-        SimulatorDisplay::new(Size::new(320, 240))
-    }
-
-    fn state_with(task: SystemTask) -> SharedState {
-        SharedState { snapshot: SensorSnapshot::default(), task, new_data: false, core1_panicked: false }
-    }
+    use crate::ui::test_support::state_with;
 
     /// Le parcours complet du premier bouton : depuis le menu, un clic ouvre
     /// l'écran de suivi *et* rend disponible la demande de démarrage.

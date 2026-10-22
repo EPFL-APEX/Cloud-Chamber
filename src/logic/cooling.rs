@@ -35,10 +35,8 @@ pub enum CoolingPhase {
 }
 
 impl CoolingPhase {
-    /// Sonde tout à chaque cycle pour l'instant — l'optimisation "sauter la
-    /// conversion température coûteuse (~800ms) sur certaines phases",
-    /// l'intention originale de `ProbingPlan`, reste un raffinement
-    /// ultérieur, pas requise pour un premier cycle correct.
+    /// Sonde tout à chaque cycle — sauter la conversion (~800 ms) sur
+    /// certaines phases reste un raffinement possible, pas requis.
     pub fn create_probing_plan(&self, _prob_hist: &MeasurementHistory) -> ProbingPlan {
         ProbingPlan::all()
     }

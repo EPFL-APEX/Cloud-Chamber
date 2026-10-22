@@ -98,37 +98,22 @@ impl MeasurementHistory {
         self.press[idx].get(0).is_ok_and(|m| !m.value.is_nan())
     }
 
-    /// `true` si `idx` a fourni au moins une lecture exploitable.
-    ///
-    /// « Exploitable » veut dire présente **et** non-NaN : le ring buffer
-    /// s'initialise à NaN, donc un emplacement occupé ne prouve rien à lui
-    /// seul. C'est la question que pose `SensorCheck` avant de laisser un
-    /// cycle démarrer.
+    /// `true` si `idx` a fourni au moins une lecture exploitable —
+    /// cf. [`MeasurementHistory::newest_valid`], la définition canonique.
     pub fn has_valid_reading(&self, idx: usize) -> bool {
         self.newest_valid(idx).is_some()
     }
 
     /// `true` si la dernière lecture de `idx` est exploitable **et** au plus
-    /// égale à `target`.
-    ///
-    /// Fail-closed : un capteur muet ou en NaN répond `false`, donc une
-    /// phase qui attend un seuil ne le franchit jamais faute de données. Les
-    /// quatre phases de `logic::cooling` qui surveillent une température
-    /// posaient chacune leur propre version de cette question, avec la garde
-    /// NaN recopiée à chaque fois — une seule copie oubliée aurait suffi à
-    /// faire avancer la séquence sur du NaN.
+    /// égale à `target` — fail-closed : faute de données, `false`.
     pub fn is_at_or_below(&self, idx: usize, target: Celsius) -> bool {
         self.newest_valid(idx).is_some_and(|value| value <= target)
     }
 
-    /// Dernière lecture de `idx`, si elle existe et n'est pas NaN.
-    ///
-    /// Publique parce que c'est **la** définition d'« une lecture
-    /// exploitable » : `logic::security` en avait sa propre copie, la garde
-    /// `!m.value.is_nan()` recopiée à deux endroits. Le ring buffer
-    /// s'initialisant à NaN, un emplacement occupé ne prouve rien — une
-    /// copie oubliée aurait laissé une décision de sécurité s'appuyer sur du
-    /// NaN, où toute comparaison répond `false`.
+    /// Dernière lecture de `idx`, si elle existe et n'est pas NaN — **la**
+    /// définition d'« une lecture exploitable », que les phases et la
+    /// sécurité consultent toutes. Le ring buffer s'initialise à NaN :
+    /// un emplacement occupé ne prouve rien, seul ce filtre fait foi.
     pub fn newest_valid(&self, idx: usize) -> Option<Celsius> {
         if idx >= NUMBER_OF_TEMP_SENSOR {
             return None;
@@ -143,20 +128,13 @@ impl MeasurementHistory {
     /// l'échantillon le plus récent lui-même, pour rester appelable depuis
     /// `logic::cooling` sans lui donner accès à l'horloge.
     ///
-    /// # Ce que « couvrir la fenêtre » veut dire
-    ///
-    /// Le critère porte donc sur l'étendue réelle des données : on remonte
-    /// l'historique tant que les échantillons sont valides et dans la
-    /// fenêtre, et la couverture n'est acquise que si l'on atteint un
-    /// échantillon *antérieur* au bord de la fenêtre. Autrement dit, il
-    /// faut une chaîne ininterrompue de lectures valides qui enjambe toute
-    /// la fenêtre, vrai quelle que soit la cadence, et faux dès qu'il
-    /// manque des données au milieu.
-    ///
-    /// Fail-closed sur les trous : un `NaN` (lecture jamais faite, ou case
-    /// encore à sa valeur d'initialisation) interrompt le balayage et fait
-    /// échouer la couverture. Sur une chambre sous haute tension, refuser
-    /// d'avancer faute de données est le défaut sûr.
+    /// La couverture n'est acquise que si le balayage atteint un
+    /// échantillon *antérieur* au bord de la fenêtre : une chaîne
+    /// ininterrompue de lectures valides qui enjambe toute la fenêtre,
+    /// quelle que soit la cadence. Fail-closed sur les trous — un NaN
+    /// ou une fin de buffer interrompt le balayage et fait échouer la
+    /// couverture : sous haute tension, refuser d'avancer faute de
+    /// données est le défaut sûr.
     pub fn is_temp_stable(&self, idx: usize, window: Duration, tolerance: Celsius) -> bool {
         if idx >= NUMBER_OF_TEMP_SENSOR {
             return false;

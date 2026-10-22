@@ -1,23 +1,12 @@
 //! Driver DS18B20 via protocole 1-Wire implémenté directement (sans crate externe).
 //!
-//! # Historique de convergence
-//!
-//! Deux implémentations coexistaient :
-//! - une version RP2040-only à accès registre SIO direct, seule utilisée en
-//!   production car elle respecte l'open-drain strict et tient la fenêtre de
-//!   lecture (~10µs) sur les clones DS18B20 testés sur matériel ;
-//! - une version générique `embedded-hal` (`InputPin`/`OutputPin`), plus
-//!   portable mais qui pousse activement un niveau haut via `set_high()`,
-//!   ce qui n'est PAS de l'open-drain à moins que la broche soit déjà
-//!   configurée comme telle en amont (et qui ne tenait pas la fenêtre de
-//!   lecture sur les clones du montage).
-//!
-//! Ce fichier fusionne les deux : la structure (Resolution, erreurs typées,
-//! SKIP ROM fallback, ow_reset_long, BatchSensor/DeferredBatchSensor) vient
-//! de la version générique. Le contact avec le bus passe par [`OpenDrainPin`],
-//! un trait maison qui ne modélise que "tirer bas" / "relâcher" — jamais
-//! "pousser haut" — implémenté en accès registre direct pour RP2040 et
-//! RP2350 (cfg `rp2040`/`rp2350` posés par `build.rs`).
+//! Le contact avec le bus passe par [`OpenDrainPin`], un trait qui ne
+//! modélise que « tirer bas » / « relâcher » — jamais « pousser haut »,
+//! le contrat de l'open-drain 1-Wire (un maître qui force le niveau haut
+//! provoque des collisions). Implémenté en accès registre direct SIO pour
+//! RP2040 et RP2350 (cfg `rp2040`/`rp2350` posés par `build.rs`) : la
+//! fenêtre de lecture (~10 µs) doit être tenue, ce qu'une couche
+//! `embedded-hal` générique ne garantit pas sur les clones du montage.
 //!
 //! Timing calibré pour RP2040/RP2350 avec DelayNs :
 //!   Slot lecture    : bas 2µs → relâche → attend 8µs → sample à ~10µs (< 15µs max)

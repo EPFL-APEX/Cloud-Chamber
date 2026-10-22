@@ -24,11 +24,6 @@ pub const PIN_COMPRESSOR_RELAY: u8 = 5;
 /// confirmer avant tout bring-up matériel.
 pub const PIN_HV_RELAY: u8 = 14;
 pub const PIN_ISO_HEATER_RELAY: u8 = 9;
-/// TODO CÂBLAGE : broches provisoires (suite de `PIN_ISO_HEATER_RELAY`),
-/// jamais assignées sur le montage réel. Les drivers `drivers::pump::Pump`,
-/// `drivers::lights::Lights` et `drivers::window_heater::WindowHeater`
-/// existent déjà mais n'étaient pas encore référencés ici — à confirmer
-/// avant tout bring-up matériel, comme les broches ci-dessus.
 pub const PIN_PUMP_RELAY: u8 = 7;
 pub const PIN_LIGHTS_RELAY: u8 = 8;
 pub const PIN_WINDOW_HEATER_RELAY: u8 = 10;
@@ -38,7 +33,7 @@ pub const PIN_FANS_RELAY: u8 = 6;
 /// mécanique fonctionner. Commande opérateur uniquement depuis le menu —
 /// hors du cycle automatique, contrairement à `PIN_LIGHTS_RELAY` (éclairage
 /// de la chambre). Pas dans `safe_panic::POWER_OUTPUT_PINS` : voir
-/// `drivers::led_strip` pour le pourquoi.
+/// `drivers::relay::LedStrip` pour le pourquoi.
 pub const PIN_LED_STRIP: u8 = 4;
 
 /// Toutes les broches attribuées ci-dessus, avec le rôle qui les réclame.
@@ -104,21 +99,6 @@ pub const PIN_SCREEN_MOSI: u8 = 19;
 pub const PIN_SCREEN_CS: u8 = 22;
 pub const PIN_SCREEN_DC: u8 = 16;
 pub const PIN_SCREEN_RESET: u8 = 17;
-
-// ─── Adresse I²C du capteur de pression ABP2 (chambre) ─────────────────────────
-
-/// TODO CÂBLAGE : reprend l'ancienne adresse basse-pression (0x28) en
-/// attendant vérification — l'unique capteur restant est câblé dans la
-/// chambre, pas sur le circuit réfrigérant, l'adresse réelle n'est pas
-/// confirmée sur le montage.
-pub const ABP2_ADDR: u8 = 0x28;
-
-// ─── Plage de pression ABP2 ─────────────────────────────────────────────────────
-
-/// TODO CALIBRAGE : reprend la plage 0–1 bar (variante basse-pression) en
-/// attendant confirmation de la plage réelle du capteur chambre.
-pub const CHAMBER_PRESSURE_MIN: f32 = 0.0;
-pub const CHAMBER_PRESSURE_MAX: f32 = 1.0;
 
 // ─── Labels des capteurs de température ──────────────────────────────────────
 

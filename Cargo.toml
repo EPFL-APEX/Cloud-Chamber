@@ -18,7 +18,6 @@ charts = ["dep:embedded-charts"]
 # interactif `main_menu_live` (src/ui/screens/menu.rs) — nécessite SDL2
 # installé sur la machine de compilation.
 live-menu-test = ["embedded-graphics-simulator/with-sdl"]
-usb-comm = []
 # Simulateur physique : la boucle de contrôle et l'UI sur un modèle
 # thermique, jouable sur PC — cf. `src/simulator/` et le bin `chamber_sim`.
 # Dépend de std (fenêtre SDL2, temps réel) : jamais compilé pour une cible.
@@ -142,9 +141,6 @@ embedded-hal-bus  = "0.3"
 portable-atomic   = { version = "1", features = ["critical-section"] }
 libm              = "0.2"
 
-# USB CDC série sans Embassy
-usb-device  = "0.3"
-usbd-serial = "0.2"
 panic-halt = { version = "1.0.0" }
 #target = "2.1.0"
 
@@ -173,16 +169,12 @@ critical-section = { version = "1.1", features = ["std"] }
 
 [target.'cfg( target_arch = "arm" )'.dependencies]
 panic-probe = { version = "1", features = ["print-defmt"] }
-pio = "0.3"
 
 [target.'cfg( target_arch = "riscv32" )'.dependencies]
-pio = "0.3"
 
 [target.thumbv6m-none-eabi.dependencies]
 rp2040-boot2 = "0.3"
 rp2040-hal = { version = "0.12", features = ["rt", "critical-section-impl"] }
-usb-device = "0.3"
-usbd-serial = "0.2"
 
 [target.riscv32imac-unknown-none-elf.dependencies]
 rp235x-hal = { version = "0.4", features = ["rt", "critical-section-impl"] }

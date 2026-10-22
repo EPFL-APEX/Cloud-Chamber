@@ -28,7 +28,6 @@ pub enum Status {
     /// n'indique pas où on en est, seulement ce qui est déjà fini.
     Active,
     Done,
-    Failed,
 }
 
 /// Une ligne de la liste : libellé + statut courant.
@@ -207,13 +206,6 @@ where
         Status::Done => Rectangle::new(top_left, Size::new(ICON_SIZE as u32, ICON_SIZE as u32))
             .into_styled(PrimitiveStyle::with_fill(theme::DIM_COLOR))
             .draw(display),
-
-        // Jamais produit aujourd'hui (aucun écran ne lève l'état) : le
-        // carré contour rouge dit « anomalie » sans réutiliser le plein
-        // de l'étape active.
-        Status::Failed => Rectangle::new(top_left, Size::new(ICON_SIZE as u32, ICON_SIZE as u32))
-            .into_styled(PrimitiveStyle::with_stroke(theme::DANGER_COLOR, 1))
-            .draw(display),
     }
 }
 
@@ -222,12 +214,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use embedded_graphics::geometry::Size;
-    use embedded_graphics_simulator::SimulatorDisplay;
-
-    fn make_display() -> SimulatorDisplay<Rgb565> {
-        SimulatorDisplay::new(Size::new(320, 240))
-    }
+    use crate::ui::test_support::make_display;
 
     #[test]
     fn draws_without_separator() {
@@ -237,7 +224,7 @@ mod tests {
             lines: [
                 StatusLine { label: "Etape 1", status: Status::Done },
                 StatusLine { label: "Etape 2", status: Status::Active },
-                StatusLine { label: "Etape 3", status: Status::Failed },
+                StatusLine { label: "Etape 3", status: Status::Pending },
             ],
             top: 0,
         };

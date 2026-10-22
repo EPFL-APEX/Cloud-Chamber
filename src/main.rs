@@ -91,16 +91,12 @@ use cloud_chamber_firmware::config::wiring::{
 };
 use cloud_chamber_firmware::drivers::bme280::{Bme280Driver, Bme280Sensor};
 use cloud_chamber_firmware::drivers::breaker::GpioBreaker;
-use cloud_chamber_firmware::drivers::led_strip;
 use cloud_chamber_firmware::drivers::compressor::Compressor;
 use cloud_chamber_firmware::drivers::ds18b20::{
     Ds18b20Bus, Ds18b20Sensors, Resolution, rp2040_adapter::Rp2040OpenDrain,
 };
 use cloud_chamber_firmware::drivers::heater::Heater;
-use cloud_chamber_firmware::drivers::lights::Lights;
-use cloud_chamber_firmware::drivers::fans::Fans;
-use cloud_chamber_firmware::drivers::pump::Pump;
-use cloud_chamber_firmware::drivers::window_heater::WindowHeater;
+use cloud_chamber_firmware::drivers::relay::{Fans, LedStrip, Lights, Pump, WindowHeater};
 use cloud_chamber_firmware::logic::control_loop;
 use cloud_chamber_firmware::shared::data::{SHARED_STATE, SystemTask};
 use cloud_chamber_firmware::ui::app::UiApp;
@@ -256,9 +252,9 @@ fn main() -> ! {
     //
     // Commande opérateur uniquement, depuis l'entrée de menu dédiée :
     // pas dans les `Actuators` du cœur 1, pas dans les plans de phase.
-    // Le cœur 0 en est seul propriétaire — cf. `drivers::led_strip` pour
-    // le pourquoi de cette séparation d'avec l'éclairage de chambre.
-    let mut bay_lights = led_strip::LedStrip::new(board::configure_output_pin(PIN_LED_STRIP));
+    // Le cœur 0 en est seul propriétaire — cf. `drivers::relay::LedStrip`
+    // pour le pourquoi de cette séparation d'avec l'éclairage de chambre.
+    let mut bay_lights = LedStrip::new(board::configure_output_pin(PIN_LED_STRIP));
 
     // Premier rendu : l'opérateur voit le menu pendant la découverte des
     // capteurs, qui prend un instant.
@@ -316,12 +312,9 @@ fn main() -> ! {
 
     let i2c = I2C::new_controller(board.i2c0, sda, scl, 400.kHz(), &mut board.resets, board.clocks.system_clock.freq());
 
-    // Source de pression : BME280, pas ABP2. C'est ce qui est câblé sur ce
-    // montage — l'ABP2 (pression d'un circuit de la chambre, 0–1 bar) n'y
-    // est pas monté. Le BME280 mesure la pression **atmosphérique absolue**
-    // (~1013 hPa) : il remplit le créneau `press` mais ne décrit pas la même
-    // grandeur, et une sécurité pression ajoutée un jour devra en tenir
-    // compte. Le driver ABP2 reste dans l'arbre, prêt à reprendre ce rôle.
+    // Source de pression : BME280, pression **atmosphérique absolue**
+    // (~1013 hPa) — une donnée d'expérience, pas la pression d'un circuit
+    // de la chambre.
     let mut bme = Bme280Sensor::new(Bme280Driver::new(i2c), board.timer, board.timer);
     if let Err(e) = bme.init() {
         // Sans init, les coefficients de compensation ne sont pas chargés et

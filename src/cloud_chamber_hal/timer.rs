@@ -1,16 +1,8 @@
-//! Traits pour le timer monotonique et le watchdog.
-//!
-//! # Timer monotonique
+//! Traits pour le timer monotonique.
 //!
 //! Un timer monotonique ne revient jamais en arrière et n'est pas affecté
 //! par les ajustements d'horloge système. Il est idéal pour mesurer des
 //! durées et implémenter des boucles à période fixe.
-//!
-//! # Watchdog
-//!
-//! Le watchdog est un timer matériel qui redémarre le microcontrôleur si
-//! la fonction `feed()` n'est pas appelée périodiquement. Cela garantit
-//! qu'un blocage logiciel ne laisse pas le système dans un état indéfini.
 
 /// Timer monotonique. Une seule méthode requise (`now`) — `elapsed_since`
 /// est fournie par défaut, un nouvel impl matériel n'a rien de plus à
@@ -23,15 +15,6 @@ pub trait MonotonicTimer {
     fn elapsed_since(&self, earlier: Instant) -> Duration {
         self.now().since(earlier)
     }
-}
-
-/// Alimentation (« nourrissage ») du watchdog matériel.
-pub trait WatchdogFeed {
-    /// Réinitialise le compteur du watchdog.
-    ///
-    /// Doit être appelé régulièrement (au moins une fois par période de
-    /// sécurité) pour éviter un redémarrage forcé.
-    fn feed(&mut self);
 }
 
 /// Instant monotone, en microsecondes depuis le démarrage.
